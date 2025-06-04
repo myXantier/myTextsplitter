@@ -1,0 +1,238 @@
+/* RegexTester Component Styles */
+
+.regex-tester {
+  margin-top: 16px;
+  padding: 16px;
+  background-color: var(--background-6);
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.regex-tester-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.regex-tester-header h3 {
+  font-weight: 600;
+  margin: 0;
+  color: var(--color);
+}
+
+.regex-tester-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.matches-count {
+  color: var(--color-2);
+  font-size: 0.9em;
+  white-space: nowrap;
+}
+
+.test-pattern-btn {
+  padding: 6px 12px;
+  background-color: var(--accent-color);
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 0.9em;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.2s, transform 0.1s;
+  white-space: nowrap;
+}
+
+.test-pattern-btn:hover {
+  background-color: var(--accent-color-dark);
+  transform: translateY(-1px);
+}
+
+.test-pattern-btn:active {
+  transform: translateY(0);
+}
+
+.custom-text-container {
+  background-color: var(--background-5);
+  padding: 12px;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.custom-text-option {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.custom-text-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--color);
+  font-size: 0.95em;
+  user-select: none;
+}
+
+.custom-text-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--accent-color);
+}
+
+.custom-text-input {
+  flex: 1;
+  padding: 8px 12px;
+  border: 1px solid var(--input-border);
+  border-radius: 4px;
+  background-color: var(--input-bg-color);
+  color: var(--input-color);
+  font-size: 0.9em;
+  transition: border-color 0.2s, background-color 0.2s;
+}
+
+.custom-text-input:focus {
+  outline: none;
+  border-color: var(--accent-color);
+  background-color: var(--input-bg-focus);
+}
+
+.preview-container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.preview-label {
+  font-size: 0.9em;
+  font-weight: 500;
+  color: var(--color);
+}
+
+.preview-content {
+  padding: 10px 12px;
+  background-color: var(--background-3);
+  border-radius: 4px;
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.9em;
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: var(--color);
+  min-height: 40px;
+}
+
+.match-highlight {
+  background-color: var(--background-2);
+  color: var(--app-color-green);
+  padding: 2px 4px;
+  margin: 0 2px;
+  border-radius: 2px;
+  font-weight: 500;
+}
+
+.match-text {
+  color: var(--color-1);
+}
+
+.empty-text {
+  opacity: 0.5;
+  font-style: italic;
+}
+
+.result-container {
+  background-color: var(--background-5);
+  padding: 12px;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.result-label {
+  font-size: 0.9em;
+  font-weight: 500;
+  color: var(--color);
+}
+
+.result-content {
+  padding: 12px;
+  background-color: var(--background-3);
+  border-radius: 4px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-height: 40px;
+}
+
+.result-part {
+  padding: 4px 8px;
+  background-color: var(--background-4);
+  border: 1px solid var(--background-6);
+  border-radius: 4px;
+  font-size: 0.9em;
+  color: var(--color-1);
+  display: inline-block;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.result-container {
+  animation: fadeIn 0.3s ease;
+}
+
+/* Responsive styles */
+@media (max-width: 768px) {
+  .regex-tester-header {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  
+  .regex-tester-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
+@media (max-width: 480px) {
+  .regex-tester {
+    padding: 12px;
+  }
+  
+  .result-content {
+    padding: 8px;
+  }
+  
+  .regex-tester-actions {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  
+  .test-pattern-btn {
+    width: 100%;
+  }
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .test-pattern-btn:hover,
+  .result-container {
+    animation: none;
+    transition: none;
+    transform: none;
+  }
+}

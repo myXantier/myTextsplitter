@@ -1,0 +1,324 @@
+/* Container (entspricht dem <aside> Element) */
+.left-menu-bar {
+  display: flex;
+  flex-direction: column;
+  /* Dynamische Breite via CSS-Variable, Fallback: 56px */
+  width: var(--width-closed, 56px);
+  min-width: var(--width-closed, 56px);
+  height: 100%;
+  overflow: hidden;
+  background-color: var(--background);
+  transition: width 0.5s ease-in-out;
+}
+
+/* Toggle Menu */
+.left-menu-bar .toogle-menu {
+  padding: 2px;
+  display: flex;
+  flex-direction: row;
+  justify-content: space-between;
+}
+
+.left-menu-bar .toogle-menu div {
+  position: relative;
+  z-index: 1;
+  flex: 1;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  padding-left: 10px;
+  padding-right: 12px;
+  /* Hier nutzen wir die Hintergrundfarbe als Rahmenfarbe */
+  border-left: 2px solid var(--background);
+  overflow: hidden;
+}
+
+.left-menu-bar .toogle-menu div svg {
+  position: relative;
+  left: -200px;
+  margin: auto;
+  -webkit-user-drag: none;
+  opacity: 0;
+  transition: 1s ease-in-out;
+}
+
+/* Nav-Box */
+.left-menu-bar nav {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  padding-bottom: 19px;
+  overflow: hidden;
+}
+
+/* Nav Menu */
+.nav-menus .div-line {
+  flex: 1;
+  max-height: 1px;
+  height: 1px;
+  background-color: var(--background-2);
+  margin: 5px 8px;
+}
+
+.nav-menus ul {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  margin: 0;
+}
+
+.left-menu-bar nav .bottom-menus {
+  padding-bottom: 10px;
+}
+
+.nav-menus ul li a {
+  position: relative;
+  display: flex;
+  height: 50px;
+  /* Dynamischer Padding-Wert für das Icon */
+  padding-left: var(--icon-left-padding, 13px);
+  margin-left: 2px;
+  margin-right: 2px;
+  text-decoration: none;
+  transition: background-color 0.2s;
+  border-radius: 8px;
+  color: var(--color-1);
+  margin-bottom: 2px;
+  font-size: 0.9em;
+  border-left: 2px solid transparent;
+  outline: none;
+  -webkit-tap-highlight-color: transparent !important;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-user-drag: none;
+  -moz-window-dragging: none;
+}
+
+.nav-menus ul li a:hover {
+  background-color: var(--background-2);
+}
+
+.nav-menus ul li a:active {
+  background-color: var(--background-5);
+}
+
+.nav-menus ul li a span {
+  /* Dynamischer Padding-Wert für den Text */
+  padding-left: var(--text-left-padding, 16px);
+  pointer-events: none;
+  margin: auto 0;
+}
+
+.nav-menus ul li a svg {
+  pointer-events: none;
+  margin: auto 0;
+  min-width: 24px;
+  min-height: 24px;
+}
+
+/* Aktives Menü */
+.nav-menus .menu-active {
+  border-left: 2px solid var(--accent-color);
+  border-radius: 8px 0 0 8px;
+  background-color: var(--background-5);
+  margin-right: 0;
+  outline: none;
+  pointer-events: none;
+  -webkit-tap-highlight-color: transparent !important;
+  box-shadow: none !important;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.nav-menus .menu-active:hover,
+.nav-menus .menu-active:active {
+  border-left: 2px solid var(--accent-color);
+  border-radius: 8px 0 0 8px;
+  background-color: var(--background-5);
+  margin-right: 0;
+  outline: none;
+  pointer-events: none;
+  box-shadow: none !important;
+  -webkit-tap-highlight-color: transparent !important;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Pseudo-Elemente für aktives Menü */
+.nav-menus .menu-active::after {
+  content: '';
+  position: absolute;
+  top: -10px;
+  right: 0;
+  width: 30px;
+  height: 10px;
+  background-color: transparent;
+  border-bottom-right-radius: 10px;
+  box-shadow: 20px 0 0 0 var(--background-5);
+  z-index: 999;
+}
+
+.nav-menus .menu-active::before {
+  content: '';
+  position: absolute;
+  bottom: -10px;
+  right: 0;
+  width: 30px;
+  height: 10px;
+  background-color: transparent;
+  border-top-right-radius: 10px;
+  box-shadow: 20px 0 0 0 var(--background-5);
+  z-index: 999;
+}
+
+/* Allgemeine Anker-Stile */
+a,
+a:visited {
+  outline: none;
+}
+
+a:hover,
+a:active,
+a:focus {
+  -webkit-tap-highlight-color: transparent !important;
+  user-select: none;
+  -webkit-user-select: none;
+  outline: none;
+  text-decoration: none;
+}
+
+/* Combine icon styling */
+.combine-icon-link {
+  position: relative;
+  color: var(--app-color-green) !important;
+  animation: pulse 2s infinite ease-in-out;
+}
+
+@keyframes pulse {
+  0% { opacity: 0.8; }
+  50% { opacity: 1; }
+  100% { opacity: 0.8; }
+}
+
+/* Combine interface */
+.combine-interface {
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.combine-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0 5px;
+}
+
+.combine-header h3 {
+  margin: 0;
+  font-size: 0.95em;
+  font-weight: 600;
+  color: var(--color);
+}
+
+.close-combine-btn {
+  background: none;
+  border: none;
+  color: var(--color-2);
+  cursor: pointer;
+  font-size: 0.85em;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+}
+
+.close-combine-btn:hover {
+  background-color: var(--background-3);
+  color: var(--color);
+}
+
+.combine-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.column-button {
+  padding: 10px 16px;
+  border-radius: 8px;
+  background-color: var(--background-4);
+  border: none;
+  color: var(--color);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  text-align: left;
+  font-size: 0.9em;
+  position: relative;
+  overflow: hidden;
+}
+
+.column-button::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 3px;
+  height: 100%;
+  background-color: var(--accent-color);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.column-button:hover {
+  background-color: var(--background-3);
+}
+
+.column-button:hover::before {
+  opacity: 1;
+}
+
+.column-button:active {
+  transform: scale(0.98);
+  background-color: var(--background-2);
+}
+
+.column-button-used {
+  opacity: 0.5;
+  cursor: not-allowed;
+  background-color: var(--background-5);
+}
+
+.column-button-used:hover {
+  background-color: var(--background-5);
+}
+
+.column-button-used::before {
+  display: none;
+}
+
+.column-button-text {
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* App layout styles */
+.app-layout {
+  display: flex;
+  flex-direction: row;
+  width: 100%;
+  height: 100%;
+}
+
+.content-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}

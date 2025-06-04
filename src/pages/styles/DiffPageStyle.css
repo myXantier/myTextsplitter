@@ -1,0 +1,490 @@
+.diff-text {
+  display: flex;
+  flex: 1;
+  overflow-y: auto;
+  user-select: none;
+  min-width: 320px;
+  gap: 16px;
+}
+
+.diff-columns {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+}
+
+.diff-text textarea {
+  width: 100%;
+  height: 100%;
+  min-height: 200px;
+  border-radius: 8px;
+  padding: 10px;
+  background-color: var(--background-3);
+  border: 2px solid var(--input-border);
+  color: var(--input-color);
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.9em;
+  resize: none;
+  outline: none;
+  transition: all 0.3s ease;
+  white-space: pre;
+}
+
+.diff-text textarea:hover {
+  background-color: var(--input-bg-hover);
+  border: 2px solid var(--accent-color-half);
+}
+
+.diff-text textarea:focus {
+  background-color: var(--input-bg-focus);
+  border: 2px solid var(--accent-color);
+  color: var(--input-color-focus);
+}
+
+.diff-text .input-options-container {
+  position: relative;
+  border-radius: 8px;
+  padding: 4px;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 4px;
+  background-color: var(--background-5);
+  margin: 6px 0;
+}
+
+.diff-text .input-box {
+  border-radius: 4px;
+  padding: 5px 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  flex: 1;
+  gap: 2px;
+  background-color: var(--background-6);
+}
+
+.diff-text .reset-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 4px;
+}
+
+.diff-text .hidden {
+  display: none;
+}
+
+/* Enhanced diff button */
+.diff-text .diff-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-radius: 6px;
+  background: linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color-dark) 100%);
+  color: white;
+  border: none;
+  cursor: pointer;
+  font-weight: 500;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.diff-text .diff-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+.diff-text .diff-button:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.diff-text .processing-status-container {
+  display: flex;
+  justify-content: center;
+}
+
+/* View type selector */
+.view-type-selector {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.view-type-label {
+  font-size: 0.9em;
+  color: var(--color-1);
+  white-space: nowrap;
+}
+
+.view-type-options {
+  display: flex;
+  gap: 2px;
+  background-color: var(--background-4);
+  border-radius: 4px;
+  padding: 2px;
+}
+
+.view-option {
+  background: none;
+  border: none;
+  padding: 5px 12px;
+  border-radius: 3px;
+  color: var(--color-1);
+  cursor: pointer;
+  font-size: 0.85em;
+  transition: all 0.2s ease;
+}
+
+.view-option:hover {
+  color: var(--color);
+}
+
+.view-option.active {
+  background-color: var(--accent-color);
+  color: white;
+}
+
+/* Enhanced diff result styling */
+.diff-result-container {
+  background-color: var(--background-3);
+  border-radius: 8px;
+  overflow: hidden;
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.9em;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1) inset;
+  margin-bottom: 12px;
+  border: 1px solid var(--background-4);
+}
+
+.title-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.diff-stats {
+  color: var(--color-2);
+  font-size: 0.85em;
+}
+
+/* Unified Diff View */
+.unified-diff-view {
+  width: 100%;
+  overflow-x: auto;
+  max-height: 500px;
+  overflow-y: auto;
+}
+
+.diff-line {
+  display: flex;
+  padding: 4px 0;
+  border-radius: 0;
+  margin: 0;
+  transition: background-color 0.15s ease;
+  position: relative;
+  min-height: 24px;
+  line-height: 1.4;
+}
+
+.diff-line:hover {
+  background-color: var(--background-4);
+}
+
+.diff-line-number {
+  opacity: 0.5;
+  user-select: none;
+  padding-right: 8px;
+  min-width: 3em;
+  text-align: right;
+  color: var(--color-2);
+  border-right: 1px solid var(--background-4);
+  margin-right: 8px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.diff-line-marker {
+  width: 20px;
+  text-align: center;
+  font-weight: bold;
+  flex-shrink: 0;
+}
+
+.diff-line-content {
+  flex: 1;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding-right: 16px;
+  color: var(--color-1);
+}
+
+.diff-line-placeholder {
+  flex: 1;
+  height: 24px;
+  background-color: var(--background-4);
+  opacity: 0.3;
+  margin: 0 8px;
+}
+
+.empty-line {
+  color: var(--color-2);
+  font-style: italic;
+  opacity: 0.7;
+}
+
+.empty-slot {
+  min-height: 24px;
+  background-color: var(--background-4);
+  opacity: 0.3;
+}
+
+/* Diff line styles */
+.diff-added {
+  background-color: rgba(152, 195, 121, 0.1);
+}
+
+.diff-added .diff-line-marker {
+  color: var(--app-color-green);
+}
+
+.diff-added .diff-line-content {
+  color: var(--app-color-green);
+}
+
+.diff-removed {
+  background-color: rgba(224, 107, 116, 0.1);
+}
+
+.diff-removed .diff-line-marker {
+  color: var(--app-color-red);
+}
+
+.diff-removed .diff-line-content {
+  color: var(--app-color-red);
+}
+
+.diff-changed {
+  background-color: rgba(229, 192, 123, 0.1);
+}
+
+.diff-changed .diff-line-marker {
+  color: var(--app-color-yellow);
+}
+
+.diff-changed .diff-line-content {
+  color: var(--app-color-yellow);
+}
+
+.diff-moved {
+  background-color: rgba(98, 174, 239, 0.1);
+}
+
+.diff-moved .diff-line-marker {
+  color: var(--accent-color);
+}
+
+.diff-moved .diff-line-content {
+  color: var(--accent-color);
+}
+
+/* Word level diff */
+.word-diff {
+  display: inline;
+  border-radius: 2px;
+  padding: 1px 0;
+}
+
+.word-diff.diff-added {
+  background-color: rgba(152, 195, 121, 0.2);
+  text-decoration: none;
+}
+
+.word-diff.diff-removed {
+  background-color: rgba(224, 107, 116, 0.2);
+  text-decoration: line-through;
+  text-decoration-color: var(--app-color-red);
+}
+
+.word-diff.diff-changed {
+  background-color: rgba(229, 192, 123, 0.2);
+  text-decoration: wavy underline;
+  text-decoration-color: var(--app-color-yellow);
+}
+
+.word-diff.diff-moved {
+  background-color: rgba(98, 174, 239, 0.2);
+  border-bottom: 1px dashed var(--accent-color);
+}
+
+/* Split diff view */
+.split-diff-view {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 2px;
+  background-color: var(--background-4);
+  border-radius: 6px;
+  max-height: 500px;
+}
+
+.split-diff-original,
+.split-diff-new {
+  background-color: var(--background-3);
+  display: flex;
+  flex-direction: column;
+  min-height: 200px;
+  max-height: 500px;
+}
+
+.split-diff-header {
+  padding: 8px 12px;
+  background-color: var(--background-5);
+  border-bottom: 1px solid var(--background-4);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+
+.split-diff-header h3 {
+  margin: 0;
+  font-size: 0.9em;
+  font-weight: 500;
+  color: var(--color-1);
+}
+
+.split-diff-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0;
+}
+
+/* Legend */
+.diff-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  padding: 12px;
+  background-color: var(--background-3);
+  border-radius: 6px;
+  margin-top: 8px;
+  justify-content: center;
+  border: 1px solid var(--background-4);
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.85em;
+  color: var(--color-1);
+}
+
+.legend-marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  font-weight: bold;
+}
+
+.legend-marker.added {
+  background-color: rgba(152, 195, 121, 0.1);
+  color: var(--app-color-green);
+}
+
+.legend-marker.removed {
+  background-color: rgba(224, 107, 116, 0.1);
+  color: var(--app-color-red);
+}
+
+.legend-marker.changed {
+  background-color: rgba(229, 192, 123, 0.1);
+  color: var(--app-color-yellow);
+}
+
+.legend-marker.moved {
+  background-color: rgba(98, 174, 239, 0.1);
+  color: var(--accent-color);
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.diff-result-container {
+  animation: fadeIn 0.3s ease;
+}
+
+/* Responsive Breakpoints */
+@media (max-width: 1024px) {
+  .split-diff-view {
+    grid-template-columns: 1fr;
+    gap: 16px;
+    background-color: transparent;
+  }
+}
+
+@media (max-width: 768px) {
+  .diff-columns {
+    grid-template-columns: 1fr;
+  }
+
+  .diff-text textarea {
+    min-height: 150px;
+  }
+}
+
+@media (max-width: 640px) {
+  .diff-text {
+    gap: 12px;
+  }
+
+  .diff-text .input-box {
+    min-width: calc(50% - 4px);
+  }
+}
+
+@media (max-width: 480px) {
+  .diff-text {
+    gap: 8px;
+  }
+
+  .diff-text .input-box {
+    min-width: 100%;
+  }
+
+  .diff-text .input-options-container {
+    padding: 3px;
+    gap: 3px;
+  }
+  
+  .title-actions {
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+  }
+}
+
+/* Handle reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .diff-text textarea,
+  .diff-text .diff-button,
+  .diff-result-container {
+    transition: none;
+    animation: none;
+  }
+
+  .diff-text .diff-button:hover {
+    transform: none;
+  }
+}

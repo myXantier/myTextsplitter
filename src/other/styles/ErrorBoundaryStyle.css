@@ -1,0 +1,184 @@
+.error-notification {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  max-width: 400px;
+  width: calc(100% - 48px);
+  z-index: 1000;
+  opacity: 0;
+  transform: translateY(20px);
+}
+
+.error-notification.enter {
+  animation: slideIn 0.3s ease forwards;
+}
+
+.error-notification.exit {
+  animation: slideOut 0.3s ease forwards;
+}
+
+.error-content {
+  background-color: var(--background-6);
+  border: 2px solid var(--app-color-red);
+  border-radius: 12px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+  overflow: hidden;
+}
+
+.error-header {
+  display: flex;
+  align-items: center;
+  padding: 16px;
+  background-color: var(--background-5);
+  border-bottom: 1px solid var(--background-4);
+  gap: 12px;
+}
+
+.error-header h3 {
+  flex: 1;
+  margin: 0;
+  font-size: 1.1em;
+  color: var(--app-color-red);
+}
+
+.error-icon {
+  display: flex;
+  align-items: center;
+  color: var(--app-color-red);
+}
+
+.close-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--color-2);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 6px;
+  transition: all 0.2s ease;
+}
+
+.close-button:hover {
+  background-color: var(--background-4);
+  color: var(--color);
+}
+
+.error-message {
+  padding: 16px;
+  color: var(--color);
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.9em;
+  line-height: 1.5;
+  border-bottom: 1px solid var(--background-4);
+}
+
+.error-message p {
+  margin: 0;
+}
+
+.error-actions {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  background-color: var(--background-5);
+}
+
+.action-button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 6px;
+  font-size: 0.9em;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  color: var(--color);
+  background-color: var(--background-4);
+}
+
+.action-button:hover {
+  transform: translateY(-1px);
+}
+
+.action-button:active {
+  transform: translateY(0);
+}
+
+.copy-button:hover {
+  background-color: var(--accent-color);
+  color: white;
+}
+
+.reload-button:hover {
+  background-color: var(--app-color-green);
+  color: white;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slideOut {
+  from {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+}
+
+/* Responsive adjustments */
+@media (max-width: 480px) {
+  .error-notification {
+    bottom: 16px;
+    right: 16px;
+    width: calc(100% - 32px);
+  }
+
+  .error-header {
+    padding: 12px;
+  }
+
+  .error-message {
+    padding: 12px;
+    font-size: 0.85em;
+  }
+
+  .error-actions {
+    padding: 8px;
+    flex-direction: column;
+  }
+
+  .action-button {
+    width: 100%;
+    justify-content: center;
+  }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .error-notification.enter,
+  .error-notification.exit {
+    animation: none;
+  }
+
+  .error-notification {
+    transition: opacity 0.1s ease;
+  }
+
+  .action-button:hover {
+    transform: none;
+  }
+}

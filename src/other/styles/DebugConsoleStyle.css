@@ -1,0 +1,382 @@
+.debug-console {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  font-family: 'Roboto', 'Abel', monospace;
+  border-radius: var(--app-border-radius) var(--app-border-radius) 0 0;
+  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.15);
+  overflow: hidden;
+  transition: height 0.3s ease, opacity 0.2s ease;
+  background-color: var(--background-6);
+  border-top: 2px solid var(--accent-color);
+  font-size: 0.9em;
+  backdrop-filter: blur(5px);
+  pointer-events: auto !important;
+}
+
+.debug-console.maximized {
+  top: 0;
+  border-radius: 0;
+  border-top: none;
+}
+
+/* Header */
+.debug-console-header {
+  display: flex;
+  flex-direction: column;
+  padding: 8px 12px;
+  background-color: var(--background-5);
+  border-bottom: 1px solid var(--app-border-color);
+  gap: 8px;
+}
+
+.debug-console-title {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: bold;
+  font-size: 0.9em;
+  color: var(--color);
+  user-select: none;
+}
+
+.log-count {
+  font-size: 0.8em;
+  color: var(--color-2);
+  font-weight: normal;
+  background-color: var(--background-4);
+  padding: 2px 6px;
+  border-radius: 10px;
+}
+
+.debug-console-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* Search Box */
+.search-box {
+  display: flex;
+  align-items: center;
+  background-color: var(--background-3);
+  border-radius: 4px;
+  padding: 0 8px;
+  height: 28px;
+  width: 200px;
+  position: relative;
+}
+
+.search-box svg {
+  color: var(--color-2);
+}
+
+.search-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: var(--color);
+  font-size: 0.85em;
+  padding: 0 8px;
+  height: 100%;
+  outline: none;
+}
+
+.search-input::placeholder {
+  color: var(--color-2);
+  opacity: 0.7;
+}
+
+.clear-search {
+  background: none;
+  border: none;
+  color: var(--color-2);
+  cursor: pointer;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.clear-search:hover {
+  color: var(--color-1);
+}
+
+/* Filter Controls */
+.filter-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.level-selector {
+  display: flex;
+  align-items: center;
+  background-color: var(--background-3);
+  border-radius: 4px;
+  padding: 0 8px;
+  height: 28px;
+  gap: 6px;
+}
+
+.level-selector svg {
+  color: var(--color-2);
+}
+
+.level-select {
+  background: transparent;
+  border: none;
+  color: var(--color);
+  font-size: 0.85em;
+  padding-right: 10px;
+  height: 100%;
+  outline: none;
+  cursor: pointer;
+  appearance: none;
+  text-overflow: ellipsis;
+}
+
+.control-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--background-3);
+  color: var(--color-2);
+  border: none;
+  border-radius: 4px;
+  width: 28px;
+  height: 28px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.control-button:hover {
+  background-color: var(--background-4);
+  color: var(--color);
+}
+
+.control-button.active {
+  background-color: var(--accent-color-dark);
+  color: white;
+}
+
+.control-button.close:hover {
+  background-color: var(--app-color-red);
+  color: white;
+}
+
+.action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Console Content */
+.debug-console-content {
+  flex: 1;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Log Entries */
+.log-entry {
+  display: flex;
+  flex-direction: column;
+  border-bottom: 1px solid var(--background-4);
+  transition: background-color 0.15s ease;
+  overflow: hidden;
+}
+
+.log-entry:hover {
+  background-color: var(--background-5);
+}
+
+.log-header {
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  cursor: pointer;
+  height: 36px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  gap: 8px;
+}
+
+.log-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.log-timestamp {
+  color: var(--color-2);
+  font-size: 0.85em;
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+
+.log-module {
+  background-color: var(--background-4);
+  color: var(--color-2);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.8em;
+  margin-right: 8px;
+  flex-shrink: 0;
+}
+
+.log-message {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-details {
+  padding: 8px 12px 12px 32px;
+  background-color: var(--background-3);
+  overflow: auto;
+  max-height: 300px;
+  border-top: 1px solid var(--background-4);
+  animation: fadeIn 0.2s ease;
+}
+
+.log-details pre {
+  margin: 0;
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.85em;
+  white-space: pre-wrap;
+  color: var(--color-1);
+}
+
+.expand-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--color-2);
+  cursor: pointer;
+  padding: 2px;
+  margin-left: auto;
+  border-radius: 3px;
+}
+
+.expand-button:hover {
+  background-color: var(--background-4);
+}
+
+/* Log Level Styling */
+.log-entry.debug .log-icon {
+  color: var(--accent-color);
+}
+
+.log-entry.info .log-icon {
+  color: var(--app-color-green);
+}
+
+.log-entry.warn .log-icon {
+  color: var(--app-color-yellow);
+}
+
+.log-entry.error .log-icon {
+  color: var(--app-color-red);
+}
+
+/* Empty state */
+.no-logs {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  padding: 20px;
+  text-align: center;
+  color: var(--color-2);
+}
+
+.no-logs-message {
+  font-size: 1.1em;
+  margin-bottom: 12px;
+}
+
+.no-logs-hint {
+  font-size: 0.9em;
+  max-width: 600px;
+  line-height: 1.5;
+}
+
+.no-logs-hint code {
+  background-color: var(--background-4);
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-family: 'Roboto Mono', monospace;
+  margin: 0 2px;
+}
+
+/* Animations */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* Responsive Adjustments */
+@media (max-width: 768px) {
+  .debug-console-controls {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  
+  .search-box {
+    width: 100%;
+  }
+  
+  .filter-controls,
+  .action-buttons {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
+@media (prefers-reduced-motion) {
+  .debug-console,
+  .log-details {
+    transition: none;
+    animation: none;
+  }
+}
+
+/* Proper scrollbar styling */
+.log-details::-webkit-scrollbar,
+.debug-console-content::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.log-details::-webkit-scrollbar-track,
+.debug-console-content::-webkit-scrollbar-track {
+  background: var(--background-3);
+}
+
+.log-details::-webkit-scrollbar-thumb,
+.debug-console-content::-webkit-scrollbar-thumb {
+  background: var(--background-5);
+  border-radius: 3px;
+}
+
+.log-details::-webkit-scrollbar-thumb:hover,
+.debug-console-content::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-color-shade);
+}

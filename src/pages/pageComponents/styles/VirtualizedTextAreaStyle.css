@@ -1,0 +1,101 @@
+.virtualized-container {
+  height: 100%;
+  min-height: 40px;
+  background-color: var(--background-3);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.virtualized-list {
+  scrollbar-width: thin;
+  scrollbar-color: var(--accent-color-shade) var(--background);
+}
+
+.virtualized-list::-webkit-scrollbar {
+  width: 7px;
+  height: 8px;
+  background: transparent;
+}
+
+.virtualized-list::-webkit-scrollbar-track {
+  background: var(--background);
+  border-radius: 5px;
+  margin: 5px 10px;
+}
+
+.virtualized-list::-webkit-scrollbar-thumb {
+  background: var(--accent-color-shade);
+  border-radius: 4px;
+}
+
+.virtualized-list::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-color);
+}
+
+.virtualized-list::-webkit-scrollbar-thumb:active {
+  background: var(--app-color-green);
+}
+
+.virtualized-list::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.virtualized-row {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  position: relative;
+}
+
+.line-number {
+  position: absolute;
+  left: 0;
+  width: 32px;
+  text-align: right;
+  padding-right: 8px;
+  color: var(--color-2);
+  font-size: 0.75em;
+  user-select: none;
+  background-color: var(--background-3);
+  border-right: 1px solid var(--background-5);
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.virtualized-input {
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--color);
+  font-family: monospace;
+  padding: 2px 4px;
+}
+
+.virtualized-input:focus {
+  background-color: var(--background-4);
+}
+
+.virtualized-input.text-xs {
+  font-size: 0.75rem;
+}
+
+.virtualized-input.text-sm {
+  font-size: 0.875rem;
+}
+
+.virtualized-input.text-base {
+  font-size: 1rem;
+}
+
+.virtualized-input.text-lg {
+  font-size: 1.125rem;
+}
+
+.virtualized-input::selection {
+  background-color: var(--accent-color);
+  color: white;
+}

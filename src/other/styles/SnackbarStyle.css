@@ -1,0 +1,228 @@
+.snackbar-container {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 1000;
+  pointer-events: none;
+  position: fixed;
+}
+
+/* Füge dies hinzu für Standardrichtung */
+.snackbar-container.stack-down {
+  flex-direction: column;
+}
+
+/* Und falls du mal von unten nach oben willst */
+.snackbar-container.stack-up {
+  flex-direction: column-reverse;
+}
+
+/* Positionen */
+.snackbar-container.bottom-right {
+  bottom: 24px;
+  right: 24px;
+  align-items: flex-end;
+}
+
+.snackbar-container.bottom-left {
+  bottom: 24px;
+  left: 24px;
+  align-items: flex-start;
+}
+
+.snackbar-container.top-right {
+  top: 24px;
+  right: 24px;
+  align-items: flex-end;
+}
+
+.snackbar-container.top-left {
+  top: 24px;
+  left: 24px;
+  align-items: flex-start;
+}
+
+.snackbar-container.bottom-center {
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  align-items: center;
+}
+
+.snackbar-container.top-center {
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  align-items: center;
+}
+
+.snackbar-message {
+  max-width: 400px;
+  min-width: 300px;
+  background-color: var(--background-6);
+  border-radius: 8px;
+  overflow: hidden;
+  pointer-events: auto;
+  position: relative;
+  opacity: 0;
+  transform: translateX(100%);
+}
+
+.snackbar-message.enter {
+  animation: slideIn 0.3s ease forwards;
+}
+
+.snackbar-message.exit {
+  animation: slideOut 0.3s ease forwards;
+}
+
+.snackbar-message.success {
+  border: 1px solid var(--app-color-green);
+}
+
+.snackbar-message.info {
+  border: 1px solid var(--accent-color);
+}
+
+.snackbar-message.warning {
+  border: 1px solid var(--app-color-yellow);
+}
+
+.snackbar-message.error {
+  border: 1px solid var(--app-color-red);
+}
+
+.message-content {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px;
+  color: var(--color);
+}
+
+.message-icon {
+  flex-shrink: 0;
+}
+
+.success .message-icon {
+  color: var(--app-color-green);
+}
+
+.info .message-icon {
+  color: var(--accent-color);
+}
+
+.warning .message-icon {
+  color: var(--app-color-yellow);
+}
+
+.error .message-icon {
+  color: var(--app-color-red);
+}
+
+.message-text {
+  flex: 1;
+  font-size: 0.9em;
+  line-height: 1.4;
+}
+
+.close-button {
+  background: none;
+  border: none;
+  padding: 4px;
+  cursor: pointer;
+  color: var(--color-2);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+}
+
+.close-button:hover {
+  background-color: var(--background-4);
+  color: var(--color);
+}
+
+.progress-bar {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  height: 3px;
+  width: 100%;
+  transform-origin: left;
+  animation: progress linear forwards;
+}
+
+.success .progress-bar {
+  background-color: var(--app-color-green);
+}
+
+.info .progress-bar {
+  background-color: var(--accent-color);
+}
+
+.warning .progress-bar {
+  background-color: var(--app-color-yellow);
+}
+
+.error .progress-bar {
+  background-color: var(--app-color-red);
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideOut {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+}
+
+@keyframes progress {
+  from {
+    transform: scaleX(1);
+  }
+  to {
+    transform: scaleX(0);
+  }
+}
+
+/* Responsive adjustments */
+@media (max-width: 480px) {
+  .snackbar-container {
+    bottom: 16px;
+    right: 16px;
+    left: 16px;
+  }
+
+  .snackbar-message {
+    min-width: unset;
+    width: 100%;
+  }
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .snackbar-message.enter,
+  .snackbar-message.exit {
+    animation: none;
+  }
+
+  .progress-bar {
+    animation: none;
+  }
+}

@@ -1,0 +1,20 @@
+.pages {
+  width: auto;
+  display: flex;
+  flex: 1;
+  flex-basis: 100px;
+  border-radius: 0 0 10px 10px;
+  margin-right: 2px;
+  background-color: var(--background-5);
+  overflow: hidden;
+}
+.pages .scrollable {
+  flex: 1;
+  display: flex;
+  margin: 1px;
+  overflow: auto;
+  padding: 8px;
+}
+.pages .hide-page {
+  display: none;
+}

@@ -1,0 +1,47 @@
+.about {
+  display: flex;
+  flex: 1;
+  overflow-y: auto;
+  user-select: none;
+  min-width: 400px;
+  gap: 10px;
+}
+.about .app-image {
+  margin-top: 10px !important;
+  border-radius: 10px;
+  background-color: var(--background-4);
+  border-top: 3px solid var(--background-1);
+  border-bottom: 0 solid transparent;
+}
+.about .app-info-box {
+  display: flex;
+  flex-direction: row;
+  border-radius: 10px;
+  flex-wrap: nowrap;
+  border-top: 2px solid var(--background-1);
+  border-bottom: 0 solid transparent;
+  background-color: var(--background-4);
+  overflow: hidden;
+  font-size: 0.8em;
+  vertical-align: middle;
+}
+.about .app-info-box .left {
+  text-transform: uppercase;
+  flex-basis: 40%;
+  padding: 5px 10px;
+  padding-bottom: 7px;
+  text-align: right;
+  color: var(--color-1);
+  border-right: 1px solid var(--background-5);
+  background-color: var(--background-3);
+}
+.about .app-info-box .right {
+  flex-basis: 60%;
+  padding: 5px 10px;
+  padding-bottom: 7px;
+  text-align: left;
+  color: var(--color-2);
+}
+.about .user_selection {
+  user-select: text !important;
+}

@@ -1,0 +1,90 @@
+.checkbox-wrapper {
+  display: flex;
+  margin: 3px 15px 0px 15px;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  gap: 8px;
+  user-select: none;
+  color: var(--color);
+}
+
+.checkbox-wrapper input[type=checkbox] {
+  display: none;
+  vertical-align: baseline;
+}
+
+.checkbox-box {
+  width: 20px;
+  height: 20px;
+  background-color: var(--input-bg-color);
+  border: 2px solid var(--input-border);
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  position: relative;
+
+  appearance: none;
+  -webkit-appearance: none;
+  display: grid;
+}
+
+.checkbox-wrapper input[type='checkbox']:checked + .checkbox-box {
+  background-color: var(--checkbox-bg-test);
+  border-color: var(--checkbox-bg-test);
+}
+
+.checkbox-wrapper input[type='checkbox']:checked::before + .checkbox-box {
+  content: '';
+  width: 8px;
+  height: 8px;
+  transform: scale(1);
+  background-color: var(--checkbox-check-test);
+}
+
+.checkbox-wrapper input[type='checkbox']:checked + .checkbox-box .checkmark {
+  stroke-dashoffset: 0;
+  stroke: var(--checkbox-check-test);
+}
+
+.checkmark {
+  width: 16px;
+  height: 16px;
+  stroke: var(--checkbox-check-test);
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+  stroke-dasharray: 22;
+  stroke-dashoffset: 22;
+  transition: stroke-dashoffset 0.5s ease;
+  pointer-events: none;
+}
+
+.checkbox-label {
+  /* flex: 1; */
+  font-size: 0.9rem;
+}
+
+.checkbox-wrapper.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.checkmark-animated {
+  width: 16px;
+  height: 16px;
+  stroke: var(--checkbox-check-test);
+  stroke-dasharray: 24;
+  stroke-dashoffset: 24;
+  transition: stroke-dashoffset 0.3s ease;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.checkbox-wrapper input:checked + .checkbox-box .checkmark-animated {
+  stroke-dashoffset: 0;
+  opacity: 1;
+}

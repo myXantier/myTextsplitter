@@ -1,0 +1,46 @@
+.circular-progress-bar {
+  width: 100%;
+  aspect-ratio: 1/1;
+  display: flex;
+  align-items: center;
+  align-content: center;
+  justify-content: center;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+/* Text, der zentriert in der ProgressBar angezeigt wird */
+.circular-progress-bar .text-inside {
+  position: absolute;
+  margin: auto;
+  color: var(--text-color, #333);
+  font-size: var(--text-size, 2em);
+}
+
+/* SVG-Element: Drehen und Drop-Shadow via CSS-Variablen */
+.circular-progress-bar svg {
+  aspect-ratio: 1/1;
+  transform: rotate(var(--rotate, -90deg));
+  filter: drop-shadow(var(--drop-shadow, none));
+}
+
+/* Kreis-Elemente (für den progressiven Stroke) */
+.circular-progress-bar circle {
+  padding: 10px;
+  fill: none;
+  filter: none;
+  /* Der Standardwert wird hier berechnet – in der Regel überschreibst du diesen per Inline-Style */
+  stroke-dashoffset: var(--stroke-dashoffset, calc(625 - (625 * 1) / 100));
+  transition: stroke-dashoffset var(--transition-time, 0.1s);
+}
+
+/* Container für zusätzliche Inhalte */
+.circular-progress-bar .children {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  align-content: center;
+  justify-content: center;
+}

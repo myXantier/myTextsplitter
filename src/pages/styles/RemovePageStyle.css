@@ -1,0 +1,207 @@
+.remove-lines {
+  display: flex;
+  flex: 1;
+  overflow-y: auto;
+  user-select: none;
+  min-width: 320px;
+  gap: 16px;
+}
+
+.remove-lines textarea {
+  width: 100%;
+  height: 100%;
+  min-height: 200px;
+  border-radius: 8px;
+  padding: 10px;
+  background-color: var(--background-3);
+  border: 2px solid var(--input-border);
+  color: var(--input-color);
+  font-family: 'Roboto Mono', monospace;
+  font-size: 0.9em;
+  resize: none;
+  outline: none;
+  transition: all 0.3s ease;
+  white-space: pre;
+}
+
+.remove-lines textarea:hover {
+  background-color: var(--input-bg-hover);
+  border: 2px solid var(--accent-color-half);
+}
+
+.remove-lines textarea:focus {
+  background-color: var(--input-bg-focus);
+  border: 2px solid var(--accent-color);
+  color: var(--input-color-focus);
+}
+
+.remove-lines textarea.result {
+  min-height: 120px;
+  max-height: 60vh;
+  background-color: var(--background-6);
+  border-color: var(--background-5);
+}
+
+.remove-lines .input-options-container {
+  position: relative;
+  border-radius: 8px;
+  padding: 4px;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: wrap;
+  gap: 4px;
+  background-color: var(--background-5);
+  margin: 6px 0;
+}
+
+.remove-lines .input-box {
+  border-radius: 4px;
+  padding: 5px 10px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  flex: 1;
+  gap: 2px;
+  background-color: var(--background-6);
+}
+
+.remove-lines .box-write-name {
+  background-color: var(--background-3);
+  padding: 5px !important;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-radius: 8px;
+}
+
+.remove-lines .form-add-render {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 5px;
+}
+
+.remove-lines .reset-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  margin-left: 4px;
+}
+
+.remove-lines .scroll-box {
+  flex: 1;
+  min-height: 100px;
+  display: flex;
+  flex-direction: column;
+  overflow: auto;
+  background-color: var(--background-5);
+  border: 2px solid var(--background-5);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.remove-lines .remove-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 20px;
+  margin-bottom: 16px;
+}
+
+.remove-lines .remove-action-button {
+  padding: 10px 16px;
+  border-radius: 8px;
+  border: none;
+  color: white;
+  font-weight: medium;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+}
+
+.remove-lines .remove-action-button:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+.remove-lines .remove-action-button:active {
+  transform: translateY(0);
+}
+
+.remove-lines .remove-action-button.duplicates {
+  background: linear-gradient(135deg, var(--accent-color) 0%, var(--accent-color-dark) 100%);
+}
+
+.remove-lines .remove-action-button.containing {
+  background: linear-gradient(135deg, var(--app-color-green) 0%, #7ba566 100%);
+}
+
+.remove-lines .remove-action-button.not-containing {
+  background: linear-gradient(135deg, var(--app-color-red) 0%, #c44f57 100%);
+}
+
+.remove-lines .result-header {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 8px;
+}
+
+.remove-lines .processing-status-container {
+  display: flex;
+  justify-content: center;
+  /* margin-top: 16px; */
+}
+
+/* Responsive Breakpoints */
+@media (max-width: 640px) {
+  .remove-lines {
+    gap: 12px;
+  }
+
+  .remove-lines .input-box {
+    min-width: calc(33% - 4px);
+  }
+
+  .remove-lines textarea {
+    min-height: 150px;
+    font-size: 0.85em;
+  }
+
+  .remove-lines textarea.result {
+    min-height: 100px;
+  }
+
+  .remove-lines .remove-actions {
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 480px) {
+  .remove-lines {
+    gap: 8px;
+  }
+
+  .remove-lines .input-box {
+    min-width: 100%;
+  }
+
+  .remove-lines .input-options-container {
+    padding: 3px;
+    gap: 3px;
+    margin: 12px 0;
+  }
+}
+
+/* Handle reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  .remove-lines textarea,
+  .remove-lines .remove-action-button {
+    transition: none;
+  }
+}

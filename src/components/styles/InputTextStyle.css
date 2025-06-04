@@ -1,0 +1,111 @@
+/* Container (entspricht dem ursprünglichen Container) */
+.input-text-container {
+  /* Die CSS-Variablen --border-radius und --border-radius-btn
+     sollten idealerweise per Inline-Style oder global gesetzt werden */
+  --border-radius-btn: calc(var(--border-radius) - 2px);
+
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  flex-wrap: nowrap;
+  flex: 1;
+}
+.input-text-container .alert {
+  border: 2px solid var(--app-color-orange) !important;
+}
+.input-text-container .error {
+  border: 2px solid var(--app-color-red) !important;
+}
+
+/* ClearText (Button zum Leeren des Inputs) */
+.clear-text {
+  position: absolute;
+  right: 4px;
+  /* top: 4px; */
+  width: 22px;
+  height: 22px;
+  border-radius: 3px; /* var(--border-radius-btn) */
+  background-color: var(--background-3);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  z-index: 10;
+}
+.clear-text:hover {
+  background-color: var(--accent-color);
+}
+.clear-text:active {
+  background-color: var(--app-color-green);
+}
+.clear-text svg {
+  pointer-events: none;
+}
+.clear-text:hover svg,
+.clear-text:active svg {
+  filter: brightness(500%);
+}
+
+/* InputIcon (linkes Icon im Input) */
+.input-icon {
+  position: absolute;
+  left: 1px;
+  /* top: 4px; */
+  height: 32px;
+  width: 32px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 10;
+}
+
+/* Input-Element */
+.input-text {
+  width: 100%;
+  padding: 3px 8px;
+  /* height: 30px;
+  line-height: 30px; */
+  border-radius: 6px; /* var(--border-radius) */
+  outline: none;
+  border: 2px solid var(--input-border);
+  background-color: var(--input-bg-color);
+  color: var(--input-color);
+  font-size: medium;
+}
+/* Falls ein Clear-Button benötigt wird */
+.input-text.has-clear {
+  padding-right: 30px;
+}
+/* Falls ein linkes Icon benötigt wird */
+.input-text.has-icon {
+  padding-left: 30px;
+}
+.input-text:hover {
+  background-color: var(--input-bg-hover);
+  border: 2px solid var(--accent-color-half);
+}
+.input-text:focus {
+  background-color: var(--input-bg-focus);
+  border: 2px solid var(--accent-color);
+  color: var(--input-color-focus);
+}
+.input-text:focus::placeholder {
+  color: var(--input-color-focus);
+  opacity: 0.5;
+}
+.input-text:required:focus:invalid {
+  border: 2px solid var(--app-color-red);
+}
+.input-text:required:focus:valid {
+  border: 2px solid var(--accent-color);
+}
+.input-text::placeholder {
+  opacity: 0.75;
+}
+/* Falls innerhalb des Inputs ein Element mit grüner Umrandung erwünscht ist */
+.input-text .green-border {
+  border: 2px solid var(--app-color-green) !important;
+}

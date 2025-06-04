@@ -1,0 +1,36 @@
+.icon-rounded-button {
+  width: var(--button-size);
+  height: var(--button-size);
+  aspect-ratio: 1;
+  border-radius: var(--button-radius);
+  background-color: var(--button-bg);
+  padding: 0;
+  margin: 0;
+  display: flex;
+  align-content: center;
+  align-items: center;
+  transition: background-color 0.5s;
+  cursor: pointer;
+}
+
+.icon-rounded-button svg {
+  margin: auto;
+  transition: filter 0.25s;
+  filter: var(--svg-filter, none);
+}
+
+.icon-rounded-button:hover {
+  background-color: var(--button-hover);
+}
+
+.icon-rounded-button:hover svg {
+  filter: var(--svg-hover-filter, none);
+}
+
+.icon-rounded-button:active {
+  background-color: var(--button-pressed);
+}
+
+.icon-rounded-button:active svg {
+  filter: var(--svg-active-filter, none);
+}

@@ -1,0 +1,96 @@
+/* Header-Container */
+.header {
+  flex: 0;
+  width: auto;
+  height: 61px;
+  flex-basis: 61px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  background-color: var(--background);
+}
+
+/* Title Bar */
+.header .title-bar {
+  width: 100%;
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  height: 34px;
+  opacity: var(--header-opacity, 1);
+}
+
+/* Bereich für Icon und Titel */
+.header .title-bar .icon-title {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  height: 34px;
+  gap: 6px;
+  padding-left: 10px;
+  padding-top: 4px;
+  margin-right: 10px;
+
+  /* DEBUG-HELPER */
+  /* outline: 1px dashed red; */
+}
+
+.header .title-bar .icon-title svg {
+  padding-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+
+  /* DEBUG-HELPER */
+  /* outline: 1px dashed red; */
+}
+
+/* Bereich für Buttons in der Title Bar */
+.header .title-bar .buttons {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding-right: 2px;
+}
+
+/* Switch-Container */
+.header .title-bar .buttons .switch {
+  display: flex;
+  align-items: center;
+  align-content: center;
+  justify-content: center;
+  line-height: 34px;
+  padding-top: 3px;
+  margin-right: 10px;
+}
+
+/* Optionaler Wrapper für weitere Buttons */
+.header .buttons .buttons-box {
+  display: flex;
+  flex-direction: row;
+  gap: 2px;
+}
+
+/* Info-Bar am unteren Rand */
+.header .info-bar {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  height: 22px;
+  max-height: 22px;
+  border-radius: 10px 10px 0 0;
+  margin-right: 2px;
+  color: var(--color-2);
+  padding-left: 10px;
+  padding-right: 10px;
+  font-size: 0.8em;
+  line-height: 22px;
+  background-color: var(--background-3);
+  gap: 5px;
+}
+
+.header .info-bar span {
+  white-space: nowrap;
+  overflow: hidden;
+}

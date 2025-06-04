@@ -1,0 +1,110 @@
+.processing-status {
+  display: flex;
+  align-items: center;
+  font-size: 0.875em;
+  color: var(--color-1);
+}
+
+.status-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.abort-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  padding: 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  color: var(--accent-color);
+  transition: all 0.2s ease;
+}
+
+.abort-button:hover {
+  background-color: var(--background-4);
+}
+
+.abort-button.error {
+  color: var(--app-color-red);
+}
+
+.loading-spinner {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.status-message {
+  color: var(--accent-color);
+}
+
+.status-message.error {
+  color: var(--app-color-red);
+}
+
+.mode-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.mode-toggle:hover {
+  background-color: var(--background-4);
+}
+
+.backend-icon,
+.backend-text {
+  color: var(--app-color-green);
+}
+
+.fallback-icon,
+.fallback-text {
+  color: var(--app-color-yellow);
+}
+
+.metrics-group {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-size: 0.75em;
+}
+
+.metric {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.execution-time {
+  color: var(--accent-color);
+}
+
+.memory-usage {
+  color: var(--app-color-green);
+}
+
+.data-size {
+  display: flex;
+  gap: 8px;
+}
+
+.input-size {
+  color: var(--app-color-green);
+}
+
+.output-size {
+  color: var(--accent-color);
+}
