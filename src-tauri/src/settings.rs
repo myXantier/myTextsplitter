@@ -63,6 +63,14 @@ impl SaveAppSettings {
     pub fn save(&self) -> Result<(), String> {
         let path = Self::get_path();
         println!("Speicherpath der Einstellungen: {:?}", path);
+
+        // Verzeichnis anlegen, falls es (z. B. beim ersten Start) noch nicht existiert
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir).map_err(|e| {
+                format!("Fehler beim Anlegen des Settings-Verzeichnisses {:?}: {:?}", dir, e)
+            })?;
+        }
+
         std::fs::write(&path, serde_json::to_string_pretty(self).map_err(|e| e.to_string())?)
             .map_err(|e| format!("Fehler beim Speichern der Settings: {:?}", e))
     }

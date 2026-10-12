@@ -87,11 +87,12 @@ export default function natsort(options: OptionsType = {}) {
         return 0
       }
 
-      if (av < bv) {
+      // Number(av) entspricht der impliziten Umwandlung von JS (false -> 0)
+      if (Number(av) < bv) {
         return SMALLER
       }
 
-      if (av > bv) {
+      if (Number(av) > bv) {
         return GREATER
       }
     }
