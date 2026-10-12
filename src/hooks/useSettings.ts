@@ -67,7 +67,7 @@ const defaultPermanent: SaveAppSettings = {
   trimParts: false,
   fontSize: 'text-sm',
   showLineNumbers: false,
-  showEmptyLines: false,
+  showEmptyLines: true, // Split keeps empty input lines (same as before the option was wired)
   savedPatterns: [],
 };
 

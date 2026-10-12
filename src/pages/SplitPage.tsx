@@ -46,6 +46,9 @@ export default function SplitPage({
   const showLineNumbers = usePermanentSetting('showLineNumbers');
   const trimLine = usePermanentSetting('trimLine');
   const trimParts = usePermanentSetting('trimParts');
+  // `showEmptyLines` controls the split: keep (true) or skip (false) empty input lines.
+  // Desktop settings are not sanitized; a missing value (null) keeps the default behaviour.
+  const keepEmptyLines = usePermanentSetting('showEmptyLines') !== false;
   const isDarkMode = usePermanentSetting('isDarkMode');
   const fontSize = usePermanentSetting('fontSize');
 
@@ -122,6 +125,7 @@ export default function SplitPage({
         configParams: {
           trimParts: trimParts,
           useRegex: useRegex,
+          keepEmptyLines: keepEmptyLines,
         },
       });
 
@@ -138,7 +142,7 @@ export default function SplitPage({
     } finally {
       setIsLoading(false);
     }
-  }, [sourceText, useRegex, separator, splitText, setSplitResults, currentWorkerAbort]);
+  }, [sourceText, useRegex, trimParts, keepEmptyLines, separator, splitText, setSplitResults, currentWorkerAbort]);
 
   useEffect(() => {
     const cleanupInterval = setInterval(() => {

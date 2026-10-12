@@ -27,7 +27,7 @@ impl Default for SaveAppSettings {
             trim_parts: Some(false),
             font_size: Some("text-sm".to_string()),
             show_line_numbers: Some(false),
-            show_empty_lines: Some(false),
+            show_empty_lines: Some(true), // Split keeps empty input lines
             saved_patterns: Some(vec![]),
             window_position: Some((100, 100)),
             window_size: Some((1200, 800)),

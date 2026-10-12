@@ -11,7 +11,7 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, listTargets, sleep } from './lib/cdp.mjs';
-import { installHelpers } from './lib/app.mjs';
+import { SPLIT_CASES, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
@@ -140,6 +140,27 @@ async function firstRun() {
     await main.eval(`!!__t.page().querySelector('.metrics-group .execution-time') && !!__t.page().querySelector('.metrics-group .memory-usage')`)
   );
 
+  const firstColumns = [['a', 'd'], ['b', 'e'], ['c', 'f']];
+  await main.waitFor(`JSON.stringify(__t.columns()) === ${JSON.stringify(JSON.stringify(firstColumns))}`, 3000);
+  const firstResult = await main.eval('__t.columns()');
+  r.check('Split result columns (Rust)', JSON.stringify(firstResult) === JSON.stringify(firstColumns), JSON.stringify(firstResult));
+
+  // Split B1 via Rust: late columns, empty input lines kept/skipped, Combine (connect_texts) without row offset
+  n = main.logs.length;
+  const b1 = SPLIT_CASES.b1;
+  // Set explicitly: an existing settings.json may still contain showEmptyLines=false (old default)
+  r.check('Keep Empty Lines switched on', (await setSettingsCheckbox(main, 'Keep Empty Lines', true)) === true);
+  let cols = await splitAndRead(main, b1.text, b1.separator, b1.keep);
+  r.check('Split B1 (Rust): new column padded, empty line kept', JSON.stringify(cols) === JSON.stringify(b1.keep), JSON.stringify(cols));
+  const combinedB1 = await combineColumns(main, [2, 0]);
+  r.check('Combine Part 3 + Part 1 (Rust connect_texts) keeps rows aligned', combinedB1.used === 2 && combinedB1.text === b1.combined, JSON.stringify(combinedB1));
+  await main.eval(`__t.page().querySelector('.combine-clear')?.click(); true`);
+  const keepBefore = await setSettingsCheckbox(main, 'Keep Empty Lines', false);
+  cols = await splitAndRead(main, b1.text, b1.separator, b1.skip);
+  r.check('Split B1 (Rust): empty line skipped', keepBefore === false && JSON.stringify(cols) === JSON.stringify(b1.skip), JSON.stringify(cols));
+  r.check('Keep Empty Lines switched on again', (await setSettingsCheckbox(main, 'Keep Empty Lines', true)) === true);
+  r.check('Split B1 (Rust) without errors', errorsIn(main.logs, n).length === 0, formatLogs(errorsIn(main.logs, n)));
+
   n = main.logs.length;
   await main.eval(`__t.page().querySelector('.mode-toggle').click(); true`);
   await sleep(300);
@@ -147,6 +168,9 @@ async function firstRun() {
   await main.eval(`__t.page().querySelector('button[title="Split text"]').click(); true`);
   await sleep(1200);
   r.check('Split in JS mode on desktop', errorsIn(main.logs, n).length === 0, `status="${await main.eval('__t.status()')}"`);
+  cols = await splitAndRead(main, b1.text, b1.separator, b1.keep);
+  r.check('Split B1 in JS mode on desktop = Rust result', JSON.stringify(cols) === JSON.stringify(b1.keep), JSON.stringify(cols));
+  await main.eval(`__t.set(__t.page().querySelector('.form-add-render input'), '_'); true`);
   await main.eval(`__t.page().querySelector('.mode-toggle').click(); true`);
   await sleep(300);
   r.check('Toggle back to backend mode', await main.eval(`!!__t.page().querySelector('.mode-toggle .backend-icon')`));

@@ -10,7 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, sleep } from './lib/cdp.mjs';
-import { installHelpers } from './lib/app.mjs';
+import { SPLIT_CASES, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
@@ -101,13 +101,17 @@ async function testApp(page, url) {
   }
 
   // --- Text operations (JS / Web Worker) ---
-  // Only checks that each operation runs and reports a result; content bugs (Split B1, Diff, Filter) are out of scope.
+  // Split and Combine check the concrete result; Sort/Filter/Remove/Diff only check that they run (Diff/Filter bugs are out of scope).
   let n = page.logs.length;
   await page.eval(`__t.nav('split'); __t.set(__t.textareas()[0], 'a_b_c\\nd_e_f\\ng_h'); true`);
   await sleep(150);
   await page.eval(`__t.page().querySelector('button[title="Split text"]').click(); true`);
   const splitDone = await page.waitFor(`__t.page().innerText.includes('SPLIT RESULT')`);
   r.check('Split', splitDone && errorsSince(n).length === 0, `status="${await page.eval('__t.status()')}" ${shortErrors(n)}`);
+  const firstColumns = [['a', 'd', 'g'], ['b', 'e', 'h'], ['c', 'f', '']];
+  await page.waitFor(`JSON.stringify(__t.columns()) === ${JSON.stringify(JSON.stringify(firstColumns))}`, 3000);
+  const firstResult = await page.eval('__t.columns()');
+  r.check('Split result columns (missing value padded)', JSON.stringify(firstResult) === JSON.stringify(firstColumns), JSON.stringify(firstResult));
   r.check('Split ran in a Web Worker', await page.eval(`performance.getEntriesByType('resource').some(e => /SplitWorker/.test(e.name))`));
   r.check('JS processing mode active', await page.eval(`!!__t.page().querySelector('.mode-toggle .fallback-icon')`));
   r.check(
@@ -124,12 +128,31 @@ async function testApp(page, url) {
     await page.eval(`document.querySelectorAll('.column-button')[2]?.click(); true`);
     await sleep(300);
     const used = await page.eval(`document.querySelectorAll('.column-button-used').length`);
-    r.check('Combine columns (JS mode)', used === 2 && errorsSince(n).length === 0, `used=${used} ${shortErrors(n)}`);
+    const combined = await page.eval('__t.combined()');
+    r.check(
+      'Combine columns (JS mode)',
+      used === 2 && combined === 'a:c\nd:f\ng:' && errorsSince(n).length === 0,
+      `used=${used} combined=${JSON.stringify(combined)} ${shortErrors(n)}`
+    );
     await page.eval(`document.querySelector('.close-combine-btn')?.click(); true`);
     await sleep(200);
   } else {
     r.check('Combine columns (JS mode)', false, 'combine menu entry missing');
   }
+
+  // --- Split B1: late columns, empty input lines kept/skipped, Combine without row offset ---
+  n = page.logs.length;
+  const b1 = SPLIT_CASES.b1;
+  let cols = await splitAndRead(page, b1.text, b1.separator, b1.keep);
+  r.check('Split B1: new column padded, empty line kept (default)', JSON.stringify(cols) === JSON.stringify(b1.keep), JSON.stringify(cols));
+  const combinedB1 = await combineColumns(page, [2, 0]);
+  r.check('Combine Part 3 + Part 1 keeps rows aligned', combinedB1.used === 2 && combinedB1.text === b1.combined, JSON.stringify(combinedB1));
+  r.check('Keep Empty Lines can be switched off', (await setSettingsCheckbox(page, 'Keep Empty Lines', false)) === false);
+  cols = await splitAndRead(page, b1.text, b1.separator, b1.skip);
+  r.check('Split B1: empty line skipped', JSON.stringify(cols) === JSON.stringify(b1.skip), JSON.stringify(cols));
+  r.check('Keep Empty Lines switched on again', (await setSettingsCheckbox(page, 'Keep Empty Lines', true)) === true);
+  await page.eval(`__t.page().querySelector('.combine-clear')?.click(); __t.set(__t.page().querySelector('.form-add-render input'), '_'); true`);
+  r.check('Split B1 checks without errors', errorsSince(n).length === 0, shortErrors(n));
 
   n = page.logs.length;
   await page.eval(`__t.nav('sort'); __t.set(__t.textareas()[0], 'b\\nc\\na'); true`);

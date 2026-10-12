@@ -1,0 +1,374 @@
+{
+  "description": "Shared split fixtures for the Rust engine (cargo test) and the JS engine (npm test). Defaults per case: useRegex=false, trimParts=false, keepEmptyLines=true. 'expected' applies to both engines; a case with a known engine difference uses 'expectedRust' + 'expectedJs' and must explain it in 'divergence'. Every expected result is column-major: expected[column][row].",
+  "cases": [
+    {
+      "name": "b1: column created in a later row is padded for earlier rows",
+      "input": "A,B\nC,D,E\nF,G",
+      "delimiter": ",",
+      "expected": [["A", "C", "F"], ["B", "D", "G"], ["", "E", ""]]
+    },
+    {
+      "name": "b1: new columns only in the last row",
+      "input": "A\nB\nC,D,E",
+      "delimiter": ",",
+      "expected": [["A", "B", "C"], ["", "", "D"], ["", "", "E"]]
+    },
+    {
+      "name": "b1: column count grows row by row",
+      "input": "a\nb,c\nd,e,f",
+      "delimiter": ",",
+      "expected": [["a", "b", "d"], ["", "c", "e"], ["", "", "f"]]
+    },
+    {
+      "name": "different column counts, widest row first",
+      "input": "A,B,C\nD\nE,F",
+      "delimiter": ",",
+      "expected": [["A", "D", "E"], ["B", "", "F"], ["C", "", ""]]
+    },
+    {
+      "name": "missing values in the last row (browser e2e input)",
+      "input": "a_b_c\nd_e_f\ng_h",
+      "delimiter": "_",
+      "expected": [["a", "d", "g"], ["b", "e", "h"], ["c", "f", ""]]
+    },
+    {
+      "name": "empty split field keeps its column",
+      "input": "A,,C",
+      "delimiter": ",",
+      "expected": [["A"], [""], ["C"]]
+    },
+    {
+      "name": "empty split fields in several rows",
+      "input": "A,,C\n,B,\n,,",
+      "delimiter": ",",
+      "expected": [["A", "", ""], ["", "B", ""], ["C", "", ""]]
+    },
+    {
+      "name": "only delimiters",
+      "input": ",,",
+      "delimiter": ",",
+      "expected": [[""], [""], [""]]
+    },
+    {
+      "name": "delimiter at start and end of a line",
+      "input": ",A,\nB",
+      "delimiter": ",",
+      "expected": [["", "B"], ["A", ""], ["", ""]]
+    },
+    {
+      "name": "text without delimiter gives one column",
+      "input": "Hello World\nFoo",
+      "delimiter": ",",
+      "expected": [["Hello World", "Foo"]]
+    },
+    {
+      "name": "multi-character delimiter",
+      "input": "a::b::c\nd::e",
+      "delimiter": "::",
+      "expected": [["a", "d"], ["b", "e"], ["c", ""]]
+    },
+    {
+      "name": "regex metacharacters are literal without useRegex",
+      "input": "a.b|c\nd.e",
+      "delimiter": ".",
+      "expected": [["a", "d"], ["b|c", "e"]]
+    },
+    {
+      "name": "empty input, keep empty lines",
+      "input": "",
+      "delimiter": ",",
+      "expectedRust": [],
+      "expectedJs": [[""]],
+      "divergence": "Line splitting: Rust str::lines() yields no line for an empty text, JS split('\\n') yields one empty line."
+    },
+    {
+      "name": "empty input, skip empty lines",
+      "input": "",
+      "delimiter": ",",
+      "keepEmptyLines": false,
+      "expected": []
+    },
+    {
+      "name": "empty input line is kept as a row",
+      "input": "A,B\n\nC,D",
+      "delimiter": ",",
+      "expected": [["A", "", "C"], ["B", "", "D"]]
+    },
+    {
+      "name": "empty input line is skipped",
+      "input": "A,B\n\nC,D",
+      "delimiter": ",",
+      "keepEmptyLines": false,
+      "expected": [["A", "C"], ["B", "D"]]
+    },
+    {
+      "name": "several empty input lines are skipped",
+      "input": "\n\nA,B\n\n\nC,D",
+      "delimiter": ",",
+      "keepEmptyLines": false,
+      "expected": [["A", "C"], ["B", "D"]]
+    },
+    {
+      "name": "kept empty line before a new column is padded",
+      "input": "A\n\nB,C",
+      "delimiter": ",",
+      "expected": [["A", "", "B"], ["", "", "C"]]
+    },
+    {
+      "name": "skipped empty line before a new column",
+      "input": "A\n\nB,C",
+      "delimiter": ",",
+      "keepEmptyLines": false,
+      "expected": [["A", "B"], ["", "C"]]
+    },
+    {
+      "name": "skipping empty lines keeps empty split fields",
+      "input": "A,,C\n\n,,",
+      "delimiter": ",",
+      "keepEmptyLines": false,
+      "expected": [["A", ""], ["", ""], ["C", ""]]
+    },
+    {
+      "name": "whitespace-only line is not an empty line",
+      "input": "A,B\n   \nC,D",
+      "delimiter": ",",
+      "keepEmptyLines": false,
+      "expected": [["A", "   ", "C"], ["B", "", "D"]]
+    },
+    {
+      "name": "whitespace-only line is not an empty line, even with trimParts",
+      "input": "A,B\n \t \nC,D",
+      "delimiter": ",",
+      "keepEmptyLines": false,
+      "trimParts": true,
+      "expected": [["A", "", "C"], ["B", "", "D"]]
+    },
+    {
+      "name": "leading and trailing empty lines, keep",
+      "input": "\nA,B\n\n",
+      "delimiter": ",",
+      "expectedRust": [["", "A", ""], ["", "B", ""]],
+      "expectedJs": [["", "A", "", ""], ["", "B", "", ""]],
+      "divergence": "Trailing newline: Rust str::lines() drops the empty line after the final '\\n', JS split('\\n') keeps it as a row."
+    },
+    {
+      "name": "leading and trailing empty lines, skip",
+      "input": "\nA,B\n\n",
+      "delimiter": ",",
+      "keepEmptyLines": false,
+      "expected": [["A"], ["B"]]
+    },
+    {
+      "name": "trailing LF, keep empty lines",
+      "input": "A,B\nC,D\n",
+      "delimiter": ",",
+      "expectedRust": [["A", "C"], ["B", "D"]],
+      "expectedJs": [["A", "C", ""], ["B", "D", ""]],
+      "divergence": "Trailing newline: Rust str::lines() drops the empty line after the final '\\n', JS split('\\n') keeps it as a row."
+    },
+    {
+      "name": "trailing LF, skip empty lines",
+      "input": "A,B\nC,D\n",
+      "delimiter": ",",
+      "keepEmptyLines": false,
+      "expected": [["A", "C"], ["B", "D"]]
+    },
+    {
+      "name": "CRLF without trailing newline, trimParts off",
+      "input": "A,B\r\nC,D",
+      "delimiter": ",",
+      "expectedRust": [["A", "C"], ["B", "D"]],
+      "expectedJs": [["A", "C"], ["B\r", "D"]],
+      "divergence": "CRLF: Rust str::lines() strips the '\\r', JS split('\\n') leaves it at the end of the last part of the line."
+    },
+    {
+      "name": "CRLF without trailing newline, trimParts on",
+      "input": "A,B\r\nC,D",
+      "delimiter": ",",
+      "trimParts": true,
+      "expected": [["A", "C"], ["B", "D"]]
+    },
+    {
+      "name": "CRLF with trailing newline, trimParts on",
+      "input": "A,B\r\nC,D\r\n",
+      "delimiter": ",",
+      "trimParts": true,
+      "expectedRust": [["A", "C"], ["B", "D"]],
+      "expectedJs": [["A", "C", ""], ["B", "D", ""]],
+      "divergence": "Trailing newline: Rust str::lines() drops the empty line after the final '\\r\\n', JS split('\\n') keeps it as a row."
+    },
+    {
+      "name": "CRLF empty line is kept",
+      "input": "A,B\r\n\r\nC,D",
+      "delimiter": ",",
+      "trimParts": true,
+      "expected": [["A", "", "C"], ["B", "", "D"]]
+    },
+    {
+      "name": "CRLF empty line is skipped",
+      "input": "A,B\r\n\r\nC,D",
+      "delimiter": ",",
+      "trimParts": true,
+      "keepEmptyLines": false,
+      "expected": [["A", "C"], ["B", "D"]]
+    },
+    {
+      "name": "CRLF trailing newline, skip empty lines",
+      "input": "A,B\r\nC,D\r\n",
+      "delimiter": ",",
+      "trimParts": true,
+      "keepEmptyLines": false,
+      "expected": [["A", "C"], ["B", "D"]]
+    },
+    {
+      "name": "unicode: umlauts, emojis and CJK",
+      "input": "Grüße,Straße\n😀,🎉,ß\n日本,語",
+      "delimiter": ",",
+      "expected": [["Grüße", "😀", "日本"], ["Straße", "🎉", "語"], ["", "ß", ""]]
+    },
+    {
+      "name": "unicode delimiter",
+      "input": "a→b→c\nä→ö",
+      "delimiter": "→",
+      "expected": [["a", "ä"], ["b", "ö"], ["c", ""]]
+    },
+    {
+      "name": "emoji delimiter",
+      "input": "x😀y\n😀z",
+      "delimiter": "😀",
+      "expected": [["x", ""], ["y", "z"]]
+    },
+    {
+      "name": "trimParts off keeps spaces",
+      "input": " A , B \n C,D ",
+      "delimiter": ",",
+      "expected": [[" A ", " C"], [" B ", "D "]]
+    },
+    {
+      "name": "trimParts on removes spaces",
+      "input": " A , B \n C,D ",
+      "delimiter": ",",
+      "trimParts": true,
+      "expected": [["A", "C"], ["B", "D"]]
+    },
+    {
+      "name": "trimParts on removes tabs and no-break spaces",
+      "input": "\tÄ , ü\t",
+      "delimiter": ",",
+      "trimParts": true,
+      "expected": [["Ä"], ["ü"]]
+    },
+    {
+      "name": "regex: digits as delimiter",
+      "input": "a1b22c",
+      "delimiter": "\\d+",
+      "useRegex": true,
+      "expected": [["a"], ["b"], ["c"]]
+    },
+    {
+      "name": "regex: whitespace as delimiter",
+      "input": "a  b\tc\nd e",
+      "delimiter": "\\s+",
+      "useRegex": true,
+      "expected": [["a", "d"], ["b", "e"], ["c", ""]]
+    },
+    {
+      "name": "regex: character class with later new column (b1)",
+      "input": "a;b\nc;d|e",
+      "delimiter": "[;|]",
+      "useRegex": true,
+      "expected": [["a", "c"], ["b", "d"], ["", "e"]]
+    },
+    {
+      "name": "regex: alternation of multi-character delimiters",
+      "input": "a::b--c",
+      "delimiter": "::|--",
+      "useRegex": true,
+      "expected": [["a"], ["b"], ["c"]]
+    },
+    {
+      "name": "regex: match at start and end of the line",
+      "input": ";a;",
+      "delimiter": ";",
+      "useRegex": true,
+      "expected": [[""], ["a"], [""]]
+    },
+    {
+      "name": "regex: trimParts with regex",
+      "input": " a ; b ",
+      "delimiter": ";",
+      "useRegex": true,
+      "trimParts": true,
+      "expected": [["a"], ["b"]]
+    },
+    {
+      "name": "regex: unicode text with ASCII class",
+      "input": "😀1🎉2ü",
+      "delimiter": "\\d",
+      "useRegex": true,
+      "expected": [["😀"], ["🎉"], ["ü"]]
+    },
+    {
+      "name": "regex: positive lookbehind",
+      "input": "1,a,2,b",
+      "delimiter": "(?<=\\d),",
+      "useRegex": true,
+      "expected": [["1"], ["a,2"], ["b"]]
+    },
+    {
+      "name": "regex: negative lookbehind (escaped delimiter)",
+      "input": "a\\,b,c\nd,e\\,f",
+      "delimiter": "(?<!\\\\),",
+      "useRegex": true,
+      "expected": [["a\\,b", "d"], ["c", "e\\,f"]]
+    },
+    {
+      "name": "regex: positive lookahead (zero-width split)",
+      "input": "aXbYc",
+      "delimiter": "(?=[XY])",
+      "useRegex": true,
+      "expected": [["a"], ["Xb"], ["Yc"]]
+    },
+    {
+      "name": "regex: lookbehind and lookahead combined",
+      "input": "1.000,50\n2.5",
+      "delimiter": "(?<=\\d)\\.(?=\\d{3})",
+      "useRegex": true,
+      "expected": [["1", "2.5"], ["000,50", ""]]
+    },
+    {
+      "name": "regex: empty lines are skipped in regex mode",
+      "input": "a1b\n\nc",
+      "delimiter": "\\d",
+      "useRegex": true,
+      "keepEmptyLines": false,
+      "expected": [["a", "c"], ["b", ""]]
+    },
+    {
+      "name": "regex: capture group",
+      "input": "a,b",
+      "delimiter": "(,)",
+      "useRegex": true,
+      "expectedRust": [["a"], ["b"]],
+      "expectedJs": [["a"], [","], ["b"]],
+      "divergence": "Capture groups: fancy-regex split drops captured text, JS String.prototype.split inserts every capture as an extra part (= extra column)."
+    },
+    {
+      "name": "regex: unicode word class",
+      "input": "Grüße Welt",
+      "delimiter": "\\W+",
+      "useRegex": true,
+      "expectedRust": [["Grüße"], ["Welt"]],
+      "expectedJs": [["Gr"], ["e"], ["Welt"]],
+      "divergence": "Unicode classes: \\w/\\W/\\d/\\s are Unicode-aware in fancy-regex, JS RegExp without the 'u' flag treats \\w as [A-Za-z0-9_]."
+    },
+    {
+      "name": "empty plain delimiter",
+      "input": "abc",
+      "delimiter": "",
+      "expectedRust": [[""], ["a"], ["b"], ["c"], [""]],
+      "expectedJs": [["a"], ["b"], ["c"]],
+      "divergence": "Empty delimiter: Rust str::split(\"\") yields an empty part before and after the characters, JS split('') yields only the characters."
+    }
+  ]
+}
