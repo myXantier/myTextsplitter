@@ -119,7 +119,9 @@ interface BaseConfig {
 interface SplitConfig extends BaseConfig {
   configParams: {
     trimParts: boolean,
-    useRegex: boolean
+    useRegex: boolean,
+    /** false: skip completely empty input lines (permanent setting `showEmptyLines`) */
+    keepEmptyLines: boolean
   };
 }
 

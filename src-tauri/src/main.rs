@@ -59,8 +59,9 @@ async fn process_text_block(
     delimiter: String,
     trimparts: bool,
     useregex: bool,
+    keepemptylines: bool,
 ) -> Result<ProcessedText<Vec<String>>, String> {
-    TextProcessor::process_text_block_to_column_strings(&text, &delimiter, trimparts, useregex)
+    TextProcessor::process_text_block_to_column_strings(&text, &delimiter, trimparts, useregex, keepemptylines)
         .map_err(|e| e.to_string())
 }
 

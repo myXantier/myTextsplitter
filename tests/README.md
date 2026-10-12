@@ -11,8 +11,36 @@ Chrome DevTools Protocol client (`tests/e2e/lib/cdp.mjs`).
 
 ## Unit tests (`npm test`)
 
-Fast and without browser or Tauri: they cover platform detection, listener/keyboard cleanup and
-validation/persistence of the browser settings. `window`/`document` are minimal in-memory stand-ins.
+Fast and without browser or Tauri: they cover platform detection, listener/keyboard cleanup,
+validation/persistence of the browser settings and the JS split engine (`src/utils/splitColumns.ts`,
+used by `SplitWorker` and the main-thread fallback). `window`/`document` are minimal in-memory stand-ins.
+
+## Split fixtures (`tests/fixtures/split-cases.json`)
+
+One fixture file for **both** split engines: `npm test` (JS, `tests/unit/split.test.ts`) and `cargo test`
+(Rust, `src-tauri/src/text_processor.rs`). Per case: `input`, `delimiter`, optional `useRegex`, `trimParts`,
+`keepEmptyLines` (defaults `false`, `false`, `true`) and the column-major result `expected[column][row]`.
+A known engine difference uses `expectedRust` + `expectedJs` and must be explained in `divergence`.
+
+Split semantics (both engines):
+
+- Every processed input row has exactly one value in every column; missing parts are `""` (B1).
+- Empty split fields (`A,,C`) are kept, so the column assignment stays intact.
+- `keepEmptyLines` = permanent setting `showEmptyLines` (Settings → Processing → "Keep Empty Lines",
+  default `true`). `false` skips **completely empty** input lines (for CRLF input also the line `"\r"`).
+  Whitespace-only lines are **not** empty and are always kept (with `trimParts` they become `""` values).
+
+Known differences between Rust and JS (unchanged existing behaviour, documented in the fixtures):
+
+| Topic | Rust (`fancy-regex`, `str::lines()`) | JS (`RegExp`, `split('\n')`) |
+|---|---|---|
+| Trailing newline / empty input | no row after the final line break; empty text = no rows | trailing line break adds an empty row; empty text = one empty row |
+| CRLF | `\r` removed | `\r` stays at the end of the last part (removed by `trimParts`) |
+| Regex capture groups | captured text is dropped | every capture becomes an extra column |
+| `\w`, `\W`, `\d`, `\s` | Unicode-aware | ASCII (no `u` flag) |
+| Empty plain delimiter | `""` before and after the characters | only the characters |
+
+With `keepEmptyLines = false` the trailing-newline and empty-input differences disappear.
 
 ## Integration tests
 
@@ -44,5 +72,10 @@ They drive the **real application** and are not part of `npm test`.
 
 ## Scope
 
-The integration tests check that the operations run and report results, not whether the results are
-correct. Known functional bugs (Split B1, Diff, Filter semantics) are therefore not encoded in these tests.
+Split and Combine are checked with concrete results in both integration tests (late columns / B1,
+empty lines kept and skipped, Combine without row offset; Tauri: Rust backend and JS mode). For Sort,
+Filter, Remove and Diff the integration tests only check that the operations run and report results;
+known functional bugs (Diff, Filter semantics) are not encoded in these tests.
+
+The Tauri test switches "Keep Empty Lines" explicitly, because an existing `settings.json` may still
+contain `showEmptyLines: false` (the default before the option was wired to Split).

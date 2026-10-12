@@ -111,18 +111,18 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
                 onChange={(val) => setPermanentSetting('showLineNumbers', val)}
                 label="Show Line Numbers"
               />
-
-              <Checkbox
-                checked={showEmptyLines}
-                onChange={(val) => setPermanentSetting('showEmptyLines', val)}
-                label="Show Empty Lines"
-              />
             </div>
           </section>
 
           <section className="settings-section">
             <h3>Processing</h3>
             <div className="settings-group">
+              {/* Setting key stays `showEmptyLines`; it controls whether Split keeps empty input lines */}
+              <Checkbox
+                checked={showEmptyLines !== false}
+                onChange={(val) => setPermanentSetting('showEmptyLines', val)}
+                label="Keep Empty Lines"
+              />
               <CustomSelect
                 label="Processing Mode"
                 items={itemsProcessMode}
