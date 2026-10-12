@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import AppBorders from './components/AppBorders';
 import Header from './components/Header';
 import LeftMenuBar from './components/LeftMenuBar';
@@ -7,11 +6,16 @@ import { invoke } from '@tauri-apps/api/core';
 import { getOsName } from './utils/osName';
 import { useSettings } from './hooks/useSettings';
 import { PageKey } from './config/pages';
+import { getAppWindow, listenSafely, disableWebFunctions, shouldDisableWebFunctions } from './platform/platform';
 
 const osType = getOsName();
 
+// Tauri window, null in the browser
+const appWindow = getAppWindow();
+
 // Set DropShadow
-if (osType == 'Windows') invoke('set_window_shadow');
+if (appWindow && osType == 'Windows')
+  invoke('set_window_shadow').catch((err) => console.warn('⚠️ Could not set window shadow:', err));
 
 export default function App() {
   useEffect(() => {
@@ -45,63 +49,66 @@ export default function App() {
     updateAppName();
   }, [isAppMaximized, appName, pageName, theme]);
 
-  const appWindow = getCurrentWindow();
+  useEffect(() => {
+    if (!appWindow) return;
+    const win = appWindow;
 
-  // Check if window is Maximized or Restored
-  appWindow.onResized(async () => {
-    const isMaximized = await appWindow.isMaximized();
-    setAppBorderRadius(isMaximized);
-  });
+    // Check if window is Maximized or Restored
+    const stopResized = listenSafely(() =>
+      win.onResized(() => {
+        win.isMaximized().then(setAppBorderRadius).catch(console.warn);
+      })
+    );
 
-  // OnFocus
-  appWindow.onFocusChanged(async ({ payload: focus }) => setFocus(focus));
+    // OnFocus
+    const stopFocusChanged = listenSafely(() => win.onFocusChanged(({ payload: focus }) => setFocus(focus)));
+
+    return () => {
+      stopResized();
+      stopFocusChanged();
+    };
+  }, []);
 
   // Check if is Maximized when open
   async function setMaximized() {
-    if (await appWindow.isMaximized()) {
-      setAppBorderRadius(true);
+    if (!appWindow) return;
+    try {
+      if (await appWindow.isMaximized()) {
+        setAppBorderRadius(true);
+      }
+    } catch (err) {
+      console.warn('⚠️ Could not read window state:', err);
     }
   }
 
-  // Set appName on taskbar
+  // Set appName on taskbar (browser: tab title)
   async function updateAppName() {
-    await appWindow.setTitle(`${appName}: ${pageName}`);
+    const title = `${appName}: ${pageName}`;
+    if (!appWindow) {
+      document.title = title;
+      return;
+    }
+    try {
+      await appWindow.setTitle(title);
+    } catch (err) {
+      console.warn('⚠️ Could not set window title:', err);
+    }
   }
 
-  // Prevent context menu and shortcuts
-  function disable_web_functions() {
-    document.addEventListener('contextmenu', (event) => event.preventDefault());
-    document.onkeydown = function (e) {
-      switch (e.key) {
-        case 'r': // Reload
-        case 'R': // Reload
-        case 'p': // Print
-        case 'P': // Print
-        case 'f': // Search
-        case 'F': // Search
-          if (e.ctrlKey) e.preventDefault();
-          break;
-        case 'F3': // Search
-        case 'F5': // Reload
-        case 'F7':
-          e.preventDefault();
-          break;
-      }
-    };
-  }
+  // Prevent context menu and shortcuts (desktop only)
+  useEffect(() => {
+    if (shouldDisableWebFunctions(osType)) return disableWebFunctions();
+  }, []);
 
-  if (window.location.hostname !== 'localhost') {
-    disable_web_functions();
-  } else if (osType == 'Linux' || osType == 'MacOS') {
-    disable_web_functions();
-  }
+  // Rounded, transparent window frame is only drawn by the Linux desktop app
+  const hasFrameMargin = appWindow !== null && osType === 'Linux' && !isAppMaximized;
 
   return (
     <AppBorders
       isMaximized={isAppMaximized}
       focus={focus}
-      margin={osType === 'Linux' && !isAppMaximized ? theme.settings.appBorderMargin : '0'}
-      borderRadius={osType === 'Linux' && !isAppMaximized ? theme.settings.appBorderRadius : '0'}
+      margin={hasFrameMargin ? theme.settings.appBorderMargin : '0'}
+      borderRadius={hasFrameMargin ? theme.settings.appBorderRadius : '0'}
       className="app"
       isVisible={true}
     >

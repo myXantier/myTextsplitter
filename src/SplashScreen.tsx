@@ -1,14 +1,17 @@
 import { useEffect, useState } from 'react';
 import ThemeProvider from './components/MEINS/ThemeProvider';
 import { invoke } from '@tauri-apps/api/core';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import CircularProgressBar from './components/CircularProgressBar';
 import { getOsName } from './utils/osName';
 import { light, dark } from './Themes';
 import { useSettings } from './hooks/useSettings';
 import { MyAppLogo } from './components/SvgIcons';
+import { getAppWindow, listenSafely, disableWebFunctions, shouldDisableWebFunctions } from './platform/platform';
 
 const osType = getOsName();
+
+// Tauri window, null in the browser
+const appWindow = getAppWindow();
 
 export default function SplashScreen() {
   const dots = ['.', '..', '...'];
@@ -38,53 +41,39 @@ export default function SplashScreen() {
         setPercentage(Math.trunc(percentage + ui.splashScreenUpdateSteps));
       }, ui.splashScreenUpdateMilliseconds);
       return () => clearInterval(timer);
-    } else {
-      invoke('close_splashscreen');
+    } else if (appWindow) {
+      invoke('close_splashscreen').catch((err) => console.error('❌ Could not close splashscreen:', err));
     }
   }, [percentage, theme]);
 
-  const appWindow = getCurrentWindow();
-
-  // Set appName on taskbar
-  async function updateAppName() {
-    await appWindow.setTitle(`${ui.appName}: ${ui.splashScreenLoadingText}`);
-  }
-  updateAppName();
+  // Set appName on taskbar (browser: tab title)
+  useEffect(() => {
+    const title = `${ui.appName}: ${ui.splashScreenLoadingText}`;
+    if (!appWindow) {
+      document.title = title;
+      return;
+    }
+    appWindow.setTitle(title).catch((err) => console.warn('⚠️ Could not set window title:', err));
+  }, []);
 
   // Update theme when user changes in OS
-  appWindow.onThemeChanged(() => {
-    appWindow.theme().then((theme) => {
-      theme == 'dark' ? setTheme(dark) : setTheme(light);
-    });
-  });
+  useEffect(() => {
+    if (!appWindow) return;
+    const win = appWindow;
+    return listenSafely(() =>
+      win.onThemeChanged(() => {
+        win
+          .theme()
+          .then((theme) => (theme == 'dark' ? setTheme(dark) : setTheme(light)))
+          .catch(console.warn);
+      })
+    );
+  }, []);
 
-  // Prevent context menu and shortcuts
-  function disable_web_functions() {
-    document.addEventListener('contextmenu', (event) => event.preventDefault());
-    document.onkeydown = function (e) {
-      switch (e.key) {
-        case 'r': // Reload
-        case 'R': // Reload
-        case 'p': // Print
-        case 'P': // Print
-        case 'f': // Search
-        case 'F': // Search
-          if (e.ctrlKey) e.preventDefault();
-          break;
-        case 'F3': // Search
-        case 'F5': // Reload
-        case 'F7':
-          e.preventDefault();
-          break;
-      }
-    };
-  }
-
-  if (window.location.hostname !== 'localhost') {
-    disable_web_functions();
-  } else if (osType == 'Linux' || osType == 'MacOS') {
-    disable_web_functions();
-  }
+  // Prevent context menu and shortcuts (desktop only)
+  useEffect(() => {
+    if (shouldDisableWebFunctions(osType)) return disableWebFunctions();
+  }, []);
 
   return (
     <ThemeProvider theme={theme}>

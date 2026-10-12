@@ -9,6 +9,7 @@ import {
   setPermanentSetting,
 } from '../hooks/useSettings';
 import { convertTextCase } from '../utils/ConvertTextCase';
+import { isDesktop } from '../platform/platform';
 import './styles/SettingsModalStyle.css';
 
 interface SettingsModalProps {
@@ -43,7 +44,8 @@ export default function SettingsModal({ isOpen, onClose }: SettingsModalProps) {
     { label: 'XL', value: 'text-lg', index: 3 },
   ];
 
-  const itemsProcessMode: Item<processModes>[] = createItems('fallback', 'backend');
+  // The Rust backend is only available in the desktop app
+  const itemsProcessMode: Item<processModes>[] = isDesktop() ? createItems('fallback', 'backend') : createItems('fallback');
 
   const itemsLanguage: Item<language>[] = [
     { label: 'English', value: 'en', index: 0 },
