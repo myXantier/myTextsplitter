@@ -1,5 +1,6 @@
 import { create } from 'zustand';
-import { isTauri, invoke } from '@tauri-apps/api/core';
+import { isDesktop } from '../platform/platform';
+import { loadPersistedSettings, savePersistedSettings, permanentSettingsSchema } from '../platform/settingsStorage';
 import { dark, myTheme } from '../Themes';
 import type { PageKey } from '../config/pages';
 
@@ -71,7 +72,7 @@ const defaultPermanent: SaveAppSettings = {
 };
 
 const defaultRuntime: AppSettings = {
-  processingMode: isTauri() ? 'backend' : 'fallback',
+  processingMode: isDesktop() ? 'backend' : 'fallback',
   multipleSeparators: false,
   useRegex: false,
   autoSplit: false,
@@ -100,6 +101,15 @@ const defaultUi: UiSettings = {
   splashScreenUpdateSteps: 2,
 };
 
+// The Rust backend only exists on desktop; in the browser the JS mode is the only valid one
+function withAvailableMode(settings: Partial<AppSettings>): Partial<AppSettings> {
+  if (settings.processingMode === 'backend' && !isDesktop()) {
+    console.warn('⚠️ Backend processing is not available in the browser, using fallback.');
+    return { ...settings, processingMode: 'fallback' };
+  }
+  return settings;
+}
+
 // STORE
 export const useSettings = create<SettingsStore>((set, get) => ({
   permanent: defaultPermanent,
@@ -110,11 +120,11 @@ export const useSettings = create<SettingsStore>((set, get) => ({
   setPermanent: (newSettings) => {
     const updated = { ...get().permanent, ...newSettings };
     set({ permanent: updated });
-    invoke('set_settings', { newsettings: updated }).catch(console.error);
+    savePersistedSettings(updated).catch(console.error);
   },
 
   setRuntime: (newSettings) => {
-    set((state) => ({ runtime: { ...state.runtime, ...newSettings } }));
+    set((state) => ({ runtime: { ...state.runtime, ...withAvailableMode(newSettings) } }));
   },
 
   setTheme: (newTheme) => {
@@ -131,10 +141,10 @@ export const useSettings = create<SettingsStore>((set, get) => ({
 
   loadSettings: async () => {
     try {
-      const saved = await invoke<SaveAppSettings>('get_settings');
+      const saved = await loadPersistedSettings(permanentSettingsSchema);
       if (saved) {
         set((state) => ({ permanent: { ...state.permanent, ...saved } }));
-        const themeToApply = saved.isDarkMode ? dark : dark.getNextTheme();
+        const themeToApply = (saved.isDarkMode ?? defaultPermanent.isDarkMode) ? dark : dark.getNextTheme();
         get().setTheme(themeToApply);
       }
     } catch (err) {
@@ -169,7 +179,7 @@ export function setRuntimeSetting<K extends keyof RuntimeTypeMap>(key: K, value:
   useSettings.setState((state) => ({
     runtime: {
       ...state.runtime,
-      [key]: value,
+      ...withAvailableMode({ [key]: value }),
     },
   }));
 }

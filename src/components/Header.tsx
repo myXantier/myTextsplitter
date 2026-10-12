@@ -2,12 +2,11 @@ import React, { useState } from 'react';
 import Switch from 'react-switch';
 import { shadeColor } from '../utils/helper';
 import IconRoundedButton from './IconRoundedButton';
-import { getCurrentWindow } from '@tauri-apps/api/window';
 import { getOsName } from '../utils/osName';
 import SettingsModal from './SettingsModal';
 import { MyAppLogo, SvgIconClose, SvgIconMaximize, SvgIconMinimize, SvgIconRestore, SvgIconSettings } from './SvgIcons';
 import { useSettings } from '../hooks/useSettings';
-import { isTauriCheck } from '../services/Services';
+import { getAppWindow } from '../platform/platform';
 import './styles/HeaderStyle.css';
 
 interface Props {
@@ -35,7 +34,8 @@ export default function Header({
     '--header-opacity': focus ? '1' : '0.5',
   } as React.CSSProperties;
 
-  const appWindow = (osType !== 'MacOS' && isTauriCheck()) ? getCurrentWindow() : null;
+  // Window controls only exist in the desktop app (null in the browser)
+  const appWindow = osType !== 'MacOS' ? getAppWindow() : null;
 
   // SvgIcons
   const svgIconMinimize = <SvgIconMinimize size="14" />;
