@@ -4,6 +4,7 @@ export default {
       toggle: 'Switch language',
     },
     appName: 'Text Splitter',
+    'Edit Column': 'Edit Column',
     tabs: {
       splitter: 'Text Splitter',
       diff: 'Text Diff',
@@ -121,6 +122,7 @@ export default {
       saveError: 'Failed to save file',
       copyError: 'Failed to copy to clipboard',
       processingError: 'Error processing text',
+      textRequired: 'Please enter some text',
     },
     textDiff: {
       options: {
@@ -132,6 +134,8 @@ export default {
       process: 'Compare Lines',
       oldTextPlaceholder: 'Paste your original text here or open a file...',
       newTextPlaceholder: 'Paste your new text here or open a file...',
+      processed: 'Texts compared successfully',
+      emptyLine: '(empty line)',
     },
     removeLines: {
       modes: {
@@ -177,6 +181,7 @@ export default {
     processing: {
       status: {
         processing: 'Processing...',
+        ready: 'Ready',
       },
       mode: {
         backend: 'Backend',
@@ -190,6 +195,9 @@ export default {
         },
         memory: {
           tooltip: 'Memory usage',
+        },
+        size: {
+          tooltip: 'Input size / output size',
         },
       },
     },

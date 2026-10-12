@@ -4,6 +4,7 @@ export default {
       toggle: 'Sprache wechseln'
     },
     appName: 'Text Splitter',
+    'Edit Column': 'Spalte bearbeiten',
     tabs: {
       splitter: 'Text Splitter',
       diff: 'Text Vergleich',
@@ -120,7 +121,8 @@ export default {
       readError: 'Fehler beim Lesen der Datei',
       saveError: 'Fehler beim Speichern der Datei',
       copyError: 'Fehler beim Kopieren in die Zwischenablage',
-      processingError: 'Fehler bei der Verarbeitung'
+      processingError: 'Fehler bei der Verarbeitung',
+      textRequired: 'Bitte geben Sie einen Text ein'
     },
     textDiff: {
       options: {
@@ -132,6 +134,8 @@ export default {
       process: 'Zeilen vergleichen',
       oldTextPlaceholder: 'Original Text hier einfügen oder als Datei öffnen...',
       newTextPlaceholder: 'Neuen Text hier einfügen oder als Datei öffnen...',
+      processed: 'Texte erfolgreich verglichen',
+      emptyLine: '(leere Zeile)',
     },
     removeLines: {
       modes: {
@@ -176,7 +180,8 @@ export default {
     },
     processing: {
       status: {
-        processing: 'Verarbeite...'
+        processing: 'Verarbeite...',
+        ready: 'Bereit'
       },
       mode: {
         backend: 'Backend',
@@ -190,6 +195,9 @@ export default {
         },
         memory: {
           tooltip: 'Speicherverbrauch'
+        },
+        size: {
+          tooltip: 'Eingabegröße / Ausgabegröße'
         }
       }
     }

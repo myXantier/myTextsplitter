@@ -200,13 +200,15 @@ fn main() {
             let window = app.get_webview_window("main").expect("Fenster nicht gefunden"); 
 
             // Fenstergröße & Position beim Start wiederherstellen
+            // Position = äußere Position (passend zu outer_position), Größe = innere Größe (passend zu inner_size).
+            // Beide unabhängig, da z. B. Wayland keine Fensterposition liefert/setzt.
             {
                 let settings = settings_state.lock().unwrap();
                 if let Some((x, y)) = settings.window_position {
-                    if let Some((w, h)) = settings.window_size {
-                        let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
-                        let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width: w, height: h }));
-                    }
+                    let _ = window.set_position(tauri::Position::Physical(tauri::PhysicalPosition { x, y }));
+                }
+                if let Some((w, h)) = settings.window_size {
+                    let _ = window.set_size(tauri::Size::Physical(tauri::PhysicalSize { width: w, height: h }));
                 }
             }
 
@@ -221,10 +223,16 @@ fn main() {
                     let window_clone = window.clone();
 
                     std::thread::spawn(move || {
-                        if let Ok(position) = window_clone.outer_position() {
-                            if let Ok(size) = window_clone.outer_size() {
-                                let mut settings = state_clone.lock().unwrap();
+                        // Maximiert/minimiert nicht speichern, damit die zuletzt gespeicherte Normalgröße erhalten bleibt
+                        let is_maximized = window_clone.is_maximized().unwrap_or(false);
+                        let is_minimized = window_clone.is_minimized().unwrap_or(false);
+                        if !is_maximized && !is_minimized {
+                            let mut settings = state_clone.lock().unwrap();
+                            if let Ok(position) = window_clone.outer_position() {
                                 settings.window_position = Some((position.x, position.y));
+                            }
+                            // inner_size, da set_size beim Start die innere Größe setzt
+                            if let Ok(size) = window_clone.inner_size() {
                                 settings.window_size = Some((size.width, size.height));
                             }
                         }

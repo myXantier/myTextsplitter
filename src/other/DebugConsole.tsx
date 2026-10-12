@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef, useMemo, useCallback } from 'react';
-import { debugConsole, LogEntry, LogLevel } from './debugConsole';
+import { debugConsole, LogEntry, LogLevel } from './debugConsoleManager';
 import {
   X,
   Search,
