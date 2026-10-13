@@ -2,7 +2,7 @@ export { SplitService } from './SplitService';
 export { DiffService } from './DiffService';
 export { FilterService } from './FilterService';
 export { RemoveService } from './RemoveService';
-import { isTauri, invoke, InvokeArgs } from '@tauri-apps/api/core';
+import { isTauri, invoke } from '@tauri-apps/api/core';
 
 export function isTauriCheck() {
   return isTauri();

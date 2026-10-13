@@ -125,13 +125,16 @@ export default function LeftMenuBar({ setPageName }: LeftMenuBarProps) {
         const { invokeUNSAFE } = await import('../services/tauriInvoke');
 
         const textToAdd = splitResults[columnIndex].join('\n');
-        const newText = await invokeUNSAFE<string>('connect_texts', {
+        // Rejects on a failed command (caught below); the combine state is only changed by a valid text
+        const newText = await invokeUNSAFE<unknown>('connect_texts', {
           text1: combinedText,
           text2: textToAdd,
           separator: combinedText ? combineSeparator : '',
         });
 
-        console.log("newText:", newText);
+        if (typeof newText !== 'string') {
+          throw new Error(`connect_texts returned ${typeof newText}`);
+        }
 
         if (newText && newText !== combinedText) {
           setCombineState({

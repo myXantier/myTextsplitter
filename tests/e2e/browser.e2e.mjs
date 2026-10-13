@@ -10,7 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, sleep } from './lib/cdp.mjs';
-import { SPLIT_CASES, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
+import { SPLIT_CASES, checkProcessingErrors, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
@@ -195,6 +195,9 @@ async function testApp(page, url) {
   await page.eval(`__t.page().querySelector('.mode-toggle').click(); true`);
   await sleep(300);
   r.check('Mode toggle stays in JS mode', (await page.eval(`!!__t.page().querySelector('.mode-toggle .fallback-icon')`)) && errorsSince(n).length === 0);
+
+  // --- Error paths (Paket 4): invalid regex and empty results in Filter/Remove (Web Worker) ---
+  await checkProcessingErrors(page, r, 'JS', errorsSince);
 
   // --- Error path: an invalid regex must be reported as error, not as success ---
   await page.eval(`__t.nav('split'); true`);

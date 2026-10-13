@@ -11,6 +11,7 @@ import { useBackendProcessor } from '../hooks/useBackendProcessor';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
 import useSnackbar from '../hooks/useSnackbar';
+import { processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import './styles/FilterPageStyle.css';
 
 interface FilterPageProps {
@@ -44,9 +45,7 @@ export default function FilterPage({
         return;
       }
 
-      setShowResult(true);
-      setResultText('');
-
+      // The previous result stays until the new one is available (not replaced on failure)
       try {
         const result = await filterText({
           sourceText,
@@ -58,17 +57,12 @@ export default function FilterPage({
           },
         });
 
-        const convertedRes = window.myResultConverter<string>(result);
-
-        if (convertedRes.status === 'ok') {
-          setResultText(convertedRes.data);
-          snackbar.success(t('textFilter.processed'));
-        } else {
-          throw convertedRes.error;
-        }
+        // An empty text is a valid result (all lines filtered out)
+        setResultText(unwrapResult(window.myResultConverter(result, 'Text')));
+        setShowResult(true);
+        snackbar.success(t('textFilter.processed'));
       } catch (error) {
-        window.logger.error('Error filtering text:', error);
-        snackbar.error(t('errors.processingError'));
+        snackbar.error(processingErrorMessage(error, t));
       }
     },
     [sourceText, options, filterText, t]

@@ -1,74 +1,41 @@
-export default function changeResultType<T extends AllowedResultTypes>(
-  myresult: myResult,
-  defaultValue: T | null = null
-): Result<T, Error> {
-  const outType = myresult.type;
-  const data = myresult.result;
+import { matchesResultType, type ResultData, type ResultType } from '../services/ProcessingError';
 
-  try {
-    // falls der Typ bereits passt
+type Converter = (data: never) => unknown;
 
-    if (outType === 'TextV2') return { status: 'ok', data: myresult.result as T };
+/** Supported conversions `from -> to` (same type: no conversion, only validation). */
+const CONVERSIONS: Partial<Record<ResultType, Partial<Record<ResultType, Converter>>>> = {
+  Text: { Column: (data: string) => data.split('\n') },
+  Column: {
+    Text: (data: string[]) => data.join('\n'),
+    // every entry is one column with '\n'-separated values
+    ColumnList: (data: string[]) => data.map((column) => column.split('\n')),
+  },
+  ColumnList: {
+    Column: (data: string[][]) => data.flat(),
+    Text: (data: string[][]) => data.flat().join('\n'),
+  },
+};
 
-    if (!isStringArray(data) && outType === 'Text') return { status: 'ok', data: myresult.result as T };
-    if (isStringArray(data) && !isStringArrayArray(data) && outType === 'Column')
-      return { status: 'ok', data: myresult.result as T };
-    if (isStringArrayArray(data) && outType === 'ColumnList') return { status: 'ok', data: myresult.result as T };
+/**
+ * Returns the data of `myresult` as `target` type. The target is a runtime value (a generic type parameter
+ * alone cannot be checked at runtime). The data is validated against its declared type and the converted
+ * value against the target type; anything else (unknown type, wrong data, unsupported conversion) is an error.
+ */
+export default function changeResultType<K extends ResultType>(myresult: myResult, target: K): Result<ResultData[K], Error> {
+  const source = myresult?.type;
+  const data: unknown = myresult?.result;
 
-    if (
-      (data as ProcessedText<string>) ||
-      (data as { result_text: string; removed_lines: number } as ProcessedText<string>)
-    ) {
-      return { status: 'ok', data: myresult.result as T };
-    } else if (isStringArrayArray(data)) {
-    } else if (isStringArray(data)) {
-    } else if (typeof data === 'string' && !Array.isArray(data)) {
-    }
-
-    switch (outType) {
-      case 'Text': // date => string
-        if (Array.isArray({} as T)) return { status: 'ok', data: (defaultValue as string)?.split('\n') as T }; // to string[]
-        break;
-
-      case 'Column': // date => string[]
-        if (isStringArray(defaultValue)) {
-          if (typeof ({} as T) === 'string')
-            return { status: 'ok', data: (defaultValue as string[])?.join('\n') as T }; // to string
-          else if (Array.isArray({} as T))
-            return { status: 'ok', data: (defaultValue as string[])?.map((c) => c.split('\n')) as T }; // to string[][]
-        }
-        break;
-
-      case 'ColumnList': // date => string[][]
-        if (isStringArrayArray(defaultValue)) {
-          if (Array.isArray({} as T))
-            return {
-              status: 'ok',
-              data: (defaultValue as string[][]).reduce((acc, cur) => acc.concat(cur), []) as T,
-            };
-          // to string[]
-          else if (typeof ({} as T) === 'string')
-            return {
-              status: 'ok',
-              data: (defaultValue as string[][]).reduce((acc, cur) => acc.concat(cur), []).join('\n') as T,
-            }; // to string
-        }
-        break;
-
-      // default:
-      //   throw new Error(`Konvertierung von Typ zu ${typeof ({} as T)} nicht unterstützt.`);
-    }
-  } catch (error) {
-    return { status: 'error', error: error as Error };
+  if (!source || !matchesResultType(source, data)) {
+    return { status: 'error', error: new Error(`Invalid result: data does not match type ${String(source)}`) };
   }
 
-  return { status: 'ok', data: defaultValue || ({} as T) };
-}
-
-function isStringArray(data: unknown): data is string[] {
-  return Array.isArray(data) && data.every((item) => typeof item === 'string');
-}
-
-function isStringArrayArray(data: unknown): data is string[][] {
-  return Array.isArray(data) && data.every(isStringArray);
+  try {
+    const converted = source === target ? data : CONVERSIONS[source]?.[target]?.(data as never);
+    if (converted === undefined || !matchesResultType(target, converted)) {
+      return { status: 'error', error: new Error(`Unsupported result conversion: ${source} -> ${target}`) };
+    }
+    return { status: 'ok', data: converted as ResultData[K] };
+  } catch (error) {
+    return { status: 'error', error: error instanceof Error ? error : new Error(String(error)) };
+  }
 }

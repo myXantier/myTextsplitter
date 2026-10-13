@@ -1,4 +1,12 @@
 import { isBackend } from './Services';
+import {
+  ProcessingError,
+  ERROR_KEYS,
+  assertResult,
+  isProcessingErrorKind,
+  toProcessingError,
+  type ResultType,
+} from './ProcessingError';
 
 export type WorkerType = 'split' | 'diff' | 'filter' | 'remove';
 
@@ -29,6 +37,8 @@ export abstract class BaseService implements IBaseService {
   protected metrics: ProcessMetrics | null = null;
   protected lastMetrics: ProcessMetrics[] = [];
   protected type: WorkerType;
+  /** Result type of this service; every result (backend, worker, main thread) is checked against it. */
+  protected abstract readonly resultType: ResultType;
 
   constructor(type: WorkerType) {
     this.type = type;
@@ -105,21 +115,30 @@ export abstract class BaseService implements IBaseService {
     return this.metrics;
   }
 
+  /**
+   * Resolves with a result of `resultType` (validated at runtime, may be empty) or rejects with a
+   * `ProcessingError`. There is no automatic fallback to another processing path: errors are reported as they are.
+   */
   async invoke(args: BaseConfig, tryBackend?: boolean): Promise<myResult> {
-    // debugger;
-
     const inBackend = tryBackend ?? (await this.isAvailable());
-    if (inBackend) {
-      window.logger.debug('BaseService.invokeBackend');
-      return await this.invokeBackend(args);
-    } else {
-      if (WORKERS_SUPPORTED) {
+    let result: myResult;
+
+    try {
+      if (inBackend) {
+        window.logger.debug('BaseService.invokeBackend');
+        result = await this.invokeBackend(args);
+      } else if (WORKERS_SUPPORTED) {
         window.logger.debug('BaseService.frontendWithWorker');
-        return await this.frontendWithWorker(args);
+        result = await this.frontendWithWorker(args);
+      } else {
+        window.logger.debug('BaseService.frontendInMainThread');
+        result = await this.frontendInMainThread(args);
       }
-      window.logger.debug('BaseService.frontendInMainThread');
-      return await this.frontendInMainThread(args);
+    } catch (error) {
+      throw toProcessingError(error, inBackend ? 'backend' : 'worker');
     }
+
+    return assertResult(result, this.resultType);
   }
 
   protected abstract invokeBackend(args: BaseConfig): Promise<myResult>;
@@ -130,7 +149,8 @@ export abstract class BaseService implements IBaseService {
       const worker = pool.pop() || workerConstructors[this.type]();
 
       if (!(worker instanceof Worker)) {
-        throw new Error(`Worker-Instanz für ${this.type} konnte nicht erstellt werden!`);
+        reject(new ProcessingError('worker', ERROR_KEYS.general, `Worker-Instanz für ${this.type} konnte nicht erstellt werden!`));
+        return;
       }
       worker.isWorking = true;
 
@@ -140,7 +160,7 @@ export abstract class BaseService implements IBaseService {
       let timeoutId = setTimeout(() => {
         window.logger.warn(`⏳ Timeout! Worker (${this.type}) antwortet nicht.`);
         cleanup(false);
-        reject(new Error('Processing timeout'));
+        reject(new ProcessingError('timeout', ERROR_KEYS.timeout, `worker (${this.type}) did not answer`));
       }, this.workerTimeouts[this.type]);
 
       const cleanup = (reuse = true) => {
@@ -168,61 +188,58 @@ export abstract class BaseService implements IBaseService {
 
       let startTime = 0;
 
-      worker.onmessage = async (e) => {
-        window.logger.debug('💬 Worker-Antwort erhalten:', e.data);
+      worker.onmessage = (e) => {
+        const data = e.data;
+        // Only the message type is logged: results contain the user's text
+        window.logger.debug(`💬 Worker-Antwort erhalten (${this.type}): ${data?.type}`);
 
-        if (e.data.type === 'progress') {
-          window.logger.debug(`🔄 Fortschritt: ${e.data.progress}%`);
+        if (data?.type === 'progress') {
+          window.logger.debug(`🔄 Fortschritt: ${data.progress}%`);
           return; // 🔥 Progress-Updates ignorieren
         }
 
         clearTimeout(timeoutId);
         cleanup();
 
-        if (e.data.success) {
-          if (e.data.result && e.data.result.type) {
-            // Wenn ein myResult zurückkommt, korrekt parsen
-            this.updateMetrics(performance.now() - startTime, JSON.stringify(args), JSON.stringify(e.data.result));
-            resolve(e.data.result);
-          } else {
-            reject(new Error(`Ungültiger Rückgabetyp (${e.data.result.type}) von Worker`));
+        if (data?.success === true) {
+          try {
+            const result = assertResult(data.result, this.resultType);
+            this.updateMetrics(performance.now() - startTime, JSON.stringify(args), JSON.stringify(result));
+            resolve(result);
+          } catch (error) {
+            reject(error);
           }
+        } else if (data?.success === false) {
+          // Errors thrown as `ProcessingError` in the worker keep their kind and message key
+          reject(
+            isProcessingErrorKind(data.errorKind)
+              ? new ProcessingError(data.errorKind, String(data.error), data.errorDetail)
+              : new ProcessingError('worker', ERROR_KEYS.general, typeof data.error === 'string' ? data.error : undefined)
+          );
         } else {
-          reject(new Error(e.data.error || 'errors.processingError'));
+          reject(new ProcessingError('invalidResult', ERROR_KEYS.general, `unexpected worker message (${this.type})`));
         }
       };
 
-      worker.onerror = async (e) => {
-        window.logger.error('❌ Worker-Fehler:', e);
+      worker.onerror = (e) => {
         clearTimeout(timeoutId);
         cleanup(false);
-        reject(new Error(e.message || 'Worker error'));
+        reject(new ProcessingError('worker', ERROR_KEYS.general, e.message || 'Worker error'));
       };
 
       try {
         startTime = performance.now();
-        window.logger.debug('📤 Sende Nachricht an Worker:', args); // 🛠 Debugging: Zeigt, was genau geschickt wird
+        window.logger.debug(`📤 Sende Nachricht an Worker (${this.type})`);
         worker.postMessage({ args });
       } catch (error) {
+        clearTimeout(timeoutId);
         cleanup(false);
-        reject(error instanceof Error ? error : new Error('Failed to start processing'));
+        reject(toProcessingError(error, 'worker'));
       }
     });
   }
 
   protected abstract frontendInMainThread(args: BaseConfig): Promise<myResult>;
-  
-  protected convertToMyResult<T extends AllowedResultTypes>(data: T): MyResultType<T> {
-    const isNull = !data || (Array.isArray(data) && data.length === 0);
-
-    return {
-      type: Array.isArray(data) ? (Array.isArray(data[0]) ? 'ColumnList' : 'Column') : 'Text',
-      result: data,
-      isNull,
-      abort: false,
-      __brand: 'myResult',
-    } as MyResultType<T>;
-  }
 
   public async isAvailable(): Promise<boolean> {
     try {

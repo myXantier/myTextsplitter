@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useProcessingState } from './useProcessingState';
 import { SplitService, DiffService, FilterService, RemoveService, isBackend } from '../services/Services';
 import { BaseService } from '../services/BaseService';
+import { logProcessingError, toProcessingError } from '../services/ProcessingError';
 import { useTextBuffer } from './useTextBuffer';
 import { useRuntimeSetting, setRuntimeSetting } from '../hooks/useSettings';
 
@@ -32,12 +33,15 @@ export function useBackendProcessor() {
     else setRuntimeSetting('processingMode', 'fallback');
   };
 
-  const { saveToBuffer, clearBuffer } = useTextBuffer();
+  const { saveToBuffer } = useTextBuffer();
 
+  /**
+   * Resolves with the validated result or rejects with a `ProcessingError` (logged here once, without the input
+   * text; the calling page shows the message). On failure the buffer and the metrics keep the last successful result.
+   */
   const executeProcessing = useCallback(async (serviceInstance: BaseService, args: BaseConfig) => {
     setProcessing(true);
     setError(null);
-    clearBuffer();
 
     const runInBackend = processingMode === 'backend';
 
@@ -48,27 +52,25 @@ export function useBackendProcessor() {
       setProcessing(false);
 
       if (result.type === 'Text') {
-        window.logger.debug('[useBackendProcessor]-MEINS-Text resul: ', result);
         saveToBuffer(result.result);
       } else if (result.type === 'Column') {
-        window.logger.debug('[useBackendProcessor]-MEINS-Column resul: ', result);
-        saveToBuffer(result.result?.join('\n'));
+        saveToBuffer(result.result.join('\n'));
       } else if (result.type === 'ColumnList') {
-        window.logger.debug('[useBackendProcessor]-MEINS-ColumnList resul: ', result);
-        saveToBuffer(result.result?.join('\n'));
+        saveToBuffer(result.result.join('\n'));
       } else if (result.type === 'TextV2') {
-        window.logger.debug('[useBackendProcessor]-MEINS-TextV2 resul: ', result);
-        saveToBuffer(result.result?.result_text);
+        saveToBuffer(result.result.result_text);
       }
 
       return result;
     } catch (err) {
-      setError(err as Error);
-      window.logger.error('❌ Fehler bei Verarbeitung:', err);
+      const error = toProcessingError(err, runInBackend ? 'backend' : 'worker');
+      logProcessingError('Verarbeitung fehlgeschlagen', error);
+      // setProcessing(false) also resets the error state, so the error is set afterwards
       setProcessing(false);
-      throw err;
+      setError(error);
+      throw error;
     }
-  }, [saveToBuffer, clearBuffer, setProcessing, setMetrics, setError, processingMode]);
+  }, [saveToBuffer, setProcessing, setMetrics, setError, processingMode]);
 
   return {
     splitText: (args: SplitConfig) => executeProcessing(new SplitService(), args),

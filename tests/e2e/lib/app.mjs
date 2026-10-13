@@ -16,6 +16,18 @@ export const APP_HELPERS = `window.__t = {
   /** Split result as column-major array (values of the rendered rows; fine for small results) */
   columns: () => [...__t.page().querySelectorAll('.result-column')].map(c => [...c.querySelectorAll('.virtualized-input')].map(i => i.value)),
   combined: () => __t.page().querySelector('.combine-textarea')?.value ?? null,
+  /** Records every snackbar shown from now on (also ones that disappear again); read + reset with takeSnacks() */
+  watchSnacks() {
+    __t.snackLog = [];
+    if (__t.snackObserver) return;
+    __t.snackObserver = new MutationObserver((mutations) => mutations.forEach((m) => m.addedNodes.forEach((n) => {
+      if (n.nodeType !== 1) return;
+      const found = n.matches('.snackbar-message') ? [n] : [...n.querySelectorAll('.snackbar-message')];
+      found.forEach((e) => __t.snackLog.push(e.className.split(' ')[1] + ': ' + e.innerText.trim()));
+    })));
+    __t.snackObserver.observe(document.body, { childList: true, subtree: true });
+  },
+  takeSnacks() { const log = __t.snackLog; __t.snackLog = []; return log; },
   settingsCheckbox(label) {
     return [...document.querySelectorAll('.settings-modal label')].find(l => l.innerText.includes(label)).querySelector('input');
   },
@@ -88,4 +100,87 @@ export async function combineColumns(page, indexes) {
   await page.eval(`document.querySelector('.close-combine-btn')?.click(); true`);
   await new Promise((r) => setTimeout(r, 200));
   return { used, text: await page.eval('__t.combined()') };
+}
+
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * Error handling of Filter and Remove (Paket 4) in the current processing mode:
+ * invalid regex -> one error message, no success message, previous result kept, processing finished;
+ * all lines removed -> empty result reported as success. `errorsSince(n)` returns console errors since log index n.
+ */
+export async function checkProcessingErrors(page, r, label, errorsSince) {
+  const result = () => page.eval(`__t.textareas()[1]?.value ?? null`);
+  const finished = () => page.eval(`!!__t.page().querySelector('.mode-toggle')`); // only rendered when not processing
+  const setPattern = async (value) => {
+    await page.eval(`__t.set(__t.page().querySelector('.form-add-render input'), ${JSON.stringify(value)}); true`);
+    await sleepMs(150);
+  };
+  /** Clicks, waits for the first snackbar and returns all snackbars shown meanwhile */
+  const run = async (clickExpr) => {
+    await page.eval(`__t.watchSnacks(); ${clickExpr}; true`);
+    await page.waitFor(`__t.snackLog.length > 0`, 8000);
+    await sleepMs(300);
+    return page.eval('__t.takeSnacks()');
+  };
+  const isRegexError = (snacks) => snacks.length === 1 && /^error: .*(regex|regul)/i.test(snacks[0]);
+
+  // --- Filter ---
+  const filterKeep = `__t.page().querySelectorAll('.filter-actions button')[1].click()`;
+  await page.eval(`__t.nav('filter'); true`);
+  await sleepMs(200);
+  await page.eval(`__t.set(__t.textareas()[0], 'apple\\nbanana\\napricot'); true`);
+  await sleepMs(150);
+  await setPattern('ap');
+  let snacks = await run(filterKeep);
+  const filterBefore = await result();
+  r.check(`${label}: Filter valid result`, filterBefore === 'ap\nap' && snacks.every((s) => s.startsWith('success')), `${JSON.stringify(filterBefore)} ${JSON.stringify(snacks)}`);
+
+  let n = page.logs.length;
+  await setPattern('([a-');
+  snacks = await run(filterKeep);
+  r.check(`${label}: Filter invalid regex -> one error message, no success message`, isRegexError(snacks), JSON.stringify(snacks));
+  r.check(`${label}: Filter invalid regex -> previous result kept`, (await result()) === filterBefore, JSON.stringify(await result()));
+  r.check(`${label}: Filter invalid regex -> processing finished, no console error`, (await finished()) && errorsSince(n).length === 0, JSON.stringify(errorsSince(n)));
+
+  n = page.logs.length;
+  await setPattern('zzz');
+  snacks = await run(filterKeep);
+  r.check(
+    `${label}: Filter removing all lines -> empty result reported as success`,
+    (await result()) === '' && snacks.length === 1 && snacks[0].startsWith('success') && errorsSince(n).length === 0,
+    `${JSON.stringify(await result())} ${JSON.stringify(snacks)}`
+  );
+  await setPattern('');
+
+  // --- Remove ---
+  const regexCheckbox = `[...__t.page().querySelectorAll('.input-box')].find(e => /regex/i.test(e.innerText)).querySelector('input')`;
+  const removeContaining = `__t.page().querySelector('.remove-action-button.containing').click()`;
+  await page.eval(`__t.nav('remove'); true`);
+  await sleepMs(200);
+  await page.eval(`__t.set(__t.textareas()[0], 'x\\ny\\nx\\nz'); true`);
+  await sleepMs(150);
+  snacks = await run(`__t.page().querySelector('.remove-action-button.duplicates').click()`);
+  const removeBefore = await result();
+  r.check(`${label}: Remove valid result`, removeBefore === 'x\ny\nz', JSON.stringify(removeBefore));
+
+  await page.eval(`${regexCheckbox}.checked || ${regexCheckbox}.click(); true`);
+  await sleepMs(150);
+  n = page.logs.length;
+  await setPattern('([a-');
+  snacks = await run(removeContaining);
+  r.check(`${label}: Remove invalid regex -> one error message, no success message`, isRegexError(snacks), JSON.stringify(snacks));
+  r.check(`${label}: Remove invalid regex -> previous result kept`, (await result()) === removeBefore, JSON.stringify(await result()));
+  r.check(`${label}: Remove invalid regex -> processing finished, no console error`, (await finished()) && errorsSince(n).length === 0, JSON.stringify(errorsSince(n)));
+
+  n = page.logs.length;
+  await setPattern('x|y|z');
+  snacks = await run(removeContaining);
+  r.check(
+    `${label}: Remove removing all lines -> empty result reported as success`,
+    (await result()) === '' && snacks.length === 1 && snacks[0].startsWith('success') && /4/.test(snacks[0]) && errorsSince(n).length === 0,
+    `${JSON.stringify(await result())} ${JSON.stringify(snacks)}`
+  );
+  await page.eval(`${regexCheckbox}.checked && ${regexCheckbox}.click(); true`);
+  await setPattern('');
 }

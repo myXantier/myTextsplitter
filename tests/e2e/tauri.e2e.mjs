@@ -11,7 +11,7 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, listTargets, sleep } from './lib/cdp.mjs';
-import { SPLIT_CASES, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
+import { SPLIT_CASES, checkProcessingErrors, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
@@ -161,6 +161,11 @@ async function firstRun() {
   r.check('Keep Empty Lines switched on again', (await setSettingsCheckbox(main, 'Keep Empty Lines', true)) === true);
   r.check('Split B1 (Rust) without errors', errorsIn(main.logs, n).length === 0, formatLogs(errorsIn(main.logs, n)));
 
+  // Error paths (Paket 4) via Rust: invalid regex (B4) and empty results (B3) in Filter/Remove
+  await checkProcessingErrors(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
+  await main.eval(`__t.nav('split'); true`);
+  await sleep(200);
+
   n = main.logs.length;
   await main.eval(`__t.page().querySelector('.mode-toggle').click(); true`);
   await sleep(300);
@@ -171,6 +176,9 @@ async function firstRun() {
   cols = await splitAndRead(main, b1.text, b1.separator, b1.keep);
   r.check('Split B1 in JS mode on desktop = Rust result', JSON.stringify(cols) === JSON.stringify(b1.keep), JSON.stringify(cols));
   await main.eval(`__t.set(__t.page().querySelector('.form-add-render input'), '_'); true`);
+  await checkProcessingErrors(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
+  await main.eval(`__t.nav('split'); true`);
+  await sleep(200);
   await main.eval(`__t.page().querySelector('.mode-toggle').click(); true`);
   await sleep(300);
   r.check('Toggle back to backend mode', await main.eval(`!!__t.page().querySelector('.mode-toggle .backend-icon')`));
