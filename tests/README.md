@@ -15,6 +15,13 @@ Fast and without browser or Tauri: they cover platform detection, listener/keybo
 validation/persistence of the browser settings and the JS split engine (`src/utils/splitColumns.ts`,
 used by `SplitWorker` and the main-thread fallback). `window`/`document` are minimal in-memory stand-ins.
 
+`processing.test.ts` and `workers.test.ts` check the result and error contract of the services
+(`src/services/ProcessingError.ts`): empty strings/arrays are valid results, failures reject with a
+`ProcessingError` (`invalidInput`, `backend`, `worker`, `timeout`, `invalidResult`) and are never turned into
+`{}`/`[]`/`''`. The Tauri IPC is stubbed via `window.__TAURI_INTERNALS__.invoke`; the real worker modules run
+in-process behind a fake `Worker`. `tests/unit/helpers/setup.ts` adds a resolve hook for the extensionless
+imports of the app sources, so these tests load the sources with dynamic `await import(...)`.
+
 ## Split fixtures (`tests/fixtures/split-cases.json`)
 
 One fixture file for **both** split engines: `npm test` (JS, `tests/unit/split.test.ts`) and `cargo test`
@@ -76,6 +83,10 @@ Split and Combine are checked with concrete results in both integration tests (l
 empty lines kept and skipped, Combine without row offset; Tauri: Rust backend and JS mode). For Sort,
 Filter, Remove and Diff the integration tests only check that the operations run and report results;
 known functional bugs (Diff, Filter semantics) are not encoded in these tests.
+
+Error handling (`checkProcessingErrors` in `tests/e2e/lib/app.mjs`; browser: Web Worker, Tauri: Rust backend and
+JS mode): an invalid regex in Filter/Remove shows exactly one error message and no success message, keeps the
+previous result and ends the processing state; removing all lines is reported as success with an empty result.
 
 The Tauri test switches "Keep Empty Lines" explicitly, because an existing `settings.json` may still
 contain `showEmptyLines: false` (the default before the option was wired to Split).

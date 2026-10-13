@@ -8,7 +8,7 @@ use tauri::{Manager, State, WindowEvent};
 
 mod text_processor;
 mod memory_usage;
-use text_processor::{ProcessedText, TextProcessor};
+use text_processor::{ProcessedText, TextError, TextProcessor};
 
 mod text_diff;
 
@@ -60,9 +60,8 @@ async fn process_text_block(
     trimparts: bool,
     useregex: bool,
     keepemptylines: bool,
-) -> Result<ProcessedText<Vec<String>>, String> {
+) -> Result<ProcessedText<Vec<String>>, TextError> {
     TextProcessor::process_text_block_to_column_strings(&text, &delimiter, trimparts, useregex, keepemptylines)
-        .map_err(|e| e.to_string())
 }
 
 // #[tauri::command]
@@ -94,7 +93,7 @@ fn filter_text(
     filtermode: String,
     casesensitive: bool,
     splitmatches: bool,
-) -> Result<ProcessedText<String>, String> {
+) -> Result<ProcessedText<String>, TextError> {
     TextProcessor::filter_text_internal(
         &text,
         &pattern,
@@ -113,7 +112,7 @@ fn remove_lines(
     casesensitive: bool,
     useregex: bool,
     trimparts: bool,
-) -> Result<ProcessedText<String>, String> {
+) -> Result<ProcessedText<String>, TextError> {
     TextProcessor::remove_lines_internal(
         &text,
         &pattern,

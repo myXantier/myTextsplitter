@@ -11,7 +11,8 @@ import OpenFileButton from '../components/OpenFileButton';
 import CopyButton from '../components/CopyButton';
 import { fontSizeToIconSize } from '../utils/helper';
 import useSnackbar from '../hooks/useSnackbar';
-import { usePermanentSetting, useRuntimeSetting } from '../hooks/useSettings';
+import { processingErrorMessage, unwrapResult } from '../services/ProcessingError';
+import { usePermanentSetting } from '../hooks/useSettings';
 import { getWordDiffs } from '../utils/diff';
 import './styles/DiffPageStyle.css';
 
@@ -39,7 +40,6 @@ export default function DiffPage({
 
   const { diffText } = useBackendProcessor();
   const fontSize = usePermanentSetting('fontSize');
-  const mode = useRuntimeSetting('processingMode');
 
   // Function to get class name based on diff type
   const getDiffTypeClass = (type: string) => {
@@ -63,14 +63,6 @@ export default function DiffPage({
     }
   };
 
-  function convertBackendDiffFormat(data: any[]): DiffResult[] {
-    return data.map(item => ({
-      type: item.diff_type.toLowerCase() as DiffResult["type"],
-      text: item.text,
-      lineNumber: item.line_number,
-    }));
-  }
-
   const handleDiffText = useCallback(async () => {
     if (!sourceText || !newText) {
       snackbar.error(t('errors.textAndPatternRequired'));
@@ -87,18 +79,12 @@ export default function DiffPage({
         },
       });
 
-      const convertedRes = window.myResultConverter<string>(result);
-      
-      if (convertedRes.status === 'ok') {
-        const diffResult: DiffResult[] = (mode === 'backend') ? convertBackendDiffFormat(JSON.parse(convertedRes.data)) : JSON.parse(convertedRes.data);
-        setDiffResults(diffResult);
-        snackbar.success(t('textDiff.processed'));
-      } else {
-        throw convertedRes.error;
-      }
+      // DiffService delivers the same DiffResult JSON in backend and JS mode; on failure the previous diff stays
+      const diffResult: DiffResult[] = JSON.parse(unwrapResult(window.myResultConverter(result, 'Text')));
+      setDiffResults(diffResult);
+      snackbar.success(t('textDiff.processed'));
     } catch (error) {
-      window.logger.error('Error comparing texts:', error);
-      snackbar.error(t('errors.processingError'));
+      snackbar.error(processingErrorMessage(error, t));
     }
   }, [sourceText, newText, ignoreWhitespace, diffText, t]);
 

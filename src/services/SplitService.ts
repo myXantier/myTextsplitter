@@ -1,7 +1,10 @@
 import { BaseService } from './BaseService';
 import { splitTextToColumns } from '../utils/splitColumns';
+import { assertBackendResult, createResult, invalidRegexError } from './ProcessingError';
 
 export class SplitService extends BaseService {
+  protected readonly resultType = 'ColumnList';
+
   constructor() {
     super('split');
   }
@@ -11,32 +14,29 @@ export class SplitService extends BaseService {
     const { trimParts, useRegex, keepEmptyLines } = configParams;
     const { invokeUNSAFE } = await import('./tauriInvoke'); // ✅ Lazy import
     
-    const result = await invokeUNSAFE<ProcessedText<string[]>>('process_text_block', {
+    const response = await invokeUNSAFE<unknown>('process_text_block', {
       text: sourceText,
       delimiter: mainParam,
       trimparts: trimParts,
       useregex: useRegex,
       keepemptylines: keepEmptyLines,
     });
-    window.logger.debug("SplitService.invokeUNSAFE Result: ", result);
 
-    if (result.result_text) {
-      this.setMetrics(result.metrics);
-      return this.convertToMyResult(result.result_text.map((c) => c.split('\n')));
-    }
-
-    window.logger.error("[invokeBackend] konnte nicht erfolgreich ausgeführt werden.");
-    return this.convertToMyResult([]);
+    // One '\n'-joined string per column; no columns (empty text) is a valid result
+    const result = assertBackendResult(response, 'Column');
+    this.setMetrics(result.metrics);
+    return createResult('ColumnList', result.result_text.map((c) => c.split('\n')));
   }
 
   protected async frontendInMainThread(args: SplitConfig): Promise<myResult> {
     const { sourceText, mainParam, configParams } = args;
 
     try {
-      return this.convertToMyResult(splitTextToColumns(sourceText, mainParam, configParams));
+      return createResult('ColumnList', splitTextToColumns(sourceText, mainParam, configParams));
     } catch (error) {
-      window.logger.error((error as Error).message);
-      return this.convertToMyResult([]);
+      // `splitTextToColumns` throws a SyntaxError for an invalid regex
+      if (configParams.useRegex && error instanceof SyntaxError) throw invalidRegexError(error.message);
+      throw error;
     }
   }
 }

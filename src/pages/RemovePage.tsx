@@ -12,6 +12,7 @@ import { useDragAndDrop } from '../hooks/useDragAndDrop';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
 import useSnackbar from '../hooks/useSnackbar';
+import { processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import './styles/RemovePageStyle.css';
 
 interface RemovePageProps {
@@ -75,19 +76,14 @@ export default function RemovePage({ sourceText, setSourceText, visible }: Remov
           },
         });
 
-        const convertedRes = window.myResultConverter<ProcessedText<string>>(result);
-        
-        if (convertedRes.status === 'ok') {
-          setResultText(convertedRes.data.result_text);
-          setRemovedLines(convertedRes.data.removed_lines);
-          setShowResult(true);
-          snackbar.success(t('removeLines.processed', { removed: convertedRes.data.removed_lines }));
-        } else {
-          throw convertedRes.error;
-        }
+        // An empty `result_text` is a valid result (all lines removed); on failure the previous result stays
+        const { result_text, removed_lines } = unwrapResult(window.myResultConverter(result, 'TextV2'));
+        setResultText(result_text);
+        setRemovedLines(removed_lines);
+        setShowResult(true);
+        snackbar.success(t('removeLines.processed', { removed: removed_lines }));
       } catch (error) {
-        window.logger.error('Error removing lines:', error);
-        snackbar.error(t('errors.processingError'));
+        snackbar.error(processingErrorMessage(error, t));
       }
     },
     [sourceText, options, removeLines, t]

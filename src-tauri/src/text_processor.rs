@@ -21,6 +21,34 @@ pub struct ProcessedText<T> {
     pub(crate) metrics: BackendMetrics,
 }
 
+/// Error of the text commands. Reaches the frontend through Tauri IPC as `{ kind, message }`
+/// (`src/services/ProcessingError.ts`), so invalid user input can be told apart from technical errors.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(tag = "kind", content = "message", rename_all = "camelCase")]
+pub enum TextError {
+    /// The pattern is not a valid regex.
+    InvalidRegex(String),
+    /// The regex failed while matching (e.g. backtrack limit exceeded).
+    RegexRuntime(String),
+}
+
+impl std::fmt::Display for TextError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TextError::InvalidRegex(message) => write!(f, "invalid regex: {message}"),
+            TextError::RegexRuntime(message) => write!(f, "regex runtime error: {message}"),
+        }
+    }
+}
+
+fn compile_regex(pattern: &str) -> Result<Regex, TextError> {
+    Regex::new(pattern).map_err(|e| TextError::InvalidRegex(e.to_string()))
+}
+
+fn regex_runtime_error(e: fancy_regex::Error) -> TextError {
+    TextError::RegexRuntime(e.to_string())
+}
+
 pub fn get_backend_metrics(execution_time: f64, before_mem: MemoryStats) -> BackendMetrics {
     let after_mem = memory_stats().unwrap();
 
@@ -44,12 +72,12 @@ impl TextProcessor {
         trimparts: bool,
         useregex: bool,
         keep_empty_lines: bool,
-    ) -> Result<ProcessedText<Vec<String>>, String> {
+    ) -> Result<ProcessedText<Vec<String>>, TextError> {
         let before_mem = memory_stats::memory_stats().unwrap();
         let start_time = std::time::Instant::now();
 
         let regex = if useregex {
-            Some(Regex::new(delimiter).map_err(|_| "⚠ Ungültiges Regex-Pattern".to_string())?)
+            Some(compile_regex(delimiter)?)
         } else {
             None
         };
@@ -63,7 +91,8 @@ impl TextProcessor {
             }
 
             let parts: Vec<&str> = if let Some(ref reg) = regex {
-                reg.split(line).map(|s| s.unwrap_or("")).collect::<Vec<_>>()
+                // Stop at the first runtime error: fancy-regex keeps yielding the same error (endless parts)
+                reg.split(line).collect::<Result<Vec<_>, _>>().map_err(regex_runtime_error)?
             } else {
                 line.split(delimiter).collect::<Vec<_>>()
             };
@@ -132,38 +161,40 @@ impl TextProcessor {
         filter_mode: &str,
         casesensitive: bool,
         splitmatches: bool,
-    ) -> Result<ProcessedText<String>, String> {
+    ) -> Result<ProcessedText<String>, TextError> {
         let before_mem = memory_stats::memory_stats().unwrap();
         let start_time = std::time::Instant::now();
 
         let modified_pattern = if casesensitive {
             pattern.to_string()
         } else {
-            format!("(?i){}", pattern) 
+            format!("(?i){}", pattern)
         };
 
-        let regex =
-            Regex::new(&modified_pattern).map_err(|_| "⚠ Fehlerhafte Regex-Syntax".to_string())?;
+        let regex = compile_regex(&modified_pattern)?;
 
-        let processed_lines: Vec<String> = text
-            .lines()
-            .map(|line| {
-                if line.trim().is_empty() {
-                    return "".to_string(); 
-                }
+        // Runtime errors are returned instead of panicking (`replace_all`) or looping forever
+        // (`find_iter` keeps yielding the same error, `filter_map(Result::ok)` never ended).
+        let mut processed_lines: Vec<String> = Vec::new();
+        for line in text.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
 
-                match filter_mode {
-                    "remove" => regex.replace_all(line, "").to_string(),
-                    _ => regex
-                        .find_iter(line)
-                        .filter_map(Result::ok) 
-                        .map(|m| m.as_str().to_string())
-                        .collect::<Vec<_>>()
-                        .join(if splitmatches { "\n" } else { "" }),
-                }
-            })
-            .filter(|s| !s.is_empty()) 
-            .collect();
+            let processed = match filter_mode {
+                "remove" => regex.try_replacen(line, 0, "").map_err(regex_runtime_error)?.into_owned(),
+                _ => regex
+                    .find_iter(line)
+                    .map(|m| m.map(|m| m.as_str()))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(regex_runtime_error)?
+                    .join(if splitmatches { "\n" } else { "" }),
+            };
+
+            if !processed.is_empty() {
+                processed_lines.push(processed);
+            }
+        }
 
         let execution_time = start_time.elapsed().as_secs_f64() * 1000.0;
         let metrics = get_backend_metrics(execution_time, before_mem);
@@ -184,7 +215,7 @@ impl TextProcessor {
         casesensitive: bool,
         useregex: bool,
         trimparts: bool,
-    ) -> Result<ProcessedText<String>, String> {
+    ) -> Result<ProcessedText<String>, TextError> {
         let lines: Vec<&str> = text.lines().collect();
         let total_lines = lines.len(); // 🏆 Anzahl der Originalzeilen
 
@@ -218,9 +249,11 @@ impl TextProcessor {
                 format!("(?i){}", pattern)
             };
 
-            let matcher: Box<dyn Fn(&str) -> bool> = if useregex {
-                let regex = Regex::new(&final_pattern).unwrap();
-                Box::new(move |line| regex.is_match(line).unwrap_or(false))
+            // B4: an invalid regex is an error result (was `unwrap()` -> panic); a runtime error while matching
+            // is an error too (was silently treated as "no match")
+            let matcher: Box<dyn Fn(&str) -> Result<bool, TextError>> = if useregex {
+                let regex = compile_regex(&final_pattern)?;
+                Box::new(move |line| regex.is_match(line).map_err(regex_runtime_error))
             } else {
                 Box::new(move |line| {
                     let processed_line = if casesensitive {
@@ -233,22 +266,18 @@ impl TextProcessor {
                     } else {
                         &pattern.to_lowercase()
                     };
-                    processed_line.contains(pattern2)
+                    Ok(processed_line.contains(pattern2))
                 })
             };
 
-            lines
-                .iter()
-                .filter_map(|&line| {
-                    if (removemode == "containing" && !matcher(line))
-                        || (removemode != "containing" && matcher(line))
-                    {
-                        Some(line.to_string())
-                    } else {
-                        None
-                    }
-                })
-                .collect()
+            let mut kept = Vec::new();
+            for &line in &lines {
+                let matched = matcher(line)?;
+                if (removemode == "containing" && !matched) || (removemode != "containing" && matched) {
+                    kept.push(line.to_string());
+                }
+            }
+            kept
         };
 
         let execution_time = start_time.elapsed().as_secs_f64() * 1000.0;
@@ -339,6 +368,88 @@ mod tests {
 
     #[test]
     fn split_invalid_regex_is_an_error() {
-        assert!(TextProcessor::process_text_block_to_column_strings("a", "([a-", false, true, true).is_err());
+        assert!(matches!(
+            TextProcessor::process_text_block_to_column_strings("a", "([a-", false, true, true),
+            Err(TextError::InvalidRegex(_))
+        ));
+    }
+
+    // --- Paket 4: error propagation (B4) and empty results (B3) ---
+
+    /// Pattern + input that exceed fancy-regex's default backtrack limit (runtime error, not a parse error).
+    const BACKTRACKING_PATTERN: &str = "(?i)(a|b|ab)*(?=c)";
+    fn backtracking_input() -> String {
+        "ab".repeat(40)
+    }
+
+    #[test]
+    fn remove_invalid_regex_is_an_error() {
+        for mode in ["containing", "notContaining"] {
+            let result = TextProcessor::remove_lines_internal("a\nb", "([a-", mode, true, true, false);
+            assert!(matches!(result, Err(TextError::InvalidRegex(_))), "{mode}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn remove_invalid_pattern_without_regex_mode_is_plain_text() {
+        let result = TextProcessor::remove_lines_internal("([a-\nb", "([a-", "containing", true, false, false).unwrap();
+        assert_eq!(result.result_text, "b");
+        assert_eq!(result.removed_lines, 1);
+    }
+
+    #[test]
+    fn remove_all_lines_is_an_empty_result() {
+        let result = TextProcessor::remove_lines_internal("a\nab", "a", "containing", true, true, false).unwrap();
+        assert_eq!(result.result_text, "");
+        assert_eq!(result.removed_lines, 2);
+    }
+
+    #[test]
+    fn remove_regex_runtime_error_is_an_error() {
+        let text = format!("x\n{}", backtracking_input());
+        let result = TextProcessor::remove_lines_internal(&text, BACKTRACKING_PATTERN, "containing", true, true, false);
+        assert!(matches!(result, Err(TextError::RegexRuntime(_))), "{result:?}");
+    }
+
+    #[test]
+    fn filter_invalid_regex_is_an_error() {
+        for mode in ["keep", "remove"] {
+            let result = TextProcessor::filter_text_internal("a", "([a-", mode, true, false);
+            assert!(matches!(result, Err(TextError::InvalidRegex(_))), "{mode}: {result:?}");
+        }
+    }
+
+    #[test]
+    fn filter_removing_all_lines_is_an_empty_result() {
+        let result = TextProcessor::filter_text_internal("apple\nbanana", "x", "keep", true, false).unwrap();
+        assert_eq!(result.result_text, "");
+        let result = TextProcessor::filter_text_internal("apple\nbanana", ".*", "remove", true, false).unwrap();
+        assert_eq!(result.result_text, "");
+    }
+
+    #[test]
+    fn filter_regex_runtime_error_is_an_error() {
+        let text = backtracking_input();
+        // catch_unwind: before the fix "remove" panicked (`replace_all`) and "keep" never returned
+        for mode in ["keep", "remove"] {
+            let outcome = std::panic::catch_unwind(|| TextProcessor::filter_text_internal(&text, BACKTRACKING_PATTERN, mode, true, false));
+            assert!(matches!(outcome, Ok(Err(TextError::RegexRuntime(_)))), "{mode}: expected an error result, not a panic or success");
+        }
+    }
+
+    #[test]
+    fn split_regex_runtime_error_is_an_error() {
+        // Before the fix every error became an empty part and fancy-regex repeats the error: endless parts
+        let result = TextProcessor::process_text_block_to_column_strings(&backtracking_input(), BACKTRACKING_PATTERN, false, true, true);
+        assert!(matches!(result, Err(TextError::RegexRuntime(_))), "{result:?}");
+    }
+
+    #[test]
+    fn text_error_reaches_the_frontend_as_kind_and_message() {
+        // Shape expected by `fromBackendError` (src/services/ProcessingError.ts)
+        let invalid = serde_json::to_value(TextError::InvalidRegex("bad".into())).unwrap();
+        assert_eq!(invalid, serde_json::json!({ "kind": "invalidRegex", "message": "bad" }));
+        let runtime = serde_json::to_value(TextError::RegexRuntime("limit".into())).unwrap();
+        assert_eq!(runtime, serde_json::json!({ "kind": "regexRuntime", "message": "limit" }));
     }
 }

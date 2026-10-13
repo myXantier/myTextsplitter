@@ -117,6 +117,7 @@ export default {
       processingGeneral: 'Error during processing',
       invalidPattern: 'Invalid pattern',
       invalidRegex: 'Invalid regex pattern',
+      regexTooComplex: 'Regex pattern is too complex for this text',
       fileTooLarge: 'File is too large. Maximum size is 10MB.',
       readError: 'Error reading file',
       saveError: 'Failed to save file',

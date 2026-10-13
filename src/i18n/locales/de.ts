@@ -117,6 +117,7 @@ export default {
       processingGeneral: 'Fehler bei der Verarbeitung',
       invalidPattern: 'Ungültiges Muster',
       invalidRegex: 'Ungültiger regulärer Ausdruck',
+      regexTooComplex: 'Regulärer Ausdruck ist für diesen Text zu aufwendig',
       fileTooLarge: 'Datei ist zu groß. Maximale Größe ist 10MB.',
       readError: 'Fehler beim Lesen der Datei',
       saveError: 'Fehler beim Speichern der Datei',

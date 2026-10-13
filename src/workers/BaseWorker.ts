@@ -1,4 +1,5 @@
 import { WorkerLogger } from "../other/Logger";
+import { ERROR_KEYS, ProcessingError, createResult } from "../services/ProcessingError";
 
 export interface ProcessOptions {
   args: BaseConfig;
@@ -36,7 +37,9 @@ export abstract class BaseWorker {
       self.postMessage({
         success: false,
         type: 'error',
-        error: '`options.args` is missing',
+        error: ERROR_KEYS.general,
+        errorKind: 'worker',
+        errorDetail: '`options.args` is missing',
         result: null,
       });
       return;
@@ -119,17 +122,16 @@ export abstract class BaseWorker {
 
         WorkerLogger.debug("isRemoveConfig: ", isRemoveConfig);
         const metri = this.getMetrics(sourceText, JSON.stringify(processedLines.join("\n")));
-        const finalResultText = processedLines.length > 0 ? processedLines.join("\n") : "[Keine Daten verarbeitet]";
+        // No placeholder text: an empty result is a valid result
+        const finalResultText = processedLines.join("\n");
 
         const result = isRemoveConfig
-            ? this.convertToMyResult({
+            ? createResult("TextV2", {
                   result_text: finalResultText,
                   removed_lines: removedLines,
                   metrics: { execution_time_ms: metri.executionTime, memory_usage_kb: metri.memoryUsage, memory_usage_str: "" },
               })
-            : this.convertToMyResult(processedLines);
-
-            WorkerLogger.debug("📩 Finales Ergebnis:", result);
+            : createResult("Column", processedLines);
 
         // Finale Antwort mit `success: true`
         self.postMessage({
@@ -140,10 +142,14 @@ export abstract class BaseWorker {
         });
       }
     } catch (error) {
+      // A `ProcessingError` (e.g. invalid regex) keeps its kind and message key; anything else is a worker error
+      const isProcessingError = error instanceof ProcessingError;
       self.postMessage({
         success: false,
         type: 'error',
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: isProcessingError ? error.message : ERROR_KEYS.general,
+        errorKind: isProcessingError ? error.kind : 'worker',
+        errorDetail: isProcessingError ? error.detail : error instanceof Error ? error.message : String(error),
         result: null,
       });
     }
@@ -162,30 +168,12 @@ export abstract class BaseWorker {
     this.aborted = true;
   }
 
-  protected convertToMyResult<T extends AllowedResultTypes>(data: T): MyResultType<T> {
-    const isNull = !data || (Array.isArray(data) && data.length === 0);
-    let type: MyResultType<T> = "Text";
-
-    if (Array.isArray(data)) {
-        type = Array.isArray(data[0]) ? "ColumnList" : "Column";
-    } else if (typeof data === "object" && "result_text" in data) {
-        type = "TextV2"; // Falls es das verbesserte Text-Format ist
-    }
-
-    return {
-        type,
-        result: data,
-        isNull,
-        abort: false,
-        __brand: "myResult",
-    } as MyResultType<T>;
-}
-
   public static setupWorker<T extends BaseWorker>(WorkerClass: new () => T) {
     const workerInstance = new WorkerClass();
 
     self.onmessage = (event: MessageEvent) => {
-      WorkerLogger.debug('📩 Worker empfängt Nachricht:', event.data);
+      // The message content is not logged: it contains the user's text
+      WorkerLogger.debug('📩 Worker empfängt Nachricht');
 
       // Verhindere Fehler durch `{ test: true }`
       if (!event.data.args) {
@@ -193,11 +181,13 @@ export abstract class BaseWorker {
           WorkerLogger.warn('🟡 Test-Nachricht erhalten, ignoriere sie:', event.data);
           return; // Test-Nachricht ignorieren
         }
-        WorkerLogger.error('❌ Worker-Fehler: `args` fehlt in der Nachricht!', event.data);
+        WorkerLogger.error('❌ Worker-Fehler: `args` fehlt in der Nachricht!');
         self.postMessage({
           success: false,
           type: 'error',
-          error: '`args` fehlt in der Nachricht!',
+          error: ERROR_KEYS.general,
+          errorKind: 'worker',
+          errorDetail: '`args` fehlt in der Nachricht!',
           result: null,
         });
         return;

@@ -14,6 +14,7 @@ import { useCombineHistoryStore } from '../hooks/useCombineHistoryStore';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { validateRegexPattern } from '../utils/regex';
 import { BaseService } from '../services/BaseService';
+import { processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
 import useSnackbar from '../hooks/useSnackbar';
@@ -114,7 +115,7 @@ export default function SplitPage({
       const delimiter = separator;
 
       if (useRegex && !validateRegexPattern(delimiter)) {
-        snackbar.error('⚠ Ungültiges Regex-Pattern!');
+        snackbar.error(t('errors.invalidRegex'));
         setIsLoading(false);
         return;
       }
@@ -129,20 +130,14 @@ export default function SplitPage({
         },
       });
 
-      const convertedRes = window.myResultConverter<string[][]>(result);
-
-      if (convertedRes.status === 'ok') {
-        setSplitResults(convertedRes.data);
-      } else {
-        snackbar.error(convertedRes.error.message);
-      }
+      // Previous results stay visible if the processing or the result check fails
+      setSplitResults(unwrapResult(window.myResultConverter(result, 'ColumnList')));
     } catch (error) {
-      console.error(error);
-      snackbar.error('❌ Fehler beim Verarbeiten!');
+      snackbar.error(processingErrorMessage(error, t));
     } finally {
       setIsLoading(false);
     }
-  }, [sourceText, useRegex, trimParts, keepEmptyLines, separator, splitText, setSplitResults, currentWorkerAbort]);
+  }, [sourceText, useRegex, trimParts, keepEmptyLines, separator, splitText, setSplitResults, currentWorkerAbort, t]);
 
   useEffect(() => {
     const cleanupInterval = setInterval(() => {
