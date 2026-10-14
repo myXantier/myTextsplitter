@@ -2,7 +2,12 @@
 //! (`src/utils/diff/lineDiff.ts`, types in `src/utils/diff/types.ts`); the shared fixtures
 //! `tests/fixtures/diff-cases.json` check the complete result of both engines.
 
+// Optional word diff (B2): pure functions, called by the Tauri command and the UI from Paket 7 B3 on
+#[allow(dead_code)]
+pub mod intraline;
 mod myers;
+#[allow(dead_code)]
+mod tokenize;
 mod whitespace;
 
 use std::collections::HashMap;
@@ -219,3 +224,5 @@ pub fn get_diff(old_text: &str, new_text: &str, ignore_whitespace: bool) -> Resu
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod intraline_tests;

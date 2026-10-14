@@ -9,6 +9,20 @@
 const WHITESPACE_RUN = /[\t-\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+/g;
 const ONLY_WHITESPACE = /^[\t-\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]*$/;
 
+/** The same whitespace set as a code point check (used by the tokenizer). */
+export const isWhitespaceCodePoint = (cp: number): boolean =>
+  (cp >= 0x09 && cp <= 0x0d) ||
+  cp === 0x20 ||
+  cp === 0x85 ||
+  cp === 0xa0 ||
+  cp === 0x1680 ||
+  (cp >= 0x2000 && cp <= 0x200a) ||
+  cp === 0x2028 ||
+  cp === 0x2029 ||
+  cp === 0x202f ||
+  cp === 0x205f ||
+  cp === 0x3000;
+
 /** True for an empty line or a line that only consists of whitespace. */
 export const isBlankLine = (line: string): boolean => ONLY_WHITESPACE.test(line);
 

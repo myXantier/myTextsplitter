@@ -110,6 +110,28 @@ Algorithm and rules (details in `src/utils/diff/myers.ts`, `lineDiff.ts`, `white
   The validator also checks the semantics in linear time (equal rows have equal keys, moves follow the move rules) and
   runs before the metrics are applied (`BaseService.checkResult`): a rejected result never sets metrics.
 
+## Word diff fixtures (`tests/fixtures/intraline-cases.json`, Paket 7 B2)
+
+Optional word diff (intraline), implemented twice: `src/utils/diff/tokenize.ts` + `intraline.ts` and
+`src-tauri/src/diff/tokenize.rs` + `intraline.rs`. It is a separate analysis of a finished `DiffDocument`
+(`computeIntraline` / `compute_intraline`); the line diff, its transport and the DiffPage do not call it yet (B3).
+`npm test` (`tests/unit/intraline.test.ts`) and `cargo test` (`src-tauri/src/diff/intraline_tests.rs`) check:
+
+| Section | Meaning |
+|---|---|
+| `limits` | the default limits (500 tokens per line, 2,500 pairing cells, 1,000,000 work units per pair, budget 2,000,000) |
+| `tokens` | tokenizer results (explicit code point table: whitespace runs, words, punctuation/CJK/emoji as single tokens, combining marks, ZWJ sequences, flags) |
+| `cases` | complete analyses (pairs, similarity, segments, skip reasons, work), reviewed by hand; `limits` overrides some limits |
+| `invalidAnalyses` | valid and forged analyses for the runtime validator `intralineError` (JS only): negative/non-integer work, unknown skip reasons, invented similarity, `null` values, unknown fields, invalid skip entries |
+| `generated` | 1500 random cases (half with small random limits, so every skip reason occurs) from the same xorshift32 generator; FNV-1a digest over the UTF-8 bytes |
+
+Rules: pairs only inside one hunk (delete/insert run between equal rows), never moved or blank lines; Dice similarity of
+the similarity tokens >= 0.5 (words, numbers, CJK, emoji, symbols; punctuation only counts for lines without them, so
+`Alphabeta.` / `Zyxwvu.` are not paired); order-preserving DP (highest total score, ties: earliest old line). Token alignment
+with the Myers code of the line diff: first the words, then (without `ignoreWhitespace`) the whitespace inside each gap.
+Segments are texts (no offsets) and rebuild each line exactly. Limits never produce partial segments: `lineTooLong`,
+`hunkTooLarge`, `budgetExceeded` (this and every later hunk) or a `tooComplex` pair; the line diff stays complete.
+
 ## Regex fixtures (`tests/fixtures/regex-cases.json`)
 
 Shared by `npm test` (`tests/unit/regex-compat.test.ts`, real `FilterWorker` module = native JS `RegExp`) and

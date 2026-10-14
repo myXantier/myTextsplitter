@@ -67,3 +67,48 @@ export interface DiffDocument {
   moves: DiffMove[];
   stats: DiffStats;
 }
+
+// --- Optional word diff (Paket 7, B2): a separate annotation of a DiffDocument, computed only on request ---
+
+/** Part of one line. Old side: `equal` | `delete`; new side: `equal` | `insert`. The texts of one side concatenate
+ * to exactly the original line; adjacent segments never have the same op. */
+export interface IntralineSegment {
+  op: 'equal' | 'delete' | 'insert';
+  text: string;
+}
+
+/** Why a line, a hunk or a pair got no word diff. The line diff itself is always complete. */
+export type IntralineSkipReason = 'lineTooLong' | 'hunkTooLarge' | 'budgetExceeded' | 'tooComplex';
+
+/** A deleted and an inserted line of the same hunk that are compared word by word. */
+export interface IntralinePair {
+  oldLine: number;
+  newLine: number;
+  /** Dice coefficient of the similarity tokens (words, numbers, CJK, emoji, symbols; punctuation only for lines without
+   * them) as integers: similarity = 2 * common / total (>= 0.5 to pair). */
+  similarity: { common: number; total: number };
+  /** Present if the segments were computed (then `skipped` is absent). */
+  old?: IntralineSegment[];
+  new?: IntralineSegment[];
+  /** Present instead of the segments: `tooComplex` (token alignment over its limit). */
+  skipped?: 'tooComplex';
+}
+
+/** Lines without word diff because of a limit (`lineTooLong`: one line; `hunkTooLarge`/`budgetExceeded`: a hunk). */
+export interface IntralineSkip {
+  reason: Exclude<IntralineSkipReason, 'tooComplex'>;
+  old: number[];
+  new: number[];
+}
+
+export interface IntralineAnalysis {
+  version: 1;
+  /** Copied from the analysed document: whitespace-only differences are not highlighted when true. */
+  ignoreWhitespace: boolean;
+  /** Ascending by `oldLine` (and therefore by `newLine`). */
+  pairs: IntralinePair[];
+  /** In row order. */
+  skipped: IntralineSkip[];
+  /** Work units spent (same counting in Rust and JS). */
+  work: number;
+}

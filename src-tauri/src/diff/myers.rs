@@ -15,10 +15,13 @@ pub struct DiffLimitExceeded {
     pub limit: u64,
 }
 
-/// Matched index pairs (old, new), ascending.
+/// Matched index pairs (old, new), ascending, and the work units spent (<= limit).
 pub struct Matches {
     pub old: Vec<usize>,
     pub new: Vec<usize>,
+    /// Read by the word diff (`intraline.rs`), which is wired into the commands in Paket 7 B3
+    #[allow(dead_code)]
+    pub work: u64,
 }
 
 pub fn align_sequences(a: &[u32], b: &[u32], id_count: usize, limit: u64) -> Result<Matches, DiffLimitExceeded> {
@@ -47,7 +50,7 @@ pub fn align_sequences(a: &[u32], b: &[u32], id_count: usize, limit: u64) -> Res
     myers.diff(0, n, 0, m)?;
 
     // 3. Back to the original indices, then "earliest match"
-    let mut matches = Matches { old: Vec::with_capacity(myers.match_a.len()), new: Vec::with_capacity(myers.match_a.len()) };
+    let mut matches = Matches { old: Vec::with_capacity(myers.match_a.len()), new: Vec::with_capacity(myers.match_a.len()), work: myers.work };
     let (mut next_a, mut next_b) = (0usize, 0usize);
     for (&ma, &mb) in myers.match_a.iter().zip(&myers.match_b) {
         let (i, j) = (a_index[ma], b_index[mb]);

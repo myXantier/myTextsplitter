@@ -35,10 +35,11 @@ export class DiffLimitError extends Error {
   }
 }
 
-/** Matched pairs as two parallel arrays (old index, new index), ascending. */
+/** Matched pairs as two parallel arrays (old index, new index), ascending, and the work units spent (<= limit). */
 export interface Matches {
   old: number[];
   new: number[];
+  work: number;
 }
 
 export function alignSequences(a: ArrayLike<number>, b: ArrayLike<number>, idCount: number, limit = DIFF_WORK_LIMIT): Matches {
@@ -59,7 +60,7 @@ export function alignSequences(a: ArrayLike<number>, b: ArrayLike<number>, idCou
   myers.diff(0, ra.length, 0, rb.length);
 
   // 3. Back to the original indices, then "earliest match"
-  const matches: Matches = { old: [], new: [] };
+  const matches: Matches = { old: [], new: [], work: myers.work };
   let prevA = -1;
   let prevB = -1;
   for (let m = 0; m < myers.matchA.length; m++) {
@@ -83,7 +84,8 @@ class Myers {
   private readonly a: Int32Array;
   private readonly b: Int32Array;
   private readonly limit: number;
-  private work = 0;
+  /** Work units spent so far */
+  work = 0;
 
   constructor(a: Int32Array, b: Int32Array, limit: number) {
     this.a = a;
