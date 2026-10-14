@@ -1,5 +1,5 @@
 {
-  "description": "Shared split fixtures for the Rust engine (cargo test) and the JS engine (npm test). Defaults per case: useRegex=false, trimParts=false, keepEmptyLines=true. 'expected' applies to both engines; a case with a known engine difference uses 'expectedRust' + 'expectedJs' and must explain it in 'divergence'. Every expected result is column-major: expected[column][row].",
+  "description": "Shared split fixtures for the Rust engine (cargo test) and the JS engine (npm test). Defaults per case: useRegex=false, trimParts=false, keepEmptyLines=true. 'expected' applies to both engines; a case with a known engine difference uses 'expectedRust' + 'expectedJs' and must explain it in 'divergence' ('resolved' documents a former divergence). Rows are the data lines of the shared line model (Paket 6, tests/fixtures/line-endings-cases.json): LF, CRLF and CR are line breaks, a trailing line break adds no row, an empty text has no rows. Every expected result is column-major: expected[column][row].",
   "cases": [
     {
       "name": "b1: column created in a later row is padded for earlier rows",
@@ -77,9 +77,8 @@
       "name": "empty input, keep empty lines",
       "input": "",
       "delimiter": ",",
-      "expectedRust": [],
-      "expectedJs": [[""]],
-      "divergence": "Line splitting: Rust str::lines() yields no line for an empty text, JS split('\\n') yields one empty line."
+      "expected": [],
+      "resolved": "Paket 6: was a divergence (JS split('\\n') yielded one empty row); an empty text has no data lines in both engines."
     },
     {
       "name": "empty input, skip empty lines",
@@ -147,9 +146,8 @@
       "name": "leading and trailing empty lines, keep",
       "input": "\nA,B\n\n",
       "delimiter": ",",
-      "expectedRust": [["", "A", ""], ["", "B", ""]],
-      "expectedJs": [["", "A", "", ""], ["", "B", "", ""]],
-      "divergence": "Trailing newline: Rust str::lines() drops the empty line after the final '\\n', JS split('\\n') keeps it as a row."
+      "expected": [["", "A", ""], ["", "B", ""]],
+      "resolved": "Paket 6: was a divergence (JS split('\\n') added a row for the trailing newline); the final '\\n' terminates the empty last line."
     },
     {
       "name": "leading and trailing empty lines, skip",
@@ -162,9 +160,8 @@
       "name": "trailing LF, keep empty lines",
       "input": "A,B\nC,D\n",
       "delimiter": ",",
-      "expectedRust": [["A", "C"], ["B", "D"]],
-      "expectedJs": [["A", "C", ""], ["B", "D", ""]],
-      "divergence": "Trailing newline: Rust str::lines() drops the empty line after the final '\\n', JS split('\\n') keeps it as a row."
+      "expected": [["A", "C"], ["B", "D"]],
+      "resolved": "Paket 6: was a divergence (JS split('\\n') added a row for the trailing newline); a trailing newline adds no row."
     },
     {
       "name": "trailing LF, skip empty lines",
@@ -177,9 +174,8 @@
       "name": "CRLF without trailing newline, trimParts off",
       "input": "A,B\r\nC,D",
       "delimiter": ",",
-      "expectedRust": [["A", "C"], ["B", "D"]],
-      "expectedJs": [["A", "C"], ["B\r", "D"]],
-      "divergence": "CRLF: Rust str::lines() strips the '\\r', JS split('\\n') leaves it at the end of the last part of the line."
+      "expected": [["A", "C"], ["B", "D"]],
+      "resolved": "Paket 6: was a divergence (JS split('\\n') left '\\r' in the last part); the line terminator is not part of the line in both engines."
     },
     {
       "name": "CRLF without trailing newline, trimParts on",
@@ -193,9 +189,8 @@
       "input": "A,B\r\nC,D\r\n",
       "delimiter": ",",
       "trimParts": true,
-      "expectedRust": [["A", "C"], ["B", "D"]],
-      "expectedJs": [["A", "C", ""], ["B", "D", ""]],
-      "divergence": "Trailing newline: Rust str::lines() drops the empty line after the final '\\r\\n', JS split('\\n') keeps it as a row."
+      "expected": [["A", "C"], ["B", "D"]],
+      "resolved": "Paket 6: was a divergence (JS split('\\n') added a row for the trailing '\\r\\n'); a trailing newline adds no row."
     },
     {
       "name": "CRLF empty line is kept",
@@ -428,6 +423,126 @@
       "expectedRust": [["a"], ["b"]],
       "expectedJs": [["a١b"]],
       "divergence": "Unicode classes: \\d matches Unicode decimal digits in fancy-regex, only [0-9] in JS."
+    },
+    {
+      "name": "CRLF with trailing newline, trimParts off",
+      "input": "A,B\r\nC,D\r\n",
+      "delimiter": ",",
+      "expected": [["A", "C"], ["B", "D"]]
+    },
+    {
+      "name": "CR line endings",
+      "input": "A,B\rC,D\r",
+      "delimiter": ",",
+      "expected": [["A", "C"], ["B", "D"]]
+    },
+    {
+      "name": "mixed line endings",
+      "input": "A,B\r\nC,D\nE,F\rG",
+      "delimiter": ",",
+      "expected": [["A", "C", "E", "G"], ["B", "D", "F", ""]]
+    },
+    {
+      "name": "one empty line with terminator, keep",
+      "input": "\n",
+      "delimiter": ",",
+      "expected": [[""]]
+    },
+    {
+      "name": "one empty line with terminator, skip",
+      "input": "\n",
+      "delimiter": ",",
+      "keepEmptyLines": false,
+      "expected": []
+    },
+    {
+      "name": "several empty lines, keep",
+      "input": "\n\n",
+      "delimiter": ",",
+      "expected": [["", ""]]
+    },
+    {
+      "name": "several trailing newlines, keep",
+      "input": "A,B\n\n\n",
+      "delimiter": ",",
+      "expected": [["A", "", ""], ["B", "", ""]]
+    },
+    {
+      "name": "several trailing newlines, skip",
+      "input": "A,B\n\n\n",
+      "delimiter": ",",
+      "keepEmptyLines": false,
+      "expected": [["A"], ["B"]]
+    },
+    {
+      "name": "CRLF several trailing newlines, keep",
+      "input": "A,B\r\n\r\n",
+      "delimiter": ",",
+      "expected": [["A", ""], ["B", ""]]
+    },
+    {
+      "name": "CRLF leading empty lines, keep",
+      "input": "\r\n\r\nA,B",
+      "delimiter": ",",
+      "expected": [["", "", "A"], ["", "", "B"]]
+    },
+    {
+      "name": "CRLF empty split fields are kept when empty lines are skipped",
+      "input": "A,,C\r\n,,\r\n\r\n",
+      "delimiter": ",",
+      "keepEmptyLines": false,
+      "expected": [["A", ""], ["", ""], ["C", ""]]
+    },
+    {
+      "name": "CRLF different column counts with trailing newline",
+      "input": "A\r\nB,C\r\n",
+      "delimiter": ",",
+      "expected": [["A", "B"], ["", "C"]]
+    },
+    {
+      "name": "CRLF whitespace-only line is not empty",
+      "input": "A,B\r\n \r\nC,D\r\n",
+      "delimiter": ",",
+      "keepEmptyLines": false,
+      "expected": [["A", " ", "C"], ["B", "", "D"]]
+    },
+    {
+      "name": "unicode with CRLF and trailing newline",
+      "input": "Grüße,😀\r\nStraße,🎉\r\n",
+      "delimiter": ",",
+      "expected": [["Grüße", "Straße"], ["😀", "🎉"]]
+    },
+    {
+      "name": "identical visible text, LF",
+      "input": "a;b\nc;d\n",
+      "delimiter": ";",
+      "expected": [["a", "c"], ["b", "d"]]
+    },
+    {
+      "name": "identical visible text, CRLF",
+      "input": "a;b\r\nc;d\r\n",
+      "delimiter": ";",
+      "expected": [["a", "c"], ["b", "d"]]
+    },
+    {
+      "name": "identical visible text, CR",
+      "input": "a;b\rc;d\r",
+      "delimiter": ";",
+      "expected": [["a", "c"], ["b", "d"]]
+    },
+    {
+      "name": "regex: $ anchors at the end of a CRLF line",
+      "input": "a1\r\nb2\r\n",
+      "delimiter": "\\d$",
+      "useRegex": true,
+      "expected": [["a", "b"], ["", ""]]
+    },
+    {
+      "name": "regex: lookbehind on CRLF lines",
+      "input": "1,a\r\n2,b\r\n",
+      "delimiter": "(?<=\\d),",
+      "useRegex": true,
+      "expected": [["1", "2"], ["a", "b"]]
     }
   ]
 }

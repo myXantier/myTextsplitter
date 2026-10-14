@@ -6,9 +6,11 @@ use std::time::Duration;
 
 use tauri::{Manager, State, WindowEvent};
 
+mod line_endings;
 mod text_processor;
 mod memory_usage;
-use text_processor::{ProcessedText, TextError, TextProcessor};
+use line_endings::{LineEnding, LineFormat};
+use text_processor::{CombineColumn, ProcessedText, TextError, TextProcessor};
 
 mod text_diff;
 mod job_slot;
@@ -86,6 +88,20 @@ async fn process_text_block(
 #[tauri::command]
 async fn connect_texts(text1: String, text2: String, separator: String) -> Result<String, String> {
     TextProcessor::connect_texts(&text1, &text2, &separator).map_err(|e| e.to_string())
+}
+
+/// Combine of the split columns. `lineending` (`"\n"`, `"\r\n"` or `"\r"`) and `trailingnewline` are the line format of
+/// the text that was split, detected by the frontend with the shared rules (`src/utils/lines.ts`).
+#[tauri::command]
+async fn combine_columns(
+    columns: Vec<Vec<String>>,
+    used: Vec<CombineColumn>,
+    lineending: String,
+    trailingnewline: bool,
+) -> Result<String, String> {
+    let line_ending = LineEnding::parse(&lineending).ok_or_else(|| format!("unsupported line ending {lineending:?}"))?;
+    let format = LineFormat { line_ending, trailing_newline: trailingnewline };
+    Ok(TextProcessor::combine_columns(&columns, &used, format))
 }
 
 /// Text Diff Method
@@ -207,6 +223,7 @@ fn main() {
             process_text_block,
             // process_file,
             connect_texts,
+            combine_columns,
             get_text_diff,
             filter_text,
             remove_lines,
@@ -323,6 +340,21 @@ mod tests {
         assert_eq!(split.result_text, vec!["a", "b"]);
         // The metrics of the processing are kept (measured inside the job, without the queue time)
         assert!(serde_json::to_value(&split.metrics).unwrap()["execution_time_ms"].as_f64().is_some_and(|ms| ms >= 0.0));
+    }
+
+    #[test]
+    fn combine_columns_command_uses_the_given_line_format() {
+        use tauri::async_runtime::block_on;
+        // Same argument shape as LeftMenuBar.appendColumnTauri (`used` deserialized from `{ index, separator }`)
+        let used: Vec<CombineColumn> = serde_json::from_value(serde_json::json!([{ "index": 1, "separator": "" }, { "index": 0, "separator": ":" }])).unwrap();
+        let columns = vec![vec!["A".to_string(), "C".into(), "".into()], vec!["B".to_string(), "D".into(), "".into()]];
+        let combined = block_on(combine_columns(columns.clone(), used.clone(), "\r\n".into(), true)).unwrap();
+        assert_eq!(combined, "B:A\r\nD:C\r\n:\r\n");
+        let error = block_on(combine_columns(columns, used, "\\n".into(), false)).unwrap_err();
+        assert!(error.contains("unsupported line ending"), "{error}");
+        // A single empty value is a valid (empty) result, not an error
+        let first: Vec<CombineColumn> = serde_json::from_value(serde_json::json!([{ "index": 0, "separator": "" }])).unwrap();
+        assert_eq!(block_on(combine_columns(vec![vec![String::new()]], first, "\n".into(), false)), Ok(String::new()));
     }
 
     #[test]

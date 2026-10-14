@@ -3,6 +3,8 @@ import { Trash2, GripVertical, X } from 'lucide-react';
 import { VirtualizedTextArea } from './VirtualizedTextArea';
 import CopyButton from '../../components/CopyButton';
 import { useTranslation } from 'react-i18next';
+import { useCombineHistoryStore } from '../../hooks/useCombineHistoryStore';
+import { joinLines } from '../../utils/lines';
 import './styles/ResultCombineStyle.css';
 
 interface ResultColumnsProps {
@@ -25,6 +27,8 @@ export function ResultColumns({
   const [draggedIndex, setDraggedIndex] = useState<number | null>(null);
   const [dropIndex, setDropIndex] = useState<number | null>(null);
   const { t } = useTranslation();
+  // Copied columns use the line ending and trailing newline of the text that was split
+  const lineFormat = useCombineHistoryStore((state) => state.lineFormat);
 
   const openModal = useCallback(
     (index: number) => {
@@ -106,7 +110,7 @@ export function ResultColumns({
                 <button className={`${fontSize}`} onClick={() => openModal(index)}>✏ Edit</button>
               </div>
               <div className="right">
-                <CopyButton toCopy={column.join('\n')} />
+                <CopyButton toCopy={joinLines(column, lineFormat)} />
                 <button onClick={() => handleDeleteColumn(index)}>
                   <Trash2 size={16} />
                 </button>

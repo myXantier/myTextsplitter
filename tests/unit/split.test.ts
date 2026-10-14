@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
 import { splitLinesToColumns, splitTextToColumns } from '../../src/utils/splitColumns.ts';
+import { splitLines } from '../../src/utils/lines.ts';
 
 interface SplitCase {
   name: string;
@@ -58,7 +59,8 @@ for (const c of fixtures.cases) {
 
 test('split (JS): worker entry point (pre-split lines) matches the text entry point', () => {
   for (const c of fixtures.cases) {
-    assert.deepEqual(splitLinesToColumns(c.input.split('\n'), c.delimiter, optionsOf(c)), splitTextToColumns(c.input, c.delimiter, optionsOf(c)), c.name);
+    // BaseWorker splits the text with the shared line model (`splitLines`), not with `split('\n')`
+    assert.deepEqual(splitLinesToColumns(splitLines(c.input).lines, c.delimiter, optionsOf(c)), splitTextToColumns(c.input, c.delimiter, optionsOf(c)), c.name);
   }
 });
 

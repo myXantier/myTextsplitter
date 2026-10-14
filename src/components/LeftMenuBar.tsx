@@ -6,6 +6,7 @@ import { MyAppLogo, SvgIconMenuClosed, SvgIconMenuOpened } from './SvgIcons';
 import { pages, PageKey } from '../config/pages';
 import { useSettings, useRuntimeSetting } from '../hooks/useSettings';
 import { useCombineHistoryStore } from '../hooks/useCombineHistoryStore';
+import { appendCombineColumn } from '../utils/combineColumns';
 import PageList from './PageList';
 import './styles/LeftMenuBarStyle.css';
 
@@ -36,9 +37,9 @@ export default function LeftMenuBar({ setPageName }: LeftMenuBarProps) {
   
   const [splitResults, setSplitResults] = useState<string[][]>([]);
 
-  const combinedText = useCombineHistoryStore(state => state.getText());
   const usedColumns = useCombineHistoryStore(state => state.getColumns());
   const setCombineState = useCombineHistoryStore(state => state.setCombineState);
+  const lineFormat = useCombineHistoryStore(state => state.lineFormat);
 
   // Toggle Open/Close menu bar
   function toggleMenu() {
@@ -116,55 +117,16 @@ export default function LeftMenuBar({ setPageName }: LeftMenuBarProps) {
       if (!splitResults[columnIndex]) return;
 
       try {
-
-        if (processingMode === 'fallback') {
-          appendColumnFrontend([...usedColumns, { index: columnIndex, separator: combineSeparator }]);
-          return;
-        }
-
-        const { invokeUNSAFE } = await import('../services/tauriInvoke');
-
-        const textToAdd = splitResults[columnIndex].join('\n');
-        // Rejects on a failed command (caught below); the combine state is only changed by a valid text
-        const newText = await invokeUNSAFE<unknown>('connect_texts', {
-          text1: combinedText,
-          text2: textToAdd,
-          separator: combinedText ? combineSeparator : '',
-        });
-
-        if (typeof newText !== 'string') {
-          throw new Error(`connect_texts returned ${typeof newText}`);
-        }
-
-        if (newText && newText !== combinedText) {
-          setCombineState({
-            text: newText,
-            columns: [...usedColumns, { index: columnIndex, separator: combineSeparator }],
-          });
-        }
+        // JS mode combines in the frontend, backend mode with the Rust command `combine_columns` (same rules)
+        const invoke = processingMode === 'fallback' ? null : (await import('../services/tauriInvoke')).invokeUNSAFE;
+        // Every valid result is a new state (also '' or an unchanged text: the used columns change anyway).
+        // Rejects on a failed command or an invalid answer (caught below): the combine state stays unchanged
+        setCombineState(await appendCombineColumn(splitResults, usedColumns, { index: columnIndex, separator: combineSeparator }, lineFormat, invoke));
       } catch (error) {
         window.logger.error('Error combining texts:', error);
       }
     },
-    [splitResults, combineSeparator, combinedText, usedColumns, setCombineState]
-  );
-
-  const appendColumnFrontend = useCallback(
-    (newUsedColumns: ColumnSeparator[]) => {
-      const newCombinedLines = splitResults[0].map((_, lineIndex) => {
-        const parts = newUsedColumns.map((col, i) => {
-          const value = splitResults[col.index]?.[lineIndex] ?? '';
-          return i === 0 ? value : `${col.separator}${value}`;
-        });
-        return parts.join('');
-      });
-
-      setCombineState({
-        text: newCombinedLines.join('\n'),
-        columns: newUsedColumns,
-      });
-    },
-    [splitResults, setCombineState]
+    [splitResults, combineSeparator, usedColumns, lineFormat, processingMode, setCombineState]
   );
 
   return (

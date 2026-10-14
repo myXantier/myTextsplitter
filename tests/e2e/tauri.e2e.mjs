@@ -11,7 +11,7 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, listTargets, sleep } from './lib/cdp.mjs';
-import { SPLIT_CASES, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
+import { SPLIT_CASES, checkCombineState, checkLineEndings, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
@@ -145,7 +145,7 @@ async function firstRun() {
   const firstResult = await main.eval('__t.columns()');
   r.check('Split result columns (Rust)', JSON.stringify(firstResult) === JSON.stringify(firstColumns), JSON.stringify(firstResult));
 
-  // Split B1 via Rust: late columns, empty input lines kept/skipped, Combine (connect_texts) without row offset
+  // Split B1 via Rust: late columns, empty input lines kept/skipped, Combine (combine_columns) without row offset
   n = main.logs.length;
   const b1 = SPLIT_CASES.b1;
   // Set explicitly: an existing settings.json may still contain showEmptyLines=false (old default)
@@ -153,7 +153,7 @@ async function firstRun() {
   let cols = await splitAndRead(main, b1.text, b1.separator, b1.keep);
   r.check('Split B1 (Rust): new column padded, empty line kept', JSON.stringify(cols) === JSON.stringify(b1.keep), JSON.stringify(cols));
   const combinedB1 = await combineColumns(main, [2, 0]);
-  r.check('Combine Part 3 + Part 1 (Rust connect_texts) keeps rows aligned', combinedB1.used === 2 && combinedB1.text === b1.combined, JSON.stringify(combinedB1));
+  r.check('Combine Part 3 + Part 1 (Rust combine_columns) keeps rows aligned', combinedB1.used === 2 && combinedB1.text === b1.combined, JSON.stringify(combinedB1));
   await main.eval(`__t.page().querySelector('.combine-clear')?.click(); true`);
   const keepBefore = await setSettingsCheckbox(main, 'Keep Empty Lines', false);
   cols = await splitAndRead(main, b1.text, b1.separator, b1.skip);
@@ -165,6 +165,9 @@ async function firstRun() {
   await checkProcessingErrors(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
   // Paket 5: backtracking limit, Rust-only syntax not blocked by a JS pre-validation, preview engine hint
   await checkRegexRobustness(main, r, 'Rust backend', (from) => errorsIn(main.logs, from), 'rust');
+  // Paket 6: CRLF file with trailing newline through every operation (Rust; Sort and the column copy are JS)
+  await checkLineEndings(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
+  await checkCombineState(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
   await main.eval(`__t.nav('split'); true`);
   await sleep(200);
 
@@ -180,6 +183,8 @@ async function firstRun() {
   await main.eval(`__t.set(__t.page().querySelector('.form-add-render input'), '_'); true`);
   await checkProcessingErrors(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
   await checkRegexRobustness(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from), 'js');
+  await checkLineEndings(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
+  await checkCombineState(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
   await main.eval(`__t.nav('split'); true`);
   await sleep(200);
   await main.eval(`__t.page().querySelector('.mode-toggle').click(); true`);

@@ -8,7 +8,7 @@ import CustomSelect from '../components/CustomSelect';
 import CopyButton from '../components/CopyButton';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
-import natsort from '../utils/sortNatural';
+import { sortText, type SortMethod } from '../utils/sortLines';
 import useSnackbar from '../hooks/useSnackbar';
 import './styles/SortPageStyle.css';
 
@@ -17,8 +17,6 @@ interface SortPageProps {
   setSourceText: (text: string) => void;
   visible?: boolean;
 }
-
-type SortMethod = 'alphabetical' | 'alphabeticalReverse' | 'natural' | 'naturalReverse' | 'lengthAsc' | 'lengthDesc' | 'random';
 
 const sortItems: Item<SortMethod>[] = [
   { label: 'Alphabetical (A to Z)', value: 'alphabetical', index: 0 },
@@ -44,48 +42,8 @@ export default function SortPage({ sourceText, setSourceText, visible }: SortPag
       return;
     }
 
-    const lines = sourceText.split('\n').filter(line => line.trim() !== '');
-    let sortedLines: string[];
-
     try {
-      switch (sortMethod) {
-        case 'alphabetical':
-          sortedLines = lines.sort((a, b) => 
-            caseSensitive ? a.localeCompare(b) : a.toLowerCase().localeCompare(b.toLowerCase())
-          );
-          break;
-
-        case 'alphabeticalReverse':
-          sortedLines = lines.sort((a, b) => 
-            caseSensitive ? b.localeCompare(a) : b.toLowerCase().localeCompare(a.toLowerCase())
-          );
-          break;
-
-        case 'natural':
-          sortedLines = lines.sort(natsort({ insensitive: !caseSensitive }));
-          break;
-
-        case 'naturalReverse':
-          sortedLines = lines.sort(natsort({ insensitive: !caseSensitive, desc: true }));
-          break;
-
-        case 'lengthAsc':
-          sortedLines = lines.sort((a, b) => a.length - b.length);
-          break;
-
-        case 'lengthDesc':
-          sortedLines = lines.sort((a, b) => b.length - a.length);
-          break;
-
-        case 'random':
-          sortedLines = lines.sort(() => Math.random() - 0.5);
-          break;
-
-        default:
-          sortedLines = lines;
-      }
-
-      setResultText(sortedLines.join('\n'));
+      setResultText(sortText(sourceText, sortMethod, caseSensitive));
       setShowResult(true);
       snackbar.success('Text sorted successfully');
     } catch (error) {

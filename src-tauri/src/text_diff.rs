@@ -1,6 +1,7 @@
 use serde::Serialize;
 use std::collections::HashMap;
 
+use crate::line_endings::split_lines;
 use crate::text_processor::{get_backend_metrics, ProcessedText};
 
 #[derive(Debug, Clone, Serialize)]
@@ -19,9 +20,9 @@ pub struct DiffResult {
 }
 
 pub fn compare_texts(oldtext: &str, newtext: &str, ignorewhitespace: bool) -> Result<Vec<DiffResult>, String> {
-    // Split texts into lines
-    let old_lines: Vec<&str> = oldtext.lines().collect();
-    let new_lines: Vec<&str> = newtext.lines().collect();
+    // Split texts into lines (shared line model: line endings and a trailing newline are not compared)
+    let old_lines: Vec<&str> = split_lines(oldtext).lines;
+    let new_lines: Vec<&str> = split_lines(newtext).lines;
     
     let mut result = Vec::new();
     
@@ -169,4 +170,69 @@ pub fn get_diff_json(oldtext: &str, newtext: &str, ignorewhitespace: bool) -> Re
         removed_lines: 0,
         metrics,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde::Deserialize;
+
+    /// Shared with the JS engine tests (`tests/unit/line-endings.test.ts`).
+    const LINE_FIXTURES: &str = include_str!("../../tests/fixtures/line-endings-cases.json");
+
+    #[derive(Deserialize)]
+    struct Fixtures {
+        diff: Vec<DiffCase>,
+    }
+
+    #[derive(Deserialize)]
+    struct DiffCase {
+        name: String,
+        old: String,
+        new: String,
+        unchanged: Vec<String>,
+        changes: Vec<String>,
+    }
+
+    fn type_name(diff_type: &DiffType) -> &'static str {
+        match diff_type {
+            DiffType::Added => "added",
+            DiffType::Removed => "removed",
+            DiffType::Moved => "moved",
+            DiffType::Unchanged => "unchanged",
+        }
+    }
+
+    /// The diff algorithms of Rust and JS differ (order, moved detection): the fixtures only compare which lines are
+    /// unchanged and which are changed (`type:text`), both sorted.
+    #[test]
+    fn diff_line_ending_fixtures() {
+        let fixtures: Fixtures = serde_json::from_str(LINE_FIXTURES).expect("invalid line-ending fixtures");
+        assert!(!fixtures.diff.is_empty());
+
+        let mut failures = Vec::new();
+        for c in &fixtures.diff {
+            let result = compare_texts(&c.old, &c.new, false).unwrap();
+            let mut unchanged: Vec<String> = result.iter().filter(|d| matches!(d.diff_type, DiffType::Unchanged)).map(|d| d.text.clone()).collect();
+            let mut changes: Vec<String> = result
+                .iter()
+                .filter(|d| !matches!(d.diff_type, DiffType::Unchanged))
+                .map(|d| format!("{}:{}", type_name(&d.diff_type), d.text))
+                .collect();
+            let (mut expected_unchanged, mut expected_changes) = (c.unchanged.clone(), c.changes.clone());
+            for list in [&mut unchanged, &mut changes, &mut expected_unchanged, &mut expected_changes] {
+                list.sort();
+            }
+            if unchanged != expected_unchanged || changes != expected_changes {
+                failures.push(format!("{}\n    expected: {:?} {:?}\n    actual:   {:?} {:?}", c.name, expected_unchanged, expected_changes, unchanged, changes));
+            }
+        }
+        assert!(failures.is_empty(), "{} of {} diff line fixtures failed:\n  {}", failures.len(), fixtures.diff.len(), failures.join("\n  "));
+    }
+
+    #[test]
+    fn diff_lines_never_contain_line_terminators() {
+        let result = compare_texts("a\r\nb\rc\n", "a\nx\r\n", true).unwrap();
+        assert!(result.iter().all(|d| !d.text.contains(['\r', '\n'])), "{result:?}");
+    }
 }

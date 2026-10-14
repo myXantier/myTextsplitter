@@ -1,10 +1,21 @@
 use fancy_regex::{Regex, RegexBuilder};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+
+use crate::line_endings::{join_lines, split_lines, LineFormat, TextLines};
 
 use memory_stats::{memory_stats, MemoryStats};
 use thousands::Separable;
 
 pub struct TextProcessor;
+
+/// A used column of the Combine (same shape as `ColumnSeparator` in the frontend).
+#[derive(Debug, Clone, Deserialize)]
+pub struct CombineColumn {
+    /// Index of the split column
+    pub index: usize,
+    /// Placed before the value of this column (ignored for the first used column)
+    pub separator: String,
+}
 
 
 /// `None` (JSON `null`) = the memory metric is not available on this platform.
@@ -97,8 +108,10 @@ impl TextProcessor {
 
     /// Splits every line into parts; column `i` holds the i-th part of every processed row.
     /// Each processed row is represented exactly once in every column (missing parts are `""`).
-    /// `keep_empty_lines == false` skips lines that are completely empty (after `lines()` removed the
-    /// line ending). Whitespace-only lines are not empty and are always kept.
+    /// Rows are the data lines of the shared line model (`split_lines`): LF, CRLF and CR are line breaks, a trailing
+    /// line break adds no row. `keep_empty_lines == false` skips lines that are completely empty. Whitespace-only
+    /// lines are not empty and are always kept. The columns are joined with `\n` only for the transport to the
+    /// frontend (`SplitService` splits them again); values never contain a line break.
     pub fn process_text_block_to_column_strings(
         text: &str,
         delimiter: &str,
@@ -118,7 +131,7 @@ impl TextProcessor {
         let mut columns: Vec<Vec<String>> = Vec::new();
         let mut rows = 0;
 
-        for line in text.lines() {
+        for line in split_lines(text).lines {
             if !keep_empty_lines && line.is_empty() {
                 continue;
             }
@@ -158,33 +171,50 @@ impl TextProcessor {
         })
     }
 
+    /// Joins the used columns row by row (Combine). The row count is the longest used column; missing values are `""`,
+    /// so leading and trailing empty values keep their rows and the columns never shift against each other.
+    /// `format` is the line format of the text that was split (the frontend detects it with the same rules).
+    /// Same rules as `combineColumns` (JS), shared fixtures: `tests/fixtures/line-endings-cases.json`.
+    pub fn combine_columns(columns: &[Vec<String>], used: &[CombineColumn], format: LineFormat) -> String {
+        let value = |col: &CombineColumn, row: usize| columns.get(col.index).and_then(|c| c.get(row)).map_or("", String::as_str);
+        let rows = used.iter().map(|col| columns.get(col.index).map_or(0, Vec::len)).max().unwrap_or(0);
+
+        let lines: Vec<String> = (0..rows)
+            .map(|row| {
+                let mut line = String::new();
+                for (i, col) in used.iter().enumerate() {
+                    if i > 0 {
+                        line.push_str(&col.separator);
+                    }
+                    line.push_str(value(col, row));
+                }
+                line
+            })
+            .collect();
+        join_lines(&lines, format)
+    }
+
     /// Verbindet zwei Textblöcke wieder spaltenweise mit dem separator und gibt das Ergebnis als `String` zurück.
+    /// Not used by the UI any more (Combine uses `combine_columns`: re-splitting a combined text cannot tell a trailing
+    /// empty value from a trailing newline). Lines follow the shared line model; the result uses the line format of
+    /// `text1`, or of `text2` if `text1` has no line break (LF if neither has one).
     pub fn connect_texts(text1: &str, text2: &str, separator: &str) -> Result<String, String> {
 
         // Zeilenweise Aufteilung der Texte
-        let lines1: Vec<&str> = text1.lines().collect();
-        let lines2: Vec<&str> = text2.lines().collect();
+        let TextLines { lines: lines1, format: format1 } = split_lines(text1);
+        let TextLines { lines: lines2, format: format2 } = split_lines(text2);
+        let has_line_break = |text: &str| text.contains(['\r', '\n']);
+        let format = if has_line_break(text1) || !has_line_break(text2) { format1 } else { format2 };
 
         // Die maximale Anzahl von Zeilen ermitteln (für den Fall, dass die Texte unterschiedliche Längen haben)
         let max_lines = lines1.len().max(lines2.len());
-        let mut result = String::new();
 
-        for i in 0..max_lines {
-            // Füge jeweils die Zeile von text1 und text2 zusammen, wenn sie existieren
-            let line1 = lines1.get(i).unwrap_or(&"");
-            let line2 = lines2.get(i).unwrap_or(&"");
+        // Füge jeweils die Zeile von text1 und text2 zusammen, wenn sie existieren (leading empty rows are kept)
+        let rows: Vec<String> = (0..max_lines)
+            .map(|i| format!("{}{}{}", lines1.get(i).unwrap_or(&""), separator, lines2.get(i).unwrap_or(&"")))
+            .collect();
 
-            // Row index, not `result.is_empty()`: leading empty rows must not be dropped (row offset)
-            if i > 0 {
-                result.push_str("\n");
-            }
-
-            result.push_str(line1);
-            result.push_str(&separator); 
-            result.push_str(line2); 
-        }
-
-        Ok(result)
+        Ok(join_lines(&rows, format))
     }
 
     
@@ -202,8 +232,10 @@ impl TextProcessor {
 
         // Runtime errors are returned instead of panicking (`replace_all`) or looping forever
         // (`find_iter` keeps yielding the same error, `filter_map(Result::ok)` never ended).
+        // Shared line model: the result keeps the line ending and the trailing newline of the input
+        let TextLines { lines, format } = split_lines(text);
         let mut processed_lines: Vec<String> = Vec::new();
-        for line in text.lines() {
+        for line in lines {
             if line.trim().is_empty() {
                 continue;
             }
@@ -215,7 +247,7 @@ impl TextProcessor {
                     .map(|m| m.map(|m| m.as_str()))
                     .collect::<Result<Vec<_>, _>>()
                     .map_err(regex_runtime_error)?
-                    .join(if splitmatches { "\n" } else { "" }),
+                    .join(if splitmatches { format.line_ending.as_str() } else { "" }),
             };
 
             if !processed.is_empty() {
@@ -227,7 +259,7 @@ impl TextProcessor {
         let metrics = get_backend_metrics(execution_time, before_mem);
         
         Ok(ProcessedText {
-            result_text: processed_lines.join("\n"),
+            result_text: join_lines(&processed_lines, format),
             removed_lines: 0,
             metrics,
         })
@@ -243,7 +275,8 @@ impl TextProcessor {
         useregex: bool,
         trimparts: bool,
     ) -> Result<ProcessedText<String>, TextError> {
-        let lines: Vec<&str> = text.lines().collect();
+        // Shared line model: a trailing newline is no line; the result keeps the line ending and the trailing newline
+        let TextLines { lines, format } = split_lines(text);
         let total_lines = lines.len(); // 🏆 Anzahl der Originalzeilen
 
         let before_mem = memory_stats::memory_stats();
@@ -302,7 +335,7 @@ impl TextProcessor {
         };
 
         let execution_time = start_time.elapsed().as_secs_f64() * 1000.0;
-        let processed_text = processed_lines.join("\n");
+        let processed_text = join_lines(&processed_lines, format);
 
         let metrics = get_backend_metrics(execution_time, before_mem);
         
@@ -425,9 +458,142 @@ mod tests {
     fn split_then_combine_keeps_rows_aligned() {
         // Same calls as the backend combine (LeftMenuBar.appendColumnTauri): Part 3, then Part 1
         let result = TextProcessor::process_text_block_to_column_strings("A,B\nC,D,E\n\nF,G", ",", false, false, true).unwrap();
-        let first = TextProcessor::connect_texts("", &result.result_text[2], "").unwrap();
-        let combined = TextProcessor::connect_texts(&first, &result.result_text[0], ":").unwrap();
-        assert_eq!(combined, ":A\nE:C\n:\n:F");
+        let columns: Vec<Vec<String>> = result.result_text.iter().map(|col| col.split('\n').map(String::from).collect()).collect();
+        let used = [CombineColumn { index: 2, separator: String::new() }, CombineColumn { index: 0, separator: ":".into() }];
+        assert_eq!(TextProcessor::combine_columns(&columns, &used[..1], LineFormat::default()), "\nE\n\n");
+        assert_eq!(TextProcessor::combine_columns(&columns, &used, LineFormat::default()), ":A\nE:C\n:\n:F");
+    }
+
+    #[test]
+    fn connect_texts_follows_the_line_model() {
+        // No longer used by the UI. Its text input cannot tell a trailing empty value from a trailing newline:
+        // "\nE\n\n" (Part 3 above) is read as 3 lines + trailing newline, the max with Part 1 restores the 4th row.
+        let first = TextProcessor::connect_texts("", "\nE\n\n", "").unwrap();
+        assert_eq!(first, "\nE\n\n");
+        assert_eq!(TextProcessor::connect_texts(&first, "A\nC\n\nF", ":").unwrap(), ":A\nE:C\n:\n:F\n");
+        // CRLF/CR are line breaks and are not part of the values; format of text1, else of text2
+        assert_eq!(TextProcessor::connect_texts("a\r\nb\r\n", "1\n2", "-").unwrap(), "a-1\r\nb-2\r\n");
+        assert_eq!(TextProcessor::connect_texts("a", "1\r2", "-").unwrap(), "a-1\r-2");
+        assert_eq!(TextProcessor::connect_texts("", "", "-").unwrap(), "");
+    }
+
+    // --- Paket 6: shared line-ending fixtures, also run by the JS engine (`tests/unit/line-endings.test.ts`) ---
+
+    const LINE_FIXTURES: &str = include_str!("../../tests/fixtures/line-endings-cases.json");
+
+    #[derive(Deserialize)]
+    struct LineFixtures {
+        filter: Vec<FilterLineCase>,
+        remove: Vec<RemoveLineCase>,
+        combine: Vec<CombineLineCase>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct FilterLineCase {
+        name: String,
+        input: String,
+        pattern: String,
+        mode: Option<String>,
+        split_matches: Option<bool>,
+        expected: String,
+    }
+
+    #[derive(Deserialize, Debug, PartialEq)]
+    #[serde(rename_all = "camelCase")]
+    struct RemoveExpected {
+        text: String,
+        removed_lines: usize,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RemoveLineCase {
+        name: String,
+        input: String,
+        #[serde(default)]
+        pattern: String,
+        remove_mode: String,
+        #[serde(default)]
+        use_regex: bool,
+        #[serde(default)]
+        trim_parts: bool,
+        expected: Option<RemoveExpected>,
+        expected_rust: Option<RemoveExpected>,
+    }
+
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct CombineLineCase {
+        name: String,
+        columns: Vec<Vec<String>>,
+        used: Vec<CombineColumn>,
+        line_ending: String,
+        trailing_newline: bool,
+        expected: String,
+    }
+
+    fn line_fixtures() -> LineFixtures {
+        serde_json::from_str(LINE_FIXTURES).expect("invalid line-ending fixtures")
+    }
+
+    #[test]
+    fn filter_line_ending_fixtures() {
+        let cases = line_fixtures().filter;
+        assert!(!cases.is_empty());
+        let failures: Vec<String> = cases
+            .iter()
+            .filter_map(|c| {
+                let mode = c.mode.as_deref().unwrap_or("keep");
+                let actual = TextProcessor::filter_text_internal(&c.input, &c.pattern, mode, true, c.split_matches.unwrap_or(true)).map(|r| r.result_text);
+                (actual.as_ref() != Ok(&c.expected)).then(|| format!("{}\n    expected: {:?}\n    actual:   {:?}", c.name, c.expected, actual))
+            })
+            .collect();
+        assert!(failures.is_empty(), "{} of {} filter line fixtures failed:\n  {}", failures.len(), cases.len(), failures.join("\n  "));
+    }
+
+    #[test]
+    fn remove_line_ending_fixtures() {
+        let cases = line_fixtures().remove;
+        assert!(!cases.is_empty());
+        let failures: Vec<String> = cases
+            .iter()
+            .filter_map(|c| {
+                let expected = c.expected_rust.as_ref().or(c.expected.as_ref()).expect(&c.name);
+                let actual = TextProcessor::remove_lines_internal(&c.input, &c.pattern, &c.remove_mode, true, c.use_regex, c.trim_parts)
+                    .map(|r| RemoveExpected { text: r.result_text, removed_lines: r.removed_lines });
+                (actual.as_ref() != Ok(expected)).then(|| format!("{}\n    expected: {:?}\n    actual:   {:?}", c.name, expected, actual))
+            })
+            .collect();
+        assert!(failures.is_empty(), "{} of {} remove line fixtures failed:\n  {}", failures.len(), cases.len(), failures.join("\n  "));
+    }
+
+    #[test]
+    fn combine_line_ending_fixtures() {
+        let cases = line_fixtures().combine;
+        assert!(!cases.is_empty());
+        let failures: Vec<String> = cases
+            .iter()
+            .filter_map(|c| {
+                let line_ending = crate::line_endings::LineEnding::parse(&c.line_ending).expect(&c.name);
+                let actual = TextProcessor::combine_columns(&c.columns, &c.used, LineFormat { line_ending, trailing_newline: c.trailing_newline });
+                (actual != c.expected).then(|| format!("{}\n    expected: {:?}\n    actual:   {:?}", c.name, c.expected, actual))
+            })
+            .collect();
+        assert!(failures.is_empty(), "{} of {} combine line fixtures failed:\n  {}", failures.len(), cases.len(), failures.join("\n  "));
+    }
+
+    #[test]
+    fn crlf_does_not_change_regex_results() {
+        // The same visible text gives the same matches; only the line ending of the result follows the input
+        for (text, ending) in [("a1\nb22\n", "\n"), ("a1\r\nb22\r\n", "\r\n"), ("a1\rb22\r", "\r")] {
+            let filter = TextProcessor::filter_text_internal(text, r"\d+$", "keep", true, true).unwrap();
+            assert_eq!(filter.result_text, format!("1{ending}22{ending}"));
+            let remove = TextProcessor::remove_lines_internal(text, r"^a\d$", "containing", true, true, false).unwrap();
+            assert_eq!((remove.result_text, remove.removed_lines), (format!("b22{ending}"), 1));
+            let split = TextProcessor::process_text_block_to_column_strings(text, r"(?<=[a-z])", false, true, true).unwrap();
+            assert_eq!(split.result_text, vec!["a\nb", "1\n22"]);
+        }
     }
 
     #[test]
@@ -560,7 +726,8 @@ mod tests {
         assert_eq!(split.result_text.len(), 2);
         assert_eq!(split.result_text[1].lines().count(), 40_000);
         let filter = TextProcessor::filter_text_internal(&text, r"(?<=,)\d", "keep", true, false).unwrap();
-        assert_eq!(filter.result_text, "1\n2\n".repeat(20_000).trim_end());
+        // Paket 6: the trailing newline of the input is kept (was dropped by `lines()` + `join`)
+        assert_eq!(filter.result_text, "1\n2\n".repeat(20_000));
         let remove = TextProcessor::remove_lines_internal(&text, r"^beta", "containing", true, true, false).unwrap();
         assert_eq!(remove.removed_lines, 20_000);
     }

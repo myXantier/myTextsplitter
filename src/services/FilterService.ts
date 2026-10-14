@@ -1,5 +1,6 @@
 import { BaseService, type JobOutcome, type JobRegex } from './BaseService';
 import { compileUserRegex } from '../utils/regex';
+import { joinLines, splitLines } from '../utils/lines';
 import { assertBackendResult, createResult } from './ProcessingError';
 
 export class FilterService extends BaseService {
@@ -38,7 +39,8 @@ export class FilterService extends BaseService {
 
     const regex = compileUserRegex(mainParam, caseSensitive ? 'g' : 'gi');
 
-    const processedLines = sourceText.split('\n').map((line) => {
+    const { lines, ...format } = splitLines(sourceText);
+    const processedLines = lines.map((line) => {
       if (!line.trim()) return line;
 
       if (filterMode === 'remove') {
@@ -46,10 +48,10 @@ export class FilterService extends BaseService {
       } else {
         const matches = [...line.matchAll(regex)].map((m) => m[0]);
         if (!matches.length) return '';
-        return splitMatches ? matches.join('\n') : matches.join('');
+        return splitMatches ? matches.join(format.lineEnding) : matches.join('');
       }
     });
 
-    return createResult('Text', processedLines.join('\n'));
+    return createResult('Text', joinLines(processedLines, format));
   }
 }
