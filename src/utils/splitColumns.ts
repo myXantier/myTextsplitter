@@ -1,6 +1,7 @@
 // Split logic of the JS engine (Web Worker and main-thread fallback).
-// Kept free of imports so it can be unit-tested with plain Node (`npm test`).
+// Only imports the line model, so it can be unit-tested with plain Node (`npm test`).
 // Shared fixtures with the Rust engine: tests/fixtures/split-cases.json
+import { splitLines } from './lines.ts';
 
 export interface SplitOptions {
   trimParts: boolean;
@@ -9,11 +10,9 @@ export interface SplitOptions {
   keepEmptyLines: boolean;
 }
 
-/** Lines come from `split('\n')`, so an empty CRLF line is `'\r'` (Rust's `lines()` strips that `\r`). */
-const isEmptyLine = (line: string) => line === '' || line === '\r';
-
 /**
  * Splits every line into parts; `columns[i][row]` is the i-th part of input row `row`.
+ * `lines` are data lines of the shared line model (`splitLines`): without terminators, no row for a trailing newline.
  * Each processed row is represented exactly once in every column (missing parts are `''`).
  * Throws a `SyntaxError` for an invalid regex.
  */
@@ -24,7 +23,7 @@ export function splitLinesToColumns(lines: string[], delimiter: string, options:
   let rows = 0;
 
   lines.forEach((line) => {
-    if (!keepEmptyLines && isEmptyLine(line)) return;
+    if (!keepEmptyLines && line === '') return;
 
     // Capture groups that did not participate in the match are `undefined`
     const parts = line.split(regex ?? delimiter).map((part) => part ?? '');
@@ -45,5 +44,5 @@ export function splitLinesToColumns(lines: string[], delimiter: string, options:
 }
 
 export function splitTextToColumns(text: string, delimiter: string, options: SplitOptions): string[][] {
-  return splitLinesToColumns(text.split('\n'), delimiter, options);
+  return splitLinesToColumns(splitLines(text).lines, delimiter, options);
 }

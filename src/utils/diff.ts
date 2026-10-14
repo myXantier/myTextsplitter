@@ -1,10 +1,13 @@
+import { splitLines } from './lines';
+
 export interface WordDiff {
   text: string; 
   type: 'added' | 'removed' | 'unchanged' | 'changed' | 'moved';
 }
 
+/** Compares the data lines of both texts (shared line model): line endings and a trailing newline are not compared. */
 export const computeLinearDiff = (oldText: string, newText: string): DiffResult[] => {
-  return computeLinearDiffFromArray(oldText?.split('\n') ?? [], newText?.split('\n') ?? []);
+  return computeLinearDiffFromArray(splitLines(oldText ?? '').lines, splitLines(newText ?? '').lines);
 };
   
 export const computeLinearDiffFromArray = (oldLines: string[], newLines: string[]): DiffResult[] => {

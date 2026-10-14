@@ -2,6 +2,7 @@ import { BaseWorker, type ProcessOptions } from './BaseWorker';
 import { compileUserRegex } from '../utils/regex';
 import { WorkerLogger } from '../other/Logger';
 import { createResult } from '../services/ProcessingError';
+import { joinLines } from '../utils/lines';
 
 export class RemoveWorker extends BaseWorker {
 
@@ -45,7 +46,8 @@ export class RemoveWorker extends BaseWorker {
     }
 
     return createResult('TextV2', {
-      result_text: processedLines.join('\n'), removed_lines: chunk.length - processedLines.length,
+      // Line ending and trailing newline of the input; no remaining line gives ''
+      result_text: joinLines(processedLines, this.lineFormat), removed_lines: chunk.length - processedLines.length,
       metrics: {
         execution_time_ms: 0,
         memory_usage_kb: 0,

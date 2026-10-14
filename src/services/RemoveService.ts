@@ -1,5 +1,6 @@
 import { BaseService, type JobOutcome, type JobRegex } from './BaseService';
 import { compileUserRegex } from '../utils/regex';
+import { joinLines, splitLines } from '../utils/lines';
 import { assertBackendResult, createResult } from './ProcessingError';
 
 export class RemoveService extends BaseService {
@@ -30,7 +31,7 @@ export class RemoveService extends BaseService {
     const { sourceText, mainParam, configParams } = args;
     const { caseSensitive, useRegex, trimParts, removeMode } = configParams;
 
-    const lines = sourceText.split('\n');
+    const { lines, ...format } = splitLines(sourceText);
     let processedLines: string[];
 
     if (removeMode === 'duplicates') {
@@ -64,7 +65,8 @@ export class RemoveService extends BaseService {
     }
 
     return createResult('TextV2', {
-      result_text: processedLines.join('\n'), removed_lines: lines.length - processedLines.length,
+      // Line ending and trailing newline of the input; no remaining line gives ''
+      result_text: joinLines(processedLines, format), removed_lines: lines.length - processedLines.length,
       metrics: {
         execution_time_ms: 0,
         memory_usage_kb: 0,

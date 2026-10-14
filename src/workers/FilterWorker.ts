@@ -2,6 +2,7 @@ import { BaseWorker, type ProcessOptions } from './BaseWorker';
 import { compileUserRegex } from '../utils/regex';
 import { WorkerLogger } from '../other/Logger';
 import { createResult } from '../services/ProcessingError';
+import { joinLines } from '../utils/lines';
 
 export class FilterWorker extends BaseWorker {
   /** Errors are thrown and reported by `BaseWorker.process` (never turned into an empty result). */
@@ -22,12 +23,13 @@ export class FilterWorker extends BaseWorker {
         } else {
           const matches = [...line.matchAll(regex)].map((m) => m[0]);
           if (!matches.length) return ''; // Gibt eine leere Zeile zurück
-          return splitMatches ? matches.join('\n') : matches.join('');
+          return splitMatches ? matches.join(this.lineFormat.lineEnding) : matches.join('');
         }
       })
       .filter(Boolean);
 
-    return createResult('Text', processedLines.join('\n'));
+    // Line ending and trailing newline of the input; no remaining line gives ''
+    return createResult('Text', joinLines(processedLines, this.lineFormat));
   }
 }
 

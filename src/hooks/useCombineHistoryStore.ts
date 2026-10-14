@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { DEFAULT_LINE_FORMAT, type LineFormat } from '../utils/lines';
 
 export interface ColumnSeparator {
   index: number;
@@ -14,7 +15,10 @@ interface CombineHistoryStore {
   past: CombineState[];
   present: CombineState;
   future: CombineState[];
+  /** Line format of the text the current split result came from; combined and copied columns use it. Not part of the undo history. */
+  lineFormat: LineFormat;
 
+  setLineFormat: (format: LineFormat) => void;
   setCombineState: (newState: CombineState) => void;
   clearCombineState: () => void;
   undoCombine: () => void;
@@ -32,6 +36,9 @@ export const useCombineHistoryStore = create<CombineHistoryStore>((set, get) => 
   past: [],
   present: { text: '', columns: [] },
   future: [],
+  lineFormat: DEFAULT_LINE_FORMAT,
+
+  setLineFormat: (lineFormat) => set({ lineFormat }),
 
   setCombineState: (newPresent) => {
     const { past, present } = get();

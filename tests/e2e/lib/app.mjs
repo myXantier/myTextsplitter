@@ -28,6 +28,25 @@ export const APP_HELPERS = `window.__t = {
     __t.snackObserver.observe(document.body, { childList: true, subtree: true });
   },
   takeSnacks() { const log = __t.snackLog; __t.snackLog = []; return log; },
+  /** Value React passes to a controlled textarea: \`textarea.value\` normalizes CRLF/CR to LF, this one does not */
+  raw(el) {
+    const key = el && Object.keys(el).find((k) => k.startsWith('__reactProps'));
+    return key ? el[key].value : null;
+  },
+  /** Imports \`text\` through the n-th "Open File" button of the page (FileReader keeps CRLF, unlike typing) */
+  loadFile(index, text) {
+    const input = __t.page().querySelectorAll('.file-upload input[type=file]')[index];
+    const files = new DataTransfer();
+    files.items.add(new File([text], 'input.txt', { type: 'text/plain' }));
+    input.files = files.files;
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  },
+  /** Copy buttons write into __t.copied instead of the system clipboard (restore with releaseCopy) */
+  captureCopy() {
+    __t.copied = null;
+    Object.defineProperty(navigator.clipboard, 'writeText', { configurable: true, writable: true, value: (text) => { __t.copied = text; return Promise.resolve(); } });
+  },
+  releaseCopy() { delete navigator.clipboard.writeText; __t.copied = null; },
   settingsCheckbox(label) {
     return [...document.querySelectorAll('.settings-modal label')].find(l => l.innerText.includes(label)).querySelector('input');
   },
@@ -389,4 +408,149 @@ export async function checkRegexRobustness(page, r, label, errorsSince, engine) 
   await setInput('');
   // The source text is shared by the pages: leave a harmless one for the following checks
   await setText('a_b');
+}
+
+/**
+ * Combine state (Paket 6 follow-up) in the current processing mode (Rust: `combine_columns`, JS: frontend): adding a
+ * column is a new state even if the combined text is '' or unchanged; undo/redo restore the used columns.
+ */
+export async function checkCombineState(page, r, label, errorsSince) {
+  const n = page.logs.length;
+  const json = (value) => JSON.stringify(value);
+  const combined = () => page.eval(`__t.raw(__t.page().querySelector('.combine-textarea'))`);
+  /** Number of used column buttons (the column selector is opened and closed again) */
+  const usedCount = async () => {
+    await page.eval(`document.querySelector('.combine-icon-link').click(); true`);
+    await sleepMs(300);
+    const used = await page.eval(`document.querySelectorAll('.column-button-used').length`);
+    await page.eval(`document.querySelector('.close-combine-btn')?.click(); true`);
+    await sleepMs(200);
+    return used;
+  };
+  const undoRedo = async (i) => {
+    await page.eval(`__t.page().querySelectorAll('.combine-action')[${i}].click(); true`);
+    await sleepMs(200);
+    return { text: await combined(), used: await usedCount() };
+  };
+
+  // First column with a single empty value: the valid result is '' and the column counts as used
+  let cols = await splitAndRead(page, ',a', ',', [[''], ['a']]);
+  await page.eval(`__t.set(__t.page().querySelector('.combine-input'), ''); true`);
+  await sleepMs(150);
+  let result = await combineColumns(page, [0]);
+  r.check(`${label}: Combine of an empty first column -> '' and the column is used`, result.used === 1 && (await combined()) === '', `${json(cols)} ${json(result)}`);
+
+  // An all-empty column with empty separator: same text, but two used columns; undo/redo follow the used columns
+  cols = await splitAndRead(page, 'a,\nb,', ',', [['a', 'b'], ['', '']]);
+  result = await combineColumns(page, [0, 1]);
+  r.check(`${label}: Combine of an all-empty column -> unchanged text, column used`, result.used === 2 && (await combined()) === 'a\nb', `${json(cols)} ${json(result)}`);
+  const undone = await undoRedo(0);
+  r.check(`${label}: Undo after the unchanged-text Combine -> 1 used column`, undone.used === 1 && undone.text === 'a\nb', json(undone));
+  const redone = await undoRedo(1);
+  r.check(`${label}: Redo -> 2 used columns`, redone.used === 2 && redone.text === 'a\nb', json(redone));
+  r.check(`${label}: Combine state checks without errors`, errorsSince(n).length === 0, json(errorsSince(n)));
+
+  await page.eval(`__t.page().querySelector('.combine-clear')?.click(); __t.set(__t.page().querySelector('.combine-input'), ':'); true`);
+  await sleepMs(150);
+  await page.eval(`__t.set(__t.textareas()[0], 'a_b'); true`);
+  await sleepMs(150);
+  await page.eval(`__t.set(__t.page().querySelector('.form-add-render input'), '_'); true`);
+  await sleepMs(150);
+}
+
+/**
+ * Line endings (Paket 6) in the current processing mode (Split, Filter, Remove and Diff in Rust or JS; Sort and the
+ * column copy are always JS; Combine uses `combine_columns` in Rust mode). Every input is a CRLF file with a trailing
+ * newline imported through "Open File": a textarea would turn CRLF into LF. Results are read from React's props and
+ * from the copied text, because `textarea.value` normalizes line breaks to LF as well.
+ * Expected: no extra row/line for the trailing newline, CRLF and the trailing newline kept in every result, the
+ * imported input unchanged, CRLF vs LF no difference in Diff. Needs "Keep Empty Lines" on and regex mode off.
+ */
+export async function checkLineEndings(page, r, label, errorsSince) {
+  const n = page.logs.length;
+  const raw = (expr) => page.eval(`__t.raw(${expr})`);
+  const json = (value) => JSON.stringify(value);
+  const nav = async (name) => {
+    await page.eval(`__t.nav('${name}'); true`);
+    await sleepMs(200);
+  };
+  /** Imports `text` with the n-th Open File button; true once the n-th textarea holds it unchanged */
+  const loadFile = async (text, index = 0) => {
+    await page.eval(`__t.loadFile(${index}, ${json(text)}); true`);
+    return page.waitFor(`__t.raw(__t.textareas()[${index}]) === ${json(text)}`, 3000);
+  };
+  const setInput = async (value) => {
+    await page.eval(`__t.set(__t.page().querySelector('.form-add-render input'), ${json(value)}); true`);
+    await sleepMs(150);
+  };
+  const waitForResult = (expected) => page.waitFor(`__t.raw(__t.textareas()[1]) === ${json(expected)}`, 8000);
+
+  // --- Split: 4 rows (no 5th row for the trailing CRLF), copy and Combine keep CRLF + trailing newline ---
+  const splitText = 'A,B\r\nC,D,E\r\n\r\nF,G\r\n';
+  const columns = [['A', 'C', '', 'F'], ['B', 'D', '', 'G'], ['', 'E', '', '']];
+  await nav('split');
+  r.check(`${label}: CRLF file imported unchanged`, await loadFile(splitText), json(await raw('__t.textareas()[0]')));
+  await setInput(',');
+  await page.eval(`__t.page().querySelector('button[title="Split text"]').click(); true`);
+  const splitDone = await page.waitFor(`JSON.stringify(__t.columns()) === ${json(json(columns))}`, 5000);
+  r.check(`${label}: Split CRLF with trailing newline -> no extra row, no '\\r' in values`, splitDone, json(await page.eval('__t.columns()')));
+
+  await page.eval(`__t.captureCopy(); __t.page().querySelectorAll('.result-column')[0].querySelector('.copy-button').click(); true`);
+  await page.waitFor(`__t.copied !== null`, 3000);
+  const copied = await page.eval('__t.copied');
+  r.check(`${label}: copied column keeps CRLF and the trailing newline`, copied === 'A\r\nC\r\n\r\nF\r\n', json(copied));
+  await page.eval(`__t.releaseCopy(); true`);
+
+  const combine = await combineColumns(page, [2, 0]);
+  const combined = await raw(`__t.page().querySelector('.combine-textarea')`);
+  r.check(`${label}: Combine Part 3 + Part 1 uses CRLF, keeps rows and the trailing newline`, combine.used === 2 && combined === ':A\r\nE:C\r\n:\r\n:F\r\n', json(combined));
+  await page.eval(`__t.page().querySelector('.combine-clear')?.click(); true`);
+
+  // --- Filter ---
+  await nav('filter');
+  const filterText = 'apple\r\nbanana\r\napricot\r\n';
+  await loadFile(filterText);
+  await setInput('ap');
+  await page.eval(`__t.page().querySelectorAll('.filter-actions button')[1].click(); true`);
+  r.check(`${label}: Filter keeps CRLF and the trailing newline`, await waitForResult('ap\r\nap\r\n'), json(await raw('__t.textareas()[1]')));
+  r.check(`${label}: Filter leaves the input unchanged`, (await raw('__t.textareas()[0]')) === filterText, json(await raw('__t.textareas()[0]')));
+  await setInput('');
+
+  // --- Remove (duplicates) ---
+  await nav('remove');
+  await loadFile('x\r\ny\r\nx\r\nz\r\n');
+  await page.eval(`__t.watchSnacks(); __t.page().querySelector('.remove-action-button.duplicates').click(); true`);
+  const removed = await waitForResult('x\r\ny\r\nz\r\n');
+  await sleepMs(300);
+  const removeSnacks = await page.eval('__t.takeSnacks()');
+  r.check(
+    `${label}: Remove duplicates keeps CRLF and the trailing newline, 1 line removed`,
+    removed && removeSnacks.length === 1 && removeSnacks[0].startsWith('success') && /\b1\b/.test(removeSnacks[0]),
+    `${json(await raw('__t.textareas()[1]'))} ${json(removeSnacks)}`
+  );
+
+  // --- Sort (JS) ---
+  await nav('sort');
+  await loadFile('b\r\nc\r\na\r\n');
+  await page.eval(`__t.page().querySelector('.sort-button').click(); true`);
+  r.check(`${label}: Sort keeps CRLF and the trailing newline, no empty line`, await waitForResult('a\r\nb\r\nc\r\n'), json(await raw('__t.textareas()[1]')));
+
+  // --- Diff: CRLF file with trailing newline vs. the same text typed (LF, no trailing newline) ---
+  await nav('diff');
+  await loadFile('one\r\ntwo\r\nthree\r\n', 0);
+  await page.eval(`__t.set(__t.textareas()[1], 'one\\ntwo\\nthree'); true`);
+  await sleepMs(150);
+  await page.eval(`__t.watchSnacks(); __t.page().querySelector('.diff-button').click(); true`);
+  await page.waitFor(`__t.snackLog.length > 0`, 8000);
+  const diffDone = await page.waitFor(`__t.page().querySelectorAll('.diff-line').length === 3`, 3000);
+  const changed = await page.eval(`__t.page().querySelectorAll('.diff-line.diff-added, .diff-line.diff-removed, .diff-line.diff-moved').length`);
+  r.check(`${label}: Diff CRLF vs LF -> 3 unchanged lines, no difference`, diffDone && changed === 0, `lines=${await page.eval(`__t.page().querySelectorAll('.diff-line').length`)} changed=${changed}`);
+
+  r.check(`${label}: line-ending checks without errors`, errorsSince(n).length === 0, json(errorsSince(n)));
+
+  // The source text is shared by the pages: leave the usual one for the following checks
+  await nav('split');
+  await page.eval(`__t.set(__t.textareas()[0], 'a_b'); true`);
+  await sleepMs(150);
+  await setInput('_');
 }

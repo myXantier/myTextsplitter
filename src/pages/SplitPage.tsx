@@ -13,6 +13,7 @@ import { useRuntimeSetting, usePermanentSetting, setRuntimeSetting, setPermanent
 import { useCombineHistoryStore } from '../hooks/useCombineHistoryStore';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { hasValidPatternLength } from '../utils/regex';
+import { lineFormatOf } from '../utils/lines';
 import { BaseService } from '../services/BaseService';
 import { isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import ScrollableContainer from '../components/ScrollableContainer';
@@ -61,6 +62,7 @@ export default function SplitPage({
   const undoCombine = useCombineHistoryStore((state) => state.undoCombine);
   const canRedo = useCombineHistoryStore((state) => state.canRedo());
   const redoCombine = useCombineHistoryStore((state) => state.redoCombine);
+  const setLineFormat = useCombineHistoryStore((state) => state.setLineFormat);
 
   const copyToClipboard = useCallback(
     async (text: string) => {
@@ -137,6 +139,8 @@ export default function SplitPage({
 
       // Previous results stay visible if the processing or the result check fails
       setSplitResults(unwrapResult(window.myResultConverter(result, 'ColumnList')));
+      // Combine and the column copy use the line ending and trailing newline of the text that was split
+      setLineFormat(lineFormatOf(sourceText));
     } catch (error) {
       // A superseded job was replaced by a newer click: nothing to report
       superseded = isSuperseded(error);
@@ -144,7 +148,7 @@ export default function SplitPage({
     } finally {
       if (!superseded) setIsLoading(false);
     }
-  }, [sourceText, useRegex, trimParts, keepEmptyLines, separator, splitText, setSplitResults, currentWorkerAbort, t]);
+  }, [sourceText, useRegex, trimParts, keepEmptyLines, separator, splitText, setSplitResults, setLineFormat, currentWorkerAbort, t]);
 
   useEffect(() => {
     const cleanupInterval = setInterval(() => {

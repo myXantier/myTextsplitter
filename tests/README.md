@@ -28,29 +28,52 @@ imports of the app sources, so these tests load the sources with dynamic `await 
 One fixture file for **both** split engines: `npm test` (JS, `tests/unit/split.test.ts`) and `cargo test`
 (Rust, `src-tauri/src/text_processor.rs`). Per case: `input`, `delimiter`, optional `useRegex`, `trimParts`,
 `keepEmptyLines` (defaults `false`, `false`, `true`) and the column-major result `expected[column][row]`.
-A known engine difference uses `expectedRust` + `expectedJs` and must be explained in `divergence`.
+A known engine difference uses `expectedRust` + `expectedJs` and must be explained in `divergence`;
+`resolved` documents a former divergence (the line-ending cases resolved by Paket 6).
 
 Split semantics (both engines):
 
+- Rows are the data lines of the shared line model (see "Line-ending fixtures"): LF, CRLF and CR are line breaks,
+  a trailing line break adds no row, an empty text has no rows, values never contain `\r`.
 - Every processed input row has exactly one value in every column; missing parts are `""` (B1).
 - Empty split fields (`A,,C`) are kept, so the column assignment stays intact.
 - `keepEmptyLines` = permanent setting `showEmptyLines` (Settings → Processing → "Keep Empty Lines",
-  default `true`). `false` skips **completely empty** input lines (for CRLF input also the line `"\r"`).
+  default `true`). `false` skips **completely empty** input lines (with any line ending).
   Whitespace-only lines are **not** empty and are always kept (with `trimParts` they become `""` values).
 
 Known differences between Rust and JS (unchanged existing behaviour, documented in the fixtures):
 
-| Topic | Rust (`fancy-regex`, `str::lines()`) | JS (`RegExp`, `split('\n')`) |
+| Topic | Rust (`fancy-regex`) | JS (`RegExp`) |
 |---|---|---|
-| Trailing newline / empty input | no row after the final line break; empty text = no rows | trailing line break adds an empty row; empty text = one empty row |
-| CRLF | `\r` removed | `\r` stays at the end of the last part (removed by `trimParts`) |
 | Regex capture groups | captured text is dropped | every capture becomes an extra column |
 | `\w`, `\W`, `\d`, `\s` | Unicode-aware | ASCII (no `u` flag) |
 | Empty plain delimiter | `""` before and after the characters | only the characters |
 
-With `keepEmptyLines = false` the trailing-newline and empty-input differences disappear.
+The former differences for trailing newlines, empty input and CRLF (`str::lines()` vs. `split('\n')`) no longer exist.
 Further regex split differences (named/non-participating captures, zero-width matches at the line start, `\b`,
 Unicode `\d`) are documented as `divergence` cases in the fixtures.
+
+## Line-ending fixtures (`tests/fixtures/line-endings-cases.json`, Paket 6)
+
+Shared by `npm test` (`tests/unit/line-endings.test.ts`: line model, real worker modules, main-thread fallbacks) and
+`cargo test` (`line_endings.rs`, `text_processor.rs`, `text_diff.rs`). Sections: `lines` (line model), `filter`,
+`remove`, `combine`, `diff` (only which lines are unchanged/changed: the diff algorithms differ) and `sort` (JS only,
+Sort has no Rust implementation). The line model is implemented twice with the same rules:
+`src/utils/lines.ts` (`splitLines`, `joinLines`, `lineFormatOf`) and `src-tauri/src/line_endings.rs`.
+
+| Rule | Meaning |
+|---|---|
+| Line breaks | LF, CRLF and CR, detected from the text (never from the OS). U+2028/U+2029, NEL, VT, FF are no line breaks. |
+| Data lines | `"A\nB"` and `"A\nB\n"` = 2 lines, `"A\nB\n\n"` = 3 (last one empty), `""` = no line, `"\n"` = one empty line. Terminators are not part of a line. |
+| Result format | Newly generated text uses the most frequent line ending of the input; tie: the one that occurs first; no line break: LF. The input is never changed. |
+| Trailing newline | A non-empty result keeps the trailing newline of the input; no remaining line = `""`. |
+| Regex | Patterns run per line on the line content (no terminator), so `$`, lookbehind etc. behave the same for LF/CRLF/CR. Texts are not normalized before a regex. |
+
+Per operation: Filter/Remove/Sort join their result lines with the input format (Filter `splitMatches` too). Diff compares
+line contents: CRLF vs. LF and a trailing newline on one side only are no difference. Combine joins the *columns*
+(`combineColumns` in JS, `combine_columns` in Rust; the combined text is never split again, so trailing empty values
+keep their rows) with the line format of the text that was split (stored on a successful Split); the column copy uses
+the same format. One empty line without trailing newline and an empty result are both `""` (text representation).
 
 ## Regex fixtures (`tests/fixtures/regex-cases.json`)
 
@@ -137,6 +160,12 @@ Rust mode and reported with the JS syntax error in JS mode. The pattern preview 
 hint (Rust mode), the note for patterns JS rejects (also after switching the engine) and the stop of a catastrophic
 preview (3 s preview timeout). JS mode only (the first run must still be running): two rapid Filter runs show only
 the newer result and one success message; a Split that finishes keeps the processing state of a running Filter.
+
+Line endings (`checkLineEndings`, Paket 6; browser: Web Worker, Tauri: Rust backend and JS mode): CRLF files with a
+trailing newline are imported through "Open File" (typing into a textarea turns CRLF into LF) and run through Split
+(no extra row, no `\r` in values), column copy, Combine, Filter, Remove (duplicates), Sort and Diff (CRLF file vs. the
+same text typed with LF = no difference). Results are read from React's props (`__t.raw`) and from the copied text
+(`__t.captureCopy`), because `textarea.value` also normalizes line breaks to LF.
 
 The Tauri test switches "Keep Empty Lines" explicitly, because an existing `settings.json` may still
 contain `showEmptyLines: false` (the default before the option was wired to Split).

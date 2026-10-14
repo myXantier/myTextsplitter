@@ -2,6 +2,7 @@ import { BaseWorker, type ProcessOptions } from './BaseWorker';
 import { computeLinearDiffFromArray, getWordDiffs } from '../utils/diff';
 import { WorkerLogger } from '../other/Logger';
 import { createResult } from '../services/ProcessingError';
+import { splitLines } from '../utils/lines';
 
 export class DiffWorker extends BaseWorker {
   private currentIndex = 0;
@@ -22,9 +23,8 @@ export class DiffWorker extends BaseWorker {
     const { ignoreWhitespace } = configParams;
 
     if (this.helperArray.length === 0) {
-      this.helperArray = ignoreWhitespace 
-        ? mainParam.replace(/(?:^ {1,}| {2,}(?= \S))/g, '').split('\n') 
-        : mainParam.split('\n');
+      // Same line model as the old text (`chunk`): line endings are not compared, a trailing newline adds no line
+      this.helperArray = splitLines(ignoreWhitespace ? mainParam.replace(/(?:^ {1,}| {2,}(?= \S))/g, '') : mainParam).lines;
       this.currentIndex = 0;
     }
 

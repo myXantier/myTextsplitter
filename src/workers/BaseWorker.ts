@@ -1,5 +1,6 @@
 import { WorkerLogger } from "../other/Logger";
 import { ERROR_KEYS, ProcessingError, createResult } from "../services/ProcessingError";
+import { DEFAULT_LINE_FORMAT, splitLines, type LineFormat } from "../utils/lines";
 
 export interface ProcessOptions {
   args: BaseConfig;
@@ -24,6 +25,8 @@ export abstract class BaseWorker {
   protected startTime: number = 0;
   protected aborted: boolean = false;
   protected helperArray: string[] = [];
+  /** Line format of the current `sourceText`; results that are texts are joined with it (`joinLines`). */
+  protected lineFormat: LineFormat = DEFAULT_LINE_FORMAT;
 
   // Abstrakte Methode für Worker-spezifische Verarbeitung
   protected abstract processChunk(chunk: string[], options: ProcessOptions): myResult; //string | string[];
@@ -47,7 +50,9 @@ export abstract class BaseWorker {
 
     try {
       const { sourceText } = options.args;
-      const lines = sourceText.split('\n');
+      // Shared line model: no extra line for a trailing newline, terminators (also CRLF/CR) are not part of a line
+      const { lines, lineEnding, trailingNewline } = splitLines(sourceText);
+      this.lineFormat = { lineEnding, trailingNewline };
 
       if (options.args as SplitConfig) {
         const result = this.processChunk(lines, options);
