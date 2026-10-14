@@ -8,6 +8,7 @@
 import { installWindow, disableWorkerCleanupInterval, rejectionOf, logged } from './helpers/setup.ts';
 import { test, beforeEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 const g = globalThis as any;
 
@@ -187,8 +188,72 @@ test('worker path: successful results reach the service', async () => {
   const split = await new SplitService().invoke(splitArgs('a,b', ','), false);
   assert.equal(split.type, 'ColumnList');
   const diff = await new DiffService().invoke({ sourceText: 'a', mainParam: 'b', configParams: { caseSensitive: true, ignoreWhitespace: false } }, false);
-  assert.equal(diff.type, 'Text');
-  assert.ok(Array.isArray(JSON.parse(diff.result as string)));
+  assert.equal(diff.type, 'Diff');
+  assert.deepEqual((diff.result as any).document.stats, { unchanged: 0, removed: 1, added: 1, moved: 0 });
+  assert.equal((diff.result as any).intraline, null);
+});
+
+const diffArgs = (sourceText: string, mainParam: string): DiffConfig => ({ sourceText, mainParam, configParams: { caseSensitive: true, ignoreWhitespace: false } });
+
+test('Paket 7: the diff worker keeps every new line when the new text is longer (former truncation)', async () => {
+  for (const [oldText, newText] of [['A', 'A\nB\nC\nD'], ['', 'A\nB'], ['A\nB', 'X\nA\nB\nC']]) {
+    const diff = await new DiffService().invoke(diffArgs(oldText, newText), false);
+    const document = (diff.result as any).document;
+    assert.equal(document.newLineCount, newText.split('\n').length);
+    assert.deepEqual(
+      document.rows.flatMap((r: any) => (r.kind === 'delete' ? [] : [r.new.text])),
+      newText.split('\n'),
+    );
+  }
+  assert.ok(instances.some((w) => w.name === 'DiffWorker'), 'ran in the diff worker');
+});
+
+test('Paket 7: one diff worker message per job, even for long texts', () => {
+  const messages = runWorker('DiffWorker', diffArgs(Array.from({ length: 50 }, (_, i) => `l${i}`).join('\n'), 'x'));
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].success, true);
+  assert.equal(messages[0].result.type, 'Diff');
+});
+
+test('Paket 7: a too complex diff in the worker is an invalid-input error, no partial result', async () => {
+  const lines = Array.from({ length: 12_000 }, (_, i) => `line ${i}`);
+  const error = await rejectionOf(() => new DiffService().invoke(diffArgs(lines.join('\n'), [...lines].reverse().join('\n')), false));
+  assert.equal(error.kind, 'invalidInput');
+  assert.equal(error.message, 'errors.diffTooComplex');
+});
+
+const diffFixtures = JSON.parse(readFileSync(new URL('../fixtures/diff-cases.json', import.meta.url), 'utf8'));
+const { computeLineDiff } = await import('../../src/utils/diff/lineDiff.ts');
+const diffReply = (document: unknown, intraline: unknown = null) => ({ success: true, type: 'complete', result: { type: 'Diff', result: { document, intraline }, isNull: false, abort: false, __brand: 'myResult' } });
+
+for (const v of diffFixtures.validatedDocuments.filter((v: any) => !v.valid)) {
+  test(`Paket 7: corrupted diff worker answer (${v.name}) is invalidResult, no metrics`, async () => {
+    behaviour = { reply: diffReply(v.document) };
+    const service = new DiffService();
+    const error = await rejectionOf(() => service.invoke({ sourceText: v.old, mainParam: v.new, configParams: { caseSensitive: true, ignoreWhitespace: v.ignoreWhitespace } }, false));
+    assert.equal(error.kind, 'invalidResult');
+    assert.equal(service.getMetrics(), null);
+  });
+}
+
+for (const [label, document] of [
+  ['the diff of another input', computeLineDiff('a', 'x', { ignoreWhitespace: false })],
+  ['a truncated diff (new text cut)', computeLineDiff('a', 'a', { ignoreWhitespace: false })],
+] as const) {
+  test(`Paket 7: a diff worker answer with ${label} is invalidResult, no metrics`, async () => {
+    behaviour = { reply: diffReply(document) };
+    const service = new DiffService();
+    const error = await rejectionOf(() => service.invoke(diffArgs('a', 'a\nb'), false));
+    assert.equal(error.kind, 'invalidResult');
+    assert.equal(service.getMetrics(), null);
+  });
+}
+
+test('Paket 7: invalid diff worker arguments are a worker error', () => {
+  const messages = runWorker('DiffWorker', { sourceText: 'a', mainParam: 1, configParams: {} } as unknown as BaseConfig);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].success, false);
+  assert.equal(messages[0].errorKind, 'worker');
 });
 
 for (const [name, run] of [
@@ -450,4 +515,113 @@ test('BaseService.cancelPending stops a running preview (worker terminated, job 
   BaseService.cancelPending('preview');
   assert.equal((await preview).kind, 'superseded');
   assert.equal(instances[0].terminated, true);
+});
+
+// --- Paket 7 B3: optional word diff through the worker ---
+
+const { computeIntraline } = await import('../../src/utils/diff/intraline.ts');
+const wordDiffArgs = (sourceText: string, mainParam: string, wordDiff: boolean): DiffConfig => ({
+  sourceText,
+  mainParam,
+  configParams: { caseSensitive: true, ignoreWhitespace: false, wordDiff },
+});
+const KATZE = ['Titel\nDie schnelle braune Katze springt.', 'Neue Einleitung\nTitel\nDie schnelle schwarze Katze läuft.'] as const;
+
+test('Paket 7 B3: the diff worker delivers the word diff only when it is requested', async () => {
+  const off = (await new DiffService().invoke(wordDiffArgs(...KATZE, false), false)).result as any;
+  assert.equal(off.intraline, null);
+  const on = (await new DiffService().invoke(wordDiffArgs(...KATZE, true), false)).result as any;
+  assert.deepEqual(on.document, off.document, 'the same line diff in both modes');
+  assert.deepEqual(on.intraline, computeIntraline(on.document));
+  assert.deepEqual(on.intraline.pairs.map((p: any) => [p.oldLine, p.newLine]), [[2, 3]], 'the introduction line is not paired');
+});
+
+test('Paket 7 B3: switching the word diff during a running diff: only the newer job is delivered', limited, async () => {
+  behaviour = 'manual';
+  const older = rejectionOf(() => new DiffService().invoke(wordDiffArgs(...KATZE, false), false));
+  await flush();
+  const newer = new DiffService().invoke(wordDiffArgs(...KATZE, true), false);
+  await flush();
+  const [olderWorker, newerWorker] = instances;
+  assert.equal((await older).kind, 'superseded');
+  olderWorker.answer(); // ignored: terminated
+  newerWorker.answer();
+  assert.notEqual(((await newer).result as any).intraline, null, 'the result of the current mode');
+
+  // and back: the late result with word diff is replaced by the newer one without it
+  const withWordDiff = rejectionOf(() => new DiffService().invoke(wordDiffArgs(...KATZE, true), false));
+  await flush();
+  const withoutWordDiff = new DiffService().invoke(wordDiffArgs(...KATZE, false), false);
+  await flush();
+  assert.equal((await withWordDiff).kind, 'superseded');
+  instances.at(-1)!.answer();
+  assert.equal(((await withoutWordDiff).result as any).intraline, null);
+});
+
+test('Paket 7 B3: a diff worker timeout is reported, the next diff works', limited, async () => {
+  behaviour = 'manual';
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const pending = rejectionOf(() => new DiffService().invoke(wordDiffArgs(...KATZE, true), false));
+    await flush();
+    mock.timers.tick(15_000);
+    assert.equal((await pending).kind, 'timeout');
+    assert.equal(instances[0].terminated, true);
+  } finally {
+    mock.timers.reset();
+  }
+  behaviour = 'real';
+  const next = await new DiffService().invoke(wordDiffArgs(...KATZE, true), false);
+  assert.equal((next.result as any).intraline.pairs.length, 1);
+});
+
+for (const [label, reply, wordDiff] of [
+  ['word diff missing although requested', () => diffReply(computeLineDiff('a b c', 'a b x', { ignoreWhitespace: false })), true],
+  ['word diff although not requested', () => { const d = computeLineDiff('a b c', 'a b x', { ignoreWhitespace: false }); return diffReply(d, computeIntraline(d)); }, false],
+  ['word diff of another document', () => diffReply(computeLineDiff('a b c', 'a b x', { ignoreWhitespace: false }), computeIntraline(computeLineDiff('q r s', 'q r t', { ignoreWhitespace: false }))), true],
+  ['forged word diff segments', () => {
+    const d = computeLineDiff('a b c', 'a b x', { ignoreWhitespace: false });
+    const a = structuredClone(computeIntraline(d)) as any;
+    a.pairs[0].old = [{ op: 'delete', text: 'a b c' }];
+    return diffReply(d, a);
+  }, true],
+] as const) {
+  test(`Paket 7 B3: diff worker answer with ${label} is invalidResult, no metrics`, async () => {
+    behaviour = { reply: reply() };
+    const service = new DiffService();
+    const error = await rejectionOf(() => service.invoke(wordDiffArgs('a b c', 'a b x', wordDiff), false));
+    assert.equal(error.kind, 'invalidResult');
+    assert.equal(service.getMetrics(), null);
+  });
+}
+
+test('Paket 7 B3: a running diff worker cancelled by a newer invalid action: terminated, late answer ignored, next diff works', limited, async () => {
+  behaviour = 'manual';
+  const service = new DiffService();
+  const running = rejectionOf(() => service.invoke(wordDiffArgs(...KATZE, true), false));
+  await flush();
+  const [worker] = instances;
+  BaseService.cancelPending('diff'); // the DiffPage after a click with empty texts
+  assert.equal((await running).kind, 'superseded');
+  assert.equal(worker.terminated, true);
+  worker.answer(); // ignored: terminated
+  assert.equal(service.getMetrics(), null);
+
+  behaviour = 'real';
+  const next = await service.invoke(wordDiffArgs(...KATZE, false), false);
+  assert.equal((next.result as any).intraline, null);
+  const withWordDiff = await service.invoke(wordDiffArgs(...KATZE, true), false);
+  assert.equal((withWordDiff.result as any).intraline.pairs.length, 1);
+});
+
+test('Paket 7 B3: a failed valid comparison in the worker (too complex) keeps the metrics; word diff of the shown texts works', async () => {
+  const service = new DiffService();
+  await service.invoke(wordDiffArgs('Die Katze schläft', 'Die Katze träumt', false), false);
+  const metrics = service.getMetrics();
+  const lines = Array.from({ length: 12_000 }, (_, i) => `line ${i}`);
+  const error = await rejectionOf(() => service.invoke(wordDiffArgs(lines.join('\n'), [...lines].reverse().join('\n'), false), false));
+  assert.equal(error.message, 'errors.diffTooComplex');
+  assert.equal(service.getMetrics(), metrics, 'the failed comparison sets no metrics');
+  const shown = await service.invoke(wordDiffArgs('Die Katze schläft', 'Die Katze träumt', true), false);
+  assert.equal((shown.result as any).intraline.pairs[0].old.find((s: any) => s.op === 'delete').text, 'schläft');
 });

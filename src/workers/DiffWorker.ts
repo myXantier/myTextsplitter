@@ -1,45 +1,30 @@
 import { BaseWorker, type ProcessOptions } from './BaseWorker';
-import { computeLinearDiffFromArray, getWordDiffs } from '../utils/diff';
 import { WorkerLogger } from '../other/Logger';
 import { createResult } from '../services/ProcessingError';
-import { splitLines } from '../utils/lines';
+import { diffInJs } from '../utils/diff/jsEngine';
 
+/**
+ * A diff always needs both complete texts, so it does not use the line chunks of `BaseWorker.process`
+ * (formerly the new text was cut to the line count of the old text). One message per job: the complete
+ * `Diff` result or an error.
+ */
 export class DiffWorker extends BaseWorker {
-  private currentIndex = 0;
-
-  // TEST
   public process(options: ProcessOptions): void {
-    // Reset vor jedem neuen Job
-    this.helperArray = [];
-    this.currentIndex = 0;
-    super.process(options);
+    try {
+      const args = options?.args as DiffConfig | undefined;
+      const wordDiff = args?.configParams?.wordDiff;
+      if (!args || typeof args.sourceText !== 'string' || typeof args.mainParam !== 'string' || typeof args.configParams?.ignoreWhitespace !== 'boolean' || (wordDiff !== undefined && typeof wordDiff !== 'boolean')) {
+        throw new Error('diff: invalid arguments');
+      }
+      WorkerLogger.debug(`🔍 Diff-Prozess, Ignore Whitespace: ${args.configParams.ignoreWhitespace}, Wort-Diff: ${wordDiff === true}`);
+      self.postMessage({ success: true, type: 'complete', result: createResult('Diff', diffInJs(args)) });
+    } catch (error) {
+      this.postError(error);
+    }
   }
 
-  /** Errors are thrown and reported by `BaseWorker.process` (never turned into an empty result). */
-  protected processChunk(chunk: string[], options: ProcessOptions): myResult {
-    WorkerLogger.debug('📩 Worker-Diff: Verarbeite Chunk –', chunk.length);
-
-    const { mainParam, configParams } = options.args as DiffConfig;
-    const { ignoreWhitespace } = configParams;
-
-    if (this.helperArray.length === 0) {
-      // Same line model as the old text (`chunk`): line endings are not compared, a trailing newline adds no line
-      this.helperArray = splitLines(ignoreWhitespace ? mainParam.replace(/(?:^ {1,}| {2,}(?= \S))/g, '') : mainParam).lines;
-      this.currentIndex = 0;
-    }
-
-    WorkerLogger.debug(`🔍 Diff-Prozess, Ignore Whitespace: ${ignoreWhitespace}`);
-
-    const newLines = this.helperArray.slice(this.currentIndex, this.currentIndex + chunk.length);
-    this.currentIndex += chunk.length;
-    const oldLines = ignoreWhitespace 
-      ? chunk.map(line => line.replace(/(?:^ {1,}| {2,}(?= \S))/g, ''))
-      : chunk;
-
-    // Compute basic diff results
-    const diffResults = computeLinearDiffFromArray(oldLines, newLines);
-
-    return createResult('Text', JSON.stringify(diffResults));
+  protected processChunk(): myResult {
+    throw new Error('DiffWorker processes complete texts only');
   }
 }
 

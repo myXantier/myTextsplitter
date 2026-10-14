@@ -1,4 +1,4 @@
-//! Bounded "latest job wins" execution of the CPU-heavy text commands (Split, Filter, Remove).
+//! Bounded "latest job wins" execution of the CPU-heavy text commands (Split, Filter, Remove, Diff).
 //!
 //! Per operation there is one [`JobSlot`] with **at most one running and at most one waiting job**:
 //! - The running job executes on Tokio's blocking pool. It cannot be stopped (a running regex has no

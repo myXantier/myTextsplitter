@@ -147,17 +147,21 @@ export abstract class BaseWorker {
         });
       }
     } catch (error) {
-      // A `ProcessingError` (e.g. invalid regex) keeps its kind and message key; anything else is a worker error
-      const isProcessingError = error instanceof ProcessingError;
-      self.postMessage({
-        success: false,
-        type: 'error',
-        error: isProcessingError ? error.message : ERROR_KEYS.general,
-        errorKind: isProcessingError ? error.kind : 'worker',
-        errorDetail: isProcessingError ? error.detail : error instanceof Error ? error.message : String(error),
-        result: null,
-      });
+      this.postError(error);
     }
+  }
+
+  /** Error answer of a job: a `ProcessingError` (e.g. invalid regex) keeps its kind and message key; anything else is a worker error. */
+  protected postError(error: unknown): void {
+    const isProcessingError = error instanceof ProcessingError;
+    self.postMessage({
+      success: false,
+      type: 'error',
+      error: isProcessingError ? error.message : ERROR_KEYS.general,
+      errorKind: isProcessingError ? error.kind : 'worker',
+      errorDetail: isProcessingError ? error.detail : error instanceof Error ? error.message : String(error),
+      result: null,
+    });
   }
 
   protected getMetrics(input: string, output: string) {

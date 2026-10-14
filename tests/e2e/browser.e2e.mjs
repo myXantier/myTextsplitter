@@ -10,7 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, sleep } from './lib/cdp.mjs';
-import { SPLIT_CASES, checkCombineState, checkLineEndings, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
+import { SPLIT_CASES, checkCombineState, checkLineEndings, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
@@ -204,6 +204,10 @@ async function testApp(page, url) {
 
   // --- Line endings (Paket 6): CRLF file with trailing newline through every operation (Web Worker) ---
   await checkLineEndings(page, r, 'JS', errorsSince);
+  // Paket 7 B3: optional word diff in the real UI (Web Worker)
+  await checkWordDiff(page, r, 'JS', errorsSince);
+  await checkDiffCancelAndPaging(page, r, 'JS', errorsSince);
+  await checkDiffDetails(page, r, 'JS', errorsSince);
   await checkCombineState(page, r, 'JS', errorsSince);
 
   // --- Error path: an invalid regex must be reported as error, not as success ---

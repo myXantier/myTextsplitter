@@ -12,7 +12,7 @@ mod memory_usage;
 use line_endings::{LineEnding, LineFormat};
 use text_processor::{CombineColumn, ProcessedText, TextError, TextProcessor};
 
-mod text_diff;
+mod diff;
 mod job_slot;
 use job_slot::JobSlot;
 
@@ -57,13 +57,14 @@ fn is_backend_available() -> bool {
     true // Immer verfügbar, solange Tauri läuft
 }
 
-// CPU-heavy text commands (Split, Filter, Remove) run on Tokio's blocking pool, not on the async executor threads
+// CPU-heavy text commands (Split, Filter, Remove, Diff) run on Tokio's blocking pool, not on the async executor threads
 // that also serve the other IPC commands. Per operation at most one job runs and at most one waits (`JobSlot`):
 // a newer request replaces the waiting one, which then never runs (`TextError::Superseded`). A running regex cannot
 // be stopped. Different operations do not block each other.
 static SPLIT_JOBS: JobSlot<ProcessedText<Vec<String>>> = JobSlot::new();
 static FILTER_JOBS: JobSlot<ProcessedText<String>> = JobSlot::new();
 static REMOVE_JOBS: JobSlot<ProcessedText<String>> = JobSlot::new();
+static DIFF_JOBS: JobSlot<diff::DiffResponse> = JobSlot::new();
 
 #[tauri::command]
 async fn process_text_block(
@@ -104,14 +105,17 @@ async fn combine_columns(
     Ok(TextProcessor::combine_columns(&columns, &used, format))
 }
 
-/// Text Diff Method
+/// Line diff (Paket 7): returns the `DiffDocumentV2` and, only when `worddiff` is true, its word diff as structured IPC
+/// data (no JSON string inside the JSON). Runs on the blocking pool through its own job slot like Split/Filter/Remove;
+/// a too complex line diff is `TextError::DiffTooComplex`.
 #[tauri::command]
 async fn get_text_diff(
     oldtext: String,
     newtext: String,
     ignorewhitespace: bool,
-) -> Result<ProcessedText<String>, String> {
-    text_diff::get_diff_json(&oldtext, &newtext, ignorewhitespace).map_err(|e| e.to_string())
+    worddiff: bool,
+) -> Result<diff::DiffResponse, TextError> {
+    DIFF_JOBS.run(move || diff::get_diff(&oldtext, &newtext, ignorewhitespace, worddiff)).await
 }
 
 /// Filter Text Method

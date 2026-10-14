@@ -11,7 +11,7 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, listTargets, sleep } from './lib/cdp.mjs';
-import { SPLIT_CASES, checkCombineState, checkLineEndings, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
+import { SPLIT_CASES, checkCombineState, checkLineEndings, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
@@ -167,6 +167,9 @@ async function firstRun() {
   await checkRegexRobustness(main, r, 'Rust backend', (from) => errorsIn(main.logs, from), 'rust');
   // Paket 6: CRLF file with trailing newline through every operation (Rust; Sort and the column copy are JS)
   await checkLineEndings(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
+  await checkWordDiff(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
+  await checkDiffCancelAndPaging(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
+  await checkDiffDetails(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
   await checkCombineState(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
   await main.eval(`__t.nav('split'); true`);
   await sleep(200);
@@ -184,6 +187,9 @@ async function firstRun() {
   await checkProcessingErrors(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
   await checkRegexRobustness(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from), 'js');
   await checkLineEndings(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
+  await checkWordDiff(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
+  await checkDiffCancelAndPaging(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
+  await checkDiffDetails(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
   await checkCombineState(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
   await main.eval(`__t.nav('split'); true`);
   await sleep(200);

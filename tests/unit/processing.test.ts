@@ -13,7 +13,8 @@ const { SplitService, FilterService, RemoveService, DiffService, MatchPreviewSer
 const { BaseService } = await import('../../src/services/BaseService.ts');
 const { invokeUNSAFE } = await import('../../src/services/tauriInvoke.ts');
 const { default: changeResultType } = await import('../../src/other/TypeConverter.ts');
-const { convertBackendDiff } = await import('../../src/services/DiffService.ts');
+const { assertBackendDiff } = await import('../../src/services/DiffService.ts');
+const { computeLineDiff } = await import('../../src/utils/diff/lineDiff.ts');
 const { isTextV2 } = await import('../../src/services/ProcessingError.ts');
 
 disableWorkerCleanupInterval(BaseService);
@@ -199,21 +200,29 @@ test('B24: remove delivers TextV2 in backend and main-thread mode', async () => 
   assert.deepEqual(pick(fromBackend), pick(fromJs));
 });
 
-test('B24: diff delivers the same DiffResult JSON format in backend and main-thread mode', async () => {
-  backend(() => processed(JSON.stringify([{ text: 'one', diff_type: 'Unchanged', line_number: 1 }, { text: 'two', diff_type: 'Added', line_number: 2 }])));
+test('B24: diff delivers the same Diff document in backend and main-thread mode', async () => {
+  // What the Rust command answers (structured document + metrics); the Rust side is checked by the shared fixtures
+  const document = {
+    version: 2,
+    options: { ignoreWhitespace: false },
+    oldLineCount: 1,
+    newLineCount: 2,
+    rows: [
+      { kind: 'equal', old: { line: 1, text: 'one' }, new: { line: 1, text: 'one' } },
+      { kind: 'insert', new: { line: 2, text: 'two' } },
+    ],
+    moves: [],
+    stats: { unchanged: 1, removed: 0, added: 1, moved: 0 },
+  };
+  backend(() => ({ document, intraline: null, metrics: backendMetrics }));
   const fromBackend = await new DiffService().invoke(diffArgs('one', 'one\ntwo'), true);
-  assert.equal(fromBackend.type, 'Text');
-  assert.deepEqual(JSON.parse(fromBackend.result as string), [
-    { type: 'unchanged', text: 'one', lineNumber: 1 },
-    { type: 'added', text: 'two', lineNumber: 2 },
-  ]);
+  assert.equal(fromBackend.type, 'Diff');
+  assert.deepEqual(fromBackend.result, { document, intraline: null });
 
   installWindow();
   const fromJs = await new DiffService().invoke(diffArgs('one', 'one\ntwo'), false);
-  assert.equal(fromJs.type, 'Text');
-  for (const entry of JSON.parse(fromJs.result as string)) {
-    assert.deepEqual(Object.keys(entry).sort(), ['lineNumber', 'text', 'type']);
-  }
+  assert.equal(fromJs.type, 'Diff');
+  assert.deepEqual(fromJs.result, { document, intraline: null });
 });
 
 // --- Main-thread fallback (no Web Worker) ---
@@ -257,7 +266,7 @@ test('fallback: operations without regex still run in the main thread', async ()
   const duplicates = await new RemoveService().invoke(removeArgs('a\na', '([a-', 'duplicates', true), false);
   assert.equal((duplicates.result as ProcessedText<string>).result_text, 'a');
   const diff = await new DiffService().invoke(diffArgs('a', 'b'), false);
-  assert.equal(diff.type, 'Text');
+  assert.equal(diff.type, 'Diff');
 });
 
 // --- Paket 5: Rust-specific patterns are validated by Rust, not by JS ---
@@ -453,24 +462,29 @@ test('B23: TypeConverter rejects unsupported conversions instead of returning {}
   assert.equal(changeResultType(result('TextV2', { result_text: 'x', removed_lines: 0 }), 'ColumnList').status, 'error');
 });
 
-// --- Strict validation: Rust diff types ---
+// --- Strict validation: Rust diff rows ---
 
-const rustDiff = (diff_type: unknown) => JSON.stringify([{ text: 'a', diff_type, line_number: 1 }]);
+/** Backend answer for old 'a' / new 'b' (one delete, one insert) whose rows all get the given `kind`. */
+const rustDiff = (kind: unknown) => {
+  const document: any = computeLineDiff('a', 'b', { ignoreWhitespace: false });
+  for (const row of document.rows) row.kind = kind;
+  return { document, intraline: null, metrics: backendMetrics };
+};
 
-test('diff: all defined Rust diff types are accepted', () => {
-  for (const [rust, js] of [['Added', 'added'], ['Removed', 'removed'], ['Moved', 'moved'], ['Unchanged', 'unchanged']]) {
-    assert.deepEqual(convertBackendDiff(rustDiff(rust)), [{ type: js, text: 'a', lineNumber: 1 }]);
-  }
+test('diff: all defined Rust row kinds are accepted', () => {
+  const document = computeLineDiff('a\nb\nc', 'b\na\nx', { ignoreWhitespace: false });
+  assert.deepEqual(new Set(document.rows.map((r) => r.kind)), new Set(['equal', 'delete', 'insert']));
+  assert.equal(assertBackendDiff({ document, intraline: null, metrics: backendMetrics }).data.document, document);
 });
 
-test('diff: unknown types and inherited property names are rejected', () => {
-  for (const diffType of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf', 'added', 'Changed', '', null, 1]) {
-    assert.throws(() => convertBackendDiff(rustDiff(diffType)), (e: any) => e.kind === 'invalidResult', String(diffType));
+test('diff: unknown row kinds and inherited property names are rejected', () => {
+  for (const kind of ['constructor', 'toString', '__proto__', 'hasOwnProperty', 'valueOf', 'Equal', 'changed', 'moved', 'equal', '', null, 1]) {
+    assert.throws(() => assertBackendDiff(rustDiff(kind)), (e: any) => e.kind === 'invalidResult', String(kind));
   }
 });
 
 test('diff: an inherited property name from the backend is an invalid-result error in the service', async () => {
-  backend(() => processed(rustDiff('constructor')));
+  backend(() => rustDiff('constructor'));
   const error = await rejectionOf(() => new DiffService().invoke(diffArgs('a', 'b'), true));
   assert.equal(error.kind, 'invalidResult');
 });
