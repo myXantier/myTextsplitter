@@ -1,4 +1,4 @@
-import { BaseService } from './BaseService';
+import { BaseService, type JobOutcome } from './BaseService';
 import { computeLinearDiff, getWordDiffs, pairDiffResults, groupDiffResults } from '../utils/diff';
 import { ProcessingError, ERROR_KEYS, assertBackendResult, createResult } from './ProcessingError';
 
@@ -39,7 +39,7 @@ export class DiffService extends BaseService {
     super('diff');
   }
 
-  protected async invokeBackend(args: DiffConfig): Promise<myResult> {
+  protected async invokeBackend(args: DiffConfig): Promise<JobOutcome> {
     const { sourceText, mainParam, configParams } = args;
     const { ignoreWhitespace } = configParams;
 
@@ -52,8 +52,7 @@ export class DiffService extends BaseService {
 
     const result = assertBackendResult(response, 'Text');
     const diffJson = JSON.stringify(convertBackendDiff(result.result_text));
-    this.setMetrics(result.metrics, sourceText, result.result_text);
-    return createResult('Text', diffJson);
+    return this.backendOutcome(createResult('Text', diffJson), result.metrics, sourceText, result.result_text);
   }
 
   protected async frontendInMainThread(args: DiffConfig): Promise<myResult> {

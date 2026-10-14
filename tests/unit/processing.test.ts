@@ -9,7 +9,7 @@ import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 
 // Services first (same order as the app): BaseService <-> Services import each other
-const { SplitService, FilterService, RemoveService, DiffService } = await import('../../src/services/Services.ts');
+const { SplitService, FilterService, RemoveService, DiffService, MatchPreviewService } = await import('../../src/services/Services.ts');
 const { BaseService } = await import('../../src/services/BaseService.ts');
 const { invokeUNSAFE } = await import('../../src/services/tauriInvoke.ts');
 const { default: changeResultType } = await import('../../src/other/TypeConverter.ts');
@@ -110,6 +110,16 @@ test('B4: regex runtime error from Rust (backtrack limit) is an invalid-input er
   assert.equal(error.message, 'errors.regexTooComplex');
 });
 
+test('Rust task failure (panic/cancelled, kind "internal") is a backend error, not an input error', async () => {
+  backend(() => {
+    throw { kind: 'internal', message: 'text processing task failed: task panicked' };
+  });
+  const error = await rejectionOf(() => new FilterService().invoke(filterArgs('a', 'a'), true));
+  assert.equal(error.kind, 'backend');
+  assert.equal(error.message, 'errors.processingError');
+  assert.equal(error.detail, 'text processing task failed: task panicked');
+});
+
 // --- B3: empty results are valid results ---
 
 test('B3: filter backend with non-empty result', async () => {
@@ -208,9 +218,176 @@ test('B24: diff delivers the same DiffResult JSON format in backend and main-thr
 
 // --- Main-thread fallback (no Web Worker) ---
 
-test('fallback: filter removing all lines returns an empty Text result', async () => {
-  const result = await new FilterService().invoke(filterArgs('apple', 'x'), false);
+test('fallback: the main-thread filter implementation returns an empty Text result for removed lines', async () => {
+  // Not reachable through `invoke` without Web Worker (Filter always runs a regex), kept as implementation
+  const result = await (new FilterService() as any).frontendInMainThread(filterArgs('apple', 'x'));
   assert.deepEqual({ type: result.type, result: result.result }, { type: 'Text', result: '' });
+});
+
+// --- Paket 5: no unprotected regex in the UI thread ---
+
+for (const [name, run] of [
+  ['split', () => new SplitService().invoke(splitArgs(SECRET, '(?<=\\w),', true), false)],
+  ['filter', () => new FilterService().invoke(filterArgs(SECRET, '(?<=\\$)\\d+'), false)],
+  ['remove', () => new RemoveService().invoke(removeArgs(SECRET, 'a', 'containing', true), false)],
+  ['preview', () => new MatchPreviewService().invoke({ sourceText: SECRET, mainParam: 'a', configParams: { caseSensitive: true } }, false)],
+] as const) {
+  test(`fallback: a valid regex in ${name} is not run in the main thread without Web Worker`, async () => {
+    const error = await rejectionOf(run);
+    assert.ok(error instanceof Error);
+    assert.equal(error.kind, 'worker');
+    assert.equal(error.message, 'errors.regexRequiresWorker');
+    assertNoSecretLogged();
+  });
+}
+
+test('fallback: a catastrophic regex is refused at once instead of blocking the main thread', { timeout: 5000 }, async () => {
+  // ~2 minutes in V8 if it were executed (no backtracking limit in JS)
+  const started = performance.now();
+  const error = await rejectionOf(() => new FilterService().invoke(filterArgs('ab'.repeat(40), '(a|b|ab)*(?=c)'), false));
+  assert.equal(error.message, 'errors.regexRequiresWorker');
+  assert.ok(performance.now() - started < 1000);
+});
+
+test('fallback: operations without regex still run in the main thread', async () => {
+  const split = await new SplitService().invoke(splitArgs('a.b', '.'), false);
+  assert.deepEqual(split.result, [['a'], ['b']]);
+  const removed = await new RemoveService().invoke(removeArgs('a.\nb', 'a.', 'containing', false), false);
+  assert.equal((removed.result as ProcessedText<string>).result_text, 'b');
+  const duplicates = await new RemoveService().invoke(removeArgs('a\na', '([a-', 'duplicates', true), false);
+  assert.equal((duplicates.result as ProcessedText<string>).result_text, 'a');
+  const diff = await new DiffService().invoke(diffArgs('a', 'b'), false);
+  assert.equal(diff.type, 'Text');
+});
+
+// --- Paket 5: Rust-specific patterns are validated by Rust, not by JS ---
+
+test('backend: a Rust-only pattern is sent to Rust unchanged (no JS pre-validation)', async () => {
+  const sent: unknown[] = [];
+  backend((_cmd, args) => {
+    sent.push(args.delimiter ?? args.pattern);
+    return _cmd === 'process_text_block' ? processed(['a', 'b']) : processed('X');
+  });
+  await new SplitService().invoke(splitArgs('aXb', '(?i)x', true), true);
+  await new FilterService().invoke(filterArgs('aXb', '(?>X+)'), true);
+  await new RemoveService().invoke(removeArgs('aXb', '(?P<n>x)', 'containing', true), true);
+  assert.deepEqual(sent, ['(?i)x', '(?>X+)', '(?P<n>x)']);
+});
+
+test('backend: the Rust error message of an invalid regex is kept as detail', async () => {
+  backend(() => {
+    throw { kind: 'invalidRegex', message: 'Parsing error at position 4: Invalid character class' };
+  });
+  const error = await rejectionOf(() => new FilterService().invoke(filterArgs('a', '([a-'), true));
+  assert.equal(error.detail, 'Parsing error at position 4: Invalid character class');
+});
+
+// --- Paket 5: late results must not overwrite newer ones ---
+
+test('backend: a late result of an older job is discarded (superseded), the newer one is kept', { timeout: 3000 }, async () => {
+  let releaseOlder: (value: unknown) => void = () => {};
+  let calls = 0;
+  backend(() => (++calls === 1 ? new Promise((resolve) => (releaseOlder = resolve)) : processed('newer')));
+  const olderService = new FilterService();
+  const older = rejectionOf(() => olderService.invoke(filterArgs('a', 'a'), true));
+  await new Promise((resolve) => setImmediate(resolve));
+  const newer = await new FilterService().invoke(filterArgs('a', 'a'), true);
+  releaseOlder(processed('older'));
+  const error = await older;
+  assert.equal(error.kind, 'superseded');
+  assert.equal(newer.result, 'newer');
+});
+
+test('backend: an error of an older job is not reported once a newer job runs', { timeout: 3000 }, async () => {
+  let failOlder: (reason: unknown) => void = () => {};
+  let calls = 0;
+  backend(() => (++calls === 1 ? new Promise((_resolve, reject) => (failOlder = reject)) : processed('newer')));
+  const older = rejectionOf(() => new FilterService().invoke(filterArgs('a', 'a'), true));
+  await new Promise((resolve) => setImmediate(resolve));
+  await new FilterService().invoke(filterArgs('a', 'a'), true);
+  failOlder({ kind: 'regexRuntime', message: 'limit' });
+  assert.equal((await older).kind, 'superseded');
+});
+
+const metricsOf = (execution_time_ms: number) => ({ execution_time_ms, memory_usage_kb: 1, memory_usage_str: '1' });
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+test('backend: the newer job ends first, the older late one does not overwrite result or metrics (same instance)', { timeout: 3000 }, async () => {
+  let releaseOlder: (value: unknown) => void = () => {};
+  let calls = 0;
+  backend(() => (++calls === 1 ? new Promise((resolve) => (releaseOlder = resolve)) : { result_text: 'newer', removed_lines: 0, metrics: metricsOf(5) }));
+  const service = new FilterService();
+  const older = rejectionOf(() => service.invoke(filterArgs('a', 'a'), true));
+  await flush();
+  const newer = await service.invoke(filterArgs('a', 'a'), true);
+  releaseOlder({ result_text: 'older', removed_lines: 0, metrics: metricsOf(99) });
+  assert.equal((await older).kind, 'superseded');
+  assert.equal(newer.result, 'newer');
+  assert.equal(service.getMetrics()?.executionTime, 5, 'the late older result must not set the metrics');
+  assert.equal((service as any).lastMetrics.length, 1);
+});
+
+test('backend: the older job ends first while the newer still runs: discarded without metrics', { timeout: 3000 }, async () => {
+  const release: ((value: unknown) => void)[] = [];
+  backend(() => new Promise((resolve) => release.push(resolve)));
+  const service = new SplitService();
+  const older = rejectionOf(() => service.invoke(splitArgs('a,b', ','), true));
+  await flush();
+  const newer = service.invoke(splitArgs('c,d', ','), true);
+  await flush();
+  release[0]({ result_text: ['x'], removed_lines: 0, metrics: metricsOf(99) });
+  assert.equal((await older).kind, 'superseded');
+  assert.equal(service.getMetrics(), null, 'no metrics of the superseded job');
+  release[1]({ result_text: ['c', 'd'], removed_lines: 0, metrics: metricsOf(7) });
+  assert.deepEqual((await newer).result, [['c'], ['d']]);
+  assert.equal(service.getMetrics()?.executionTime, 7);
+});
+
+test('backend: a request the Rust job slot skipped (kind "superseded") ends silently when a newer job exists', { timeout: 3000 }, async () => {
+  let rejectOlder: (reason: unknown) => void = () => {};
+  let calls = 0;
+  backend(() => (++calls === 1 ? new Promise((_resolve, reject) => (rejectOlder = reject)) : processed('newer')));
+  const older = rejectionOf(() => new FilterService().invoke(filterArgs('a', 'a'), true));
+  await flush();
+  const newer = new FilterService().invoke(filterArgs('a', 'a'), true);
+  rejectOlder({ kind: 'superseded' }); // Rust: replaced while waiting, never ran
+  assert.equal((await older).kind, 'superseded', 'no message, no result for the skipped request');
+  assert.equal((await newer).result, 'newer');
+});
+
+test('backend: "superseded" from Rust for the latest job (out of order) is a visible error, never a success', async () => {
+  backend(() => {
+    throw { kind: 'superseded' };
+  });
+  const error = await rejectionOf(() => new FilterService().invoke(filterArgs('a', 'a'), true));
+  assert.equal(error.kind, 'backend');
+  assert.equal(error.message, 'errors.processingError');
+});
+
+test('a failing backend detection rejects with the original error and leaves no registered job', { timeout: 3000 }, async () => {
+  installWindow();
+  const service = new FilterService();
+  service.isAvailable = async () => {
+    throw new Error('backend detection failed: IPC broken');
+  };
+  const error = await rejectionOf(() => service.invoke(filterArgs('a', 'a')));
+  assert.equal(error.kind, 'backend');
+  assert.equal(error.detail, 'backend detection failed: IPC broken');
+  assert.equal((BaseService as any).runningJobs.has('filter'), false, 'no job may stay registered');
+
+  backend(() => processed('ok'));
+  assert.equal((await new FilterService().invoke(filterArgs('a', 'a'), true)).result, 'ok', 'the next job runs normally');
+});
+
+// --- Paket 5: memory metrics that the platform does not provide ---
+
+test('backend: memory metric not available (null) is accepted and kept as not available', async () => {
+  backend(() => ({ result_text: 'a', removed_lines: 0, metrics: { execution_time_ms: 2, memory_usage_kb: null, memory_usage_str: null } }));
+  const service = new FilterService();
+  const result = await service.invoke(filterArgs('a', 'a'), true);
+  assert.equal(result.result, 'a');
+  assert.equal(service.getMetrics()?.executionTime, 2);
+  assert.equal(service.getMetrics()?.memoryUsage, null);
 });
 
 test('fallback: remove removing all lines returns an empty TextV2 result', async () => {

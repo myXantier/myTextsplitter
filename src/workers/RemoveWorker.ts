@@ -1,7 +1,7 @@
 import { BaseWorker, type ProcessOptions } from './BaseWorker';
-import { validateRegexPattern } from '../utils/regex';
+import { compileUserRegex } from '../utils/regex';
 import { WorkerLogger } from '../other/Logger';
-import { createResult, invalidRegexError } from '../services/ProcessingError';
+import { createResult } from '../services/ProcessingError';
 
 export class RemoveWorker extends BaseWorker {
 
@@ -27,10 +27,7 @@ export class RemoveWorker extends BaseWorker {
       let matcher: (line: string) => boolean;
 
       if (useRegex) {
-        if (!validateRegexPattern(mainParam)) {
-          throw invalidRegexError();
-        }
-        const regex = new RegExp(mainParam, caseSensitive ? '' : 'i');
+        const regex = compileUserRegex(mainParam, caseSensitive ? '' : 'i');
         matcher = (line) => regex.test(line);
       } else {
         matcher = (line) => {

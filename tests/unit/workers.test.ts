@@ -5,7 +5,7 @@
 // real worker handlers, so `service.invoke(args, false)` runs the same code as in the browser
 // (BaseService.frontendWithWorker -> worker -> postMessage -> BaseService). Single tests replace the
 // worker behaviour (crash, no answer, malformed answer).
-import { installWindow, disableWorkerCleanupInterval, rejectionOf } from './helpers/setup.ts';
+import { installWindow, disableWorkerCleanupInterval, rejectionOf, logged } from './helpers/setup.ts';
 import { test, beforeEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -17,7 +17,7 @@ let deliver: (message: any) => void = () => {};
 g.self = { postMessage: (message: unknown) => deliver(structuredClone(message)), onmessage: null };
 
 const workerHandlers: Record<string, Handler> = {};
-for (const name of ['SplitWorker', 'FilterWorker', 'RemoveWorker', 'DiffWorker']) {
+for (const name of ['SplitWorker', 'FilterWorker', 'RemoveWorker', 'DiffWorker', 'MatchPreviewWorker']) {
   await import(`../../src/workers/${name}.ts`);
   workerHandlers[name] = g.self.onmessage;
 }
@@ -31,45 +31,76 @@ function runWorker(name: string, args: BaseConfig) {
 }
 
 // --- page side: `Worker` stand-in that forwards to the real worker modules ---
-type Behaviour = 'real' | 'crash' | 'silent' | { reply: unknown };
+// 'manual': the job is only answered when the test calls `worker.answer()` (late answers, parallel jobs).
+// 'noConstruct': the constructor throws (e.g. blocked by a content security policy).
+type Behaviour = 'real' | 'crash' | 'silent' | 'manual' | 'noConstruct' | { reply: unknown };
 let behaviour: Behaviour = 'real';
+/** Every worker created by BaseService, in creation order */
+let instances: FakeWorker[] = [];
 
 class FakeWorker {
   onmessage: Handler | null = null;
   onerror: ((event: { message: string }) => void) | null = null;
+  onmessageerror: Handler | null = null;
   isWorking = false;
   cleanupTime = 0;
-  private name: string;
+  terminated = false;
+  jobs = 0;
+  /** 'manual' behaviour: runs the pending job in the real worker module and posts its answer */
+  answer: () => void = () => {
+    throw new Error('no pending job');
+  };
+  readonly name: string;
 
   constructor(url: URL) {
+    if (behaviour === 'noConstruct') throw new Error('SecurityError: worker blocked');
     this.name = /(\w+Worker)\.ts$/.exec(String(url))![1];
+    instances.push(this);
   }
 
   postMessage(message: any) {
-    if (message?.test) return; // liveness probe of BaseService
+    if (this.terminated) return; // like a browser: messages to a terminated worker are dropped silently
+    if (message?.test) return;
+    this.jobs++;
     const current = behaviour;
+    const run = () => {
+      if (this.terminated) return; // a terminated worker never answers
+      deliver = (reply) => this.onmessage?.({ data: reply });
+      workerHandlers[this.name](structuredClone({ data: message }));
+    };
+    if (current === 'manual') {
+      this.answer = run;
+      return;
+    }
     queueMicrotask(() => {
       if (current === 'crash') return this.onerror?.({ message: 'Uncaught ReferenceError: boom' });
       if (current === 'silent') return;
       if (typeof current === 'object') return this.onmessage?.({ data: current.reply });
-      deliver = (reply) => this.onmessage?.({ data: reply });
-      workerHandlers[this.name](structuredClone({ data: message }));
+      run();
     });
   }
 
-  terminate() {}
+  terminate() {
+    this.terminated = true;
+  }
 }
 g.Worker = FakeWorker;
 
 // Services first (same order as the app): BaseService <-> Services import each other
-const { SplitService, FilterService, RemoveService, DiffService } = await import('../../src/services/Services.ts');
+const { SplitService, FilterService, RemoveService, DiffService, MatchPreviewService } = await import('../../src/services/Services.ts');
 const { BaseService } = await import('../../src/services/BaseService.ts');
 disableWorkerCleanupInterval(BaseService);
 
 beforeEach(() => {
   installWindow();
   behaviour = 'real';
+  BaseService.cleanupWorkers();
+  instances = [];
 });
+
+/** Workers currently in the pool of `type` */
+const pooled = (type: string): FakeWorker[] => (BaseService as any).workerPool.get(type) ?? [];
+const flush = () => new Promise((resolve) => setImmediate(resolve));
 
 const filterArgs = (sourceText: string, pattern: string, filterMode = 'keep'): FilterConfig => ({
   sourceText,
@@ -213,4 +244,210 @@ test('worker error message without kind is a worker error', async () => {
   behaviour = { reply: { success: false, type: 'error', error: 'Unknown error', result: null } };
   const error = await rejectionOf(() => new FilterService().invoke(filterArgs('a', 'a'), false));
   assert.equal(error.kind, 'worker');
+});
+
+// --- Paket 5: worker lifecycle (timeout, termination, reuse, late answers, parallel jobs) ---
+// Tests that would wait for an answer forever with a broken implementation have a time limit.
+const limited = { timeout: 3000 };
+
+test('timeout terminates the running worker at once and removes it from the pool', limited, async () => {
+  behaviour = 'manual';
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const pending = rejectionOf(() => new FilterService().invoke(filterArgs('a', 'a'), false));
+    await flush();
+    const [worker] = instances;
+    assert.equal(worker.terminated, false);
+    mock.timers.tick(10_000);
+    assert.equal((await pending).kind, 'timeout');
+    assert.equal(worker.terminated, true, 'worker.terminate() is called when the timeout fires');
+    assert.equal(worker.onmessage, null);
+    assert.equal(worker.onerror, null);
+    assert.ok(!pooled('filter').includes(worker));
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('an answer that arrives after the timeout changes nothing; the next job uses a new worker', limited, async () => {
+  behaviour = 'manual';
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const service = new FilterService();
+    const pending = rejectionOf(() => service.invoke(filterArgs('apple', 'ap'), false));
+    await flush();
+    const [stale] = instances;
+    mock.timers.tick(10_000);
+    assert.equal((await pending).kind, 'timeout');
+
+    // A result message that was already queued when the worker was terminated
+    stale.onmessage?.({ data: { success: true, type: 'complete', result: { type: 'Text', result: 'late', isNull: false, abort: false } } });
+    mock.timers.tick(60_000);
+    assert.equal(service.getMetrics(), null, 'a late result must not update the metrics');
+    assert.ok(!pooled('filter').includes(stale), 'a terminated worker must never return to the pool');
+
+    behaviour = 'real';
+    const result = await new FilterService().invoke(filterArgs('apple', 'ap'), false);
+    assert.equal(result.result, 'ap');
+    assert.equal(instances.length, 2, 'new worker after the timeout');
+    assert.equal(stale.jobs, 1, 'the terminated worker got no further job');
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('a successful worker returns to the pool at once, is reused, and its timeout timer is cleared', limited, async () => {
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    await new FilterService().invoke(filterArgs('apple', 'ap'), false);
+    assert.deepEqual(pooled('filter'), [instances[0]]);
+    await new FilterService().invoke(filterArgs('apple', 'ap'), false);
+    assert.equal(instances.length, 1, 'worker reused');
+    assert.equal(instances[0].jobs, 2);
+    mock.timers.tick(60_000);
+    assert.equal(instances[0].terminated, false, 'no timeout after success');
+    assert.ok(!logged.some((l) => /Timeout/.test(String(l.parts[0]))), 'no timeout logged');
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('a worker that reported an input error stays usable', limited, async () => {
+  assert.equal((await rejectionOf(() => new FilterService().invoke(filterArgs('apple', '([a-'), false))).kind, 'invalidInput');
+  const [worker] = instances;
+  assert.equal(worker.terminated, false);
+  assert.ok(pooled('filter').includes(worker));
+});
+
+test('a crashed worker is terminated and not reused', limited, async () => {
+  behaviour = 'crash';
+  assert.equal((await rejectionOf(() => new FilterService().invoke(filterArgs('a', 'a'), false))).kind, 'worker');
+  const [crashed] = instances;
+  assert.equal(crashed.terminated, true);
+  behaviour = 'real';
+  assert.equal((await new FilterService().invoke(filterArgs('apple', 'ap'), false)).result, 'ap');
+  assert.equal(instances.length, 2);
+});
+
+test('a worker that cannot be created is a worker error (no automatic main-thread fallback)', limited, async () => {
+  behaviour = 'noConstruct';
+  const error = await rejectionOf(() => new FilterService().invoke(filterArgs('apple', 'ap'), false));
+  assert.equal(error.kind, 'worker');
+});
+
+test('parallel jobs of different types do not interfere', limited, async () => {
+  behaviour = 'manual';
+  const split = new SplitService().invoke(splitArgs('a,b', ','), false);
+  const filter = new FilterService().invoke(filterArgs('apple', 'ap'), false);
+  await flush();
+  const [splitWorker, filterWorker] = instances;
+  filterWorker.answer();
+  splitWorker.answer();
+  assert.equal((await filter).result, 'ap');
+  assert.deepEqual((await split).result, [['a'], ['b']]);
+});
+
+test('a newer job of the same type supersedes the older one: older worker terminated, late answer ignored', limited, async () => {
+  behaviour = 'manual';
+  const older = rejectionOf(() => new FilterService().invoke(filterArgs('apple', 'ap'), false));
+  await flush();
+  const newer = new FilterService().invoke(filterArgs('banana', 'an'), false);
+  await flush();
+  const [olderWorker, newerWorker] = instances;
+
+  assert.equal((await older).kind, 'superseded');
+  assert.equal(olderWorker.terminated, true, 'the older worker is stopped');
+  olderWorker.answer(); // ignored: terminated
+  newerWorker.answer();
+  assert.equal((await newer).result, 'anan');
+  assert.ok(pooled('filter').includes(newerWorker));
+});
+
+test('superseded worker job on the same instance: only the newer result and metrics are applied', limited, async () => {
+  behaviour = 'manual';
+  const service = new FilterService();
+  const older = rejectionOf(() => service.invoke(filterArgs('apple', 'ap'), false));
+  await flush();
+  const newerArgs = filterArgs('banana', 'an');
+  const newer = service.invoke(newerArgs, false);
+  await flush();
+  const [olderWorker, newerWorker] = instances;
+  assert.equal((await older).kind, 'superseded');
+  assert.equal(service.getMetrics(), null, 'the superseded job sets no metrics');
+
+  newerWorker.answer();
+  olderWorker.answer(); // terminated: no answer
+  assert.equal((await newer).result, 'anan');
+  assert.equal(service.getMetrics()?.inputSize, new TextEncoder().encode(JSON.stringify(newerArgs)).length);
+  assert.equal((service as any).lastMetrics.length, 1);
+});
+
+test('worker timeout, then a new job of the same type is processed by a new worker', limited, async () => {
+  behaviour = 'manual';
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const timedOut = rejectionOf(() => new FilterService().invoke(filterArgs('apple', 'ap'), false));
+    await flush();
+    mock.timers.tick(10_000);
+    assert.equal((await timedOut).kind, 'timeout');
+    const next = new FilterService().invoke(filterArgs('banana', 'an'), false);
+    await flush();
+    assert.equal(instances.length, 2, 'a new worker for the next job');
+    instances[1].answer();
+    assert.equal((await next).result, 'anan');
+    assert.equal(instances[0].terminated, true);
+    assert.deepEqual(pooled('filter'), [instances[1]]);
+  } finally {
+    mock.timers.reset();
+  }
+});
+
+test('a job that ends after cleanupWorkers() returns its worker to the current pool (no orphaned worker)', limited, async () => {
+  behaviour = 'manual';
+  const job = new FilterService().invoke(filterArgs('apple', 'ap'), false);
+  await flush();
+  BaseService.cleanupWorkers(); // replaces the pool arrays (e.g. mode switch)
+  instances[0].answer();
+  await job;
+  assert.deepEqual(pooled('filter'), [instances[0]]);
+  BaseService.cleanupWorkers();
+  assert.equal(instances[0].terminated, true, 'the next cleanup reaches it');
+});
+
+// --- Match preview (Paket 5): runs in its own worker type ---
+
+const previewArgs = (sourceText: string, pattern: string, caseSensitive = true) => ({ sourceText, mainParam: pattern, configParams: { caseSensitive } });
+
+test('MatchPreviewWorker: delivers match segments as ColumnList', () => {
+  const [message] = runWorker('MatchPreviewWorker', previewArgs('an apple\nnone\nAPPLE', 'ap', false));
+  assert.equal(message.success, true);
+  assert.deepEqual({ type: message.result.type, result: message.result.result }, { type: 'ColumnList', result: [['an ', 'ap', 'ple'], ['', 'AP', 'PLE']] });
+});
+
+test('MatchPreviewWorker: invalid regex is an invalid-input error', () => {
+  const messages = runWorker('MatchPreviewWorker', previewArgs('apple', '([a-'));
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].errorKind, 'invalidInput');
+});
+
+test('MatchPreviewService runs in the preview worker, independent of a running filter job', limited, async () => {
+  behaviour = 'manual';
+  const filter = new FilterService().invoke(filterArgs('apple', 'ap'), false);
+  const preview = new MatchPreviewService().invoke(previewArgs('apple', 'ap'), false);
+  await flush();
+  const [filterWorker, previewWorker] = instances;
+  assert.equal(previewWorker.name, 'MatchPreviewWorker');
+  previewWorker.answer();
+  filterWorker.answer();
+  assert.deepEqual((await preview).result, [['', 'ap', 'ple']]);
+  assert.equal((await filter).result, 'ap');
+});
+
+test('BaseService.cancelPending stops a running preview (worker terminated, job superseded)', limited, async () => {
+  behaviour = 'manual';
+  const preview = rejectionOf(() => new MatchPreviewService().invoke(previewArgs('apple', 'ap'), false));
+  await flush();
+  BaseService.cancelPending('preview');
+  assert.equal((await preview).kind, 'superseded');
+  assert.equal(instances[0].terminated, true);
 });

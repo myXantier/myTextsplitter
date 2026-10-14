@@ -11,7 +11,7 @@ import OpenFileButton from '../components/OpenFileButton';
 import CopyButton from '../components/CopyButton';
 import { fontSizeToIconSize } from '../utils/helper';
 import useSnackbar from '../hooks/useSnackbar';
-import { processingErrorMessage, unwrapResult } from '../services/ProcessingError';
+import { isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import { usePermanentSetting } from '../hooks/useSettings';
 import { getWordDiffs } from '../utils/diff';
 import './styles/DiffPageStyle.css';
@@ -84,7 +84,8 @@ export default function DiffPage({
       setDiffResults(diffResult);
       snackbar.success(t('textDiff.processed'));
     } catch (error) {
-      snackbar.error(processingErrorMessage(error, t));
+      // A superseded job was replaced by a newer click: nothing to report
+      if (!isSuperseded(error)) snackbar.error(processingErrorMessage(error, t));
     }
   }, [sourceText, newText, ignoreWhitespace, diffText, t]);
 

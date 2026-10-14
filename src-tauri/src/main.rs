@@ -11,6 +11,8 @@ mod memory_usage;
 use text_processor::{ProcessedText, TextError, TextProcessor};
 
 mod text_diff;
+mod job_slot;
+use job_slot::JobSlot;
 
 // Settings
 mod settings;
@@ -53,6 +55,14 @@ fn is_backend_available() -> bool {
     true // Immer verfügbar, solange Tauri läuft
 }
 
+// CPU-heavy text commands (Split, Filter, Remove) run on Tokio's blocking pool, not on the async executor threads
+// that also serve the other IPC commands. Per operation at most one job runs and at most one waits (`JobSlot`):
+// a newer request replaces the waiting one, which then never runs (`TextError::Superseded`). A running regex cannot
+// be stopped. Different operations do not block each other.
+static SPLIT_JOBS: JobSlot<ProcessedText<Vec<String>>> = JobSlot::new();
+static FILTER_JOBS: JobSlot<ProcessedText<String>> = JobSlot::new();
+static REMOVE_JOBS: JobSlot<ProcessedText<String>> = JobSlot::new();
+
 #[tauri::command]
 async fn process_text_block(
     text: String,
@@ -61,7 +71,10 @@ async fn process_text_block(
     useregex: bool,
     keepemptylines: bool,
 ) -> Result<ProcessedText<Vec<String>>, TextError> {
-    TextProcessor::process_text_block_to_column_strings(&text, &delimiter, trimparts, useregex, keepemptylines)
+    SPLIT_JOBS.run(move || {
+        TextProcessor::process_text_block_to_column_strings(&text, &delimiter, trimparts, useregex, keepemptylines)
+    })
+    .await
 }
 
 // #[tauri::command]
@@ -86,26 +99,31 @@ async fn get_text_diff(
 }
 
 /// Filter Text Method
+// async + blocking pool: sync commands run on the main thread, a long regex would freeze the window
 #[tauri::command]
-fn filter_text(
+async fn filter_text(
     text: String,
     pattern: String,
     filtermode: String,
     casesensitive: bool,
     splitmatches: bool,
 ) -> Result<ProcessedText<String>, TextError> {
-    TextProcessor::filter_text_internal(
-        &text,
-        &pattern,
-        &filtermode,
-        casesensitive,
-        splitmatches,
-    )
+    FILTER_JOBS.run(move || {
+        TextProcessor::filter_text_internal(
+            &text,
+            &pattern,
+            &filtermode,
+            casesensitive,
+            splitmatches,
+        )
+    })
+    .await
 }
 
 /// Remove Lines Method
+// async + blocking pool: sync commands run on the main thread, a long regex would freeze the window
 #[tauri::command]
-fn remove_lines(
+async fn remove_lines(
     text: String,
     pattern: String,
     removemode: String,
@@ -113,14 +131,17 @@ fn remove_lines(
     useregex: bool,
     trimparts: bool,
 ) -> Result<ProcessedText<String>, TextError> {
-    TextProcessor::remove_lines_internal(
-        &text,
-        &pattern,
-        &removemode,
-        casesensitive,
-        useregex,
-        trimparts,
-    )
+    REMOVE_JOBS.run(move || {
+        TextProcessor::remove_lines_internal(
+            &text,
+            &pattern,
+            &removemode,
+            casesensitive,
+            useregex,
+            trimparts,
+        )
+    })
+    .await
 }
 
 #[tauri::command]
@@ -251,4 +272,64 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The command tests share the real job slots: run in parallel, one test's request would correctly supersede
+    /// another test's waiting request. Each command test holds this lock.
+    static COMMAND_TESTS: Mutex<()> = Mutex::new(());
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        COMMAND_TESTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Error result of a text command as the frontend receives it through Tauri IPC (`fromBackendError`).
+    fn ipc_error<T: std::fmt::Debug>(result: Result<T, TextError>) -> serde_json::Value {
+        serde_json::to_value(result.expect_err("expected an error result")).unwrap()
+    }
+
+    #[test]
+    fn text_commands_report_invalid_regex_as_kind_and_message() {
+        let _serial = serial();
+        use tauri::async_runtime::block_on;
+        for error in [
+            ipc_error(block_on(process_text_block("a".into(), "([a-".into(), false, true, true))),
+            ipc_error(block_on(filter_text("a".into(), "([a-".into(), "keep".into(), false, false))),
+            ipc_error(block_on(remove_lines("a".into(), "([a-".into(), "containing".into(), true, true, false))),
+        ] {
+            assert_eq!(error["kind"], "invalidRegex", "{error}");
+            assert!(error["message"].as_str().is_some_and(|m| m.contains("position 4")), "{error}"); // not shifted by the (?i) prefix
+        }
+    }
+
+    #[test]
+    fn text_commands_report_backtrack_limit_as_regex_runtime_error() {
+        let _serial = serial();
+        let text = "ab".repeat(40);
+        let error = ipc_error(tauri::async_runtime::block_on(filter_text(text, "(a|b|ab)*(?=c)".into(), "keep".into(), true, false)));
+        assert_eq!(error["kind"], "regexRuntime", "{error}");
+    }
+
+    #[test]
+    fn text_commands_process_ordinary_input() {
+        let _serial = serial();
+        let filtered = tauri::async_runtime::block_on(filter_text("cost $42".into(), r"(?<=\$)\d+".into(), "keep".into(), true, false)).unwrap();
+        assert_eq!(filtered.result_text, "42");
+        let removed = tauri::async_runtime::block_on(remove_lines("aa\nab".into(), r"(\w)\1".into(), "containing".into(), true, true, false)).unwrap();
+        assert_eq!((removed.result_text.as_str(), removed.removed_lines), ("ab", 1));
+        let split = tauri::async_runtime::block_on(process_text_block("a,b".into(), ",".into(), false, false, true)).unwrap();
+        assert_eq!(split.result_text, vec!["a", "b"]);
+        // The metrics of the processing are kept (measured inside the job, without the queue time)
+        assert!(serde_json::to_value(&split.metrics).unwrap()["execution_time_ms"].as_f64().is_some_and(|ms| ms >= 0.0));
+    }
+
+    #[test]
+    fn superseded_and_internal_errors_reach_the_frontend_as_kind() {
+        let superseded = ipc_error::<()>(Err(TextError::Superseded));
+        assert_eq!(superseded["kind"], "superseded", "{superseded}");
+        let internal = ipc_error::<()>(Err(TextError::Internal("text processing job panicked".into())));
+        assert_eq!((internal["kind"].as_str(), internal["message"].as_str()), (Some("internal"), Some("text processing job panicked")));
+    }
 }

@@ -8,10 +8,11 @@ import Checkbox from '../components/Checkbox';
 import { MatchPreview } from '../components/MatchPreview';
 import { ProcessingStatus } from './pageComponents/ProcessingStatus';
 import { useBackendProcessor } from '../hooks/useBackendProcessor';
+import { useRuntimeSetting } from '../hooks/useSettings';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
 import useSnackbar from '../hooks/useSnackbar';
-import { processingErrorMessage, unwrapResult } from '../services/ProcessingError';
+import { isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import './styles/FilterPageStyle.css';
 
 interface FilterPageProps {
@@ -37,6 +38,8 @@ export default function FilterPage({
   });
 
   const { filterText } = useBackendProcessor();
+  // Same rule as useBackendProcessor: 'backend' runs the Filter in Rust
+  const processingMode = useRuntimeSetting('processingMode');
 
   const handleProcessText = useCallback(
     async (action: 'remove' | 'keep') => {
@@ -62,7 +65,8 @@ export default function FilterPage({
         setShowResult(true);
         snackbar.success(t('textFilter.processed'));
       } catch (error) {
-        snackbar.error(processingErrorMessage(error, t));
+        // A superseded job was replaced by a newer click: nothing to report
+        if (!isSuperseded(error)) snackbar.error(processingErrorMessage(error, t));
       }
     },
     [sourceText, options, filterText, t]
@@ -164,6 +168,7 @@ export default function FilterPage({
                 sourceText={sourceText}
                 pattern={options.pattern}
                 caseSensitive={options.caseSensitive}
+                engine={processingMode === 'backend' ? 'rust' : 'js'}
               />
             )}
 

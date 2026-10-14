@@ -1,6 +1,6 @@
-import { BaseService } from './BaseService';
-import { validateRegexPattern } from '../utils/regex';
-import { assertBackendResult, createResult, invalidRegexError } from './ProcessingError';
+import { BaseService, type JobOutcome, type JobRegex } from './BaseService';
+import { compileUserRegex } from '../utils/regex';
+import { assertBackendResult, createResult } from './ProcessingError';
 
 export class FilterService extends BaseService {
   protected readonly resultType = 'Text';
@@ -9,7 +9,7 @@ export class FilterService extends BaseService {
     super('filter');
   }
 
-  protected async invokeBackend(args: FilterConfig): Promise<myResult> {
+  protected async invokeBackend(args: FilterConfig): Promise<JobOutcome> {
     const { sourceText, mainParam, configParams } = args;
     const { caseSensitive, filterMode, splitMatches } = configParams;
     const { invokeUNSAFE } = await import('./tauriInvoke');
@@ -24,20 +24,19 @@ export class FilterService extends BaseService {
 
     // An empty `result_text` is a valid result (all lines filtered out)
     const result = assertBackendResult(response, 'Text');
-    this.setMetrics(result.metrics, sourceText, result.result_text);
-    return createResult('Text', result.result_text);
+    return this.backendOutcome(createResult('Text', result.result_text), result.metrics, sourceText, result.result_text);
   }
 
+  protected regexOf({ mainParam, configParams }: FilterConfig): JobRegex {
+    return { pattern: mainParam, flags: configParams.caseSensitive ? 'g' : 'gi' };
+  }
+
+  /** Not reachable through `invoke` (Filter always runs a regex, see `regexOf`); kept as JS implementation. */
   protected async frontendInMainThread(args: FilterConfig): Promise<myResult> {
     const { sourceText, mainParam, configParams } = args;
     const { caseSensitive, filterMode, splitMatches } = configParams;
 
-    if (!validateRegexPattern(mainParam)) {
-      throw invalidRegexError();
-    }
-
-    const flags = caseSensitive ? 'g' : 'gi';
-    const regex = new RegExp(mainParam, flags);
+    const regex = compileUserRegex(mainParam, caseSensitive ? 'g' : 'gi');
 
     const processedLines = sourceText.split('\n').map((line) => {
       if (!line.trim()) return line;
