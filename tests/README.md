@@ -56,8 +56,8 @@ Unicode `\d`) are documented as `divergence` cases in the fixtures.
 ## Line-ending fixtures (`tests/fixtures/line-endings-cases.json`, Paket 6)
 
 Shared by `npm test` (`tests/unit/line-endings.test.ts`: line model, real worker modules, main-thread fallbacks) and
-`cargo test` (`line_endings.rs`, `text_processor.rs`, `text_diff.rs`). Sections: `lines` (line model), `filter`,
-`remove`, `combine`, `diff` (only which lines are unchanged/changed: the diff algorithms differ) and `sort` (JS only,
+`cargo test` (`line_endings.rs`, `text_processor.rs`, `diff/tests.rs`). Sections: `lines` (line model), `filter`,
+`remove`, `combine`, `diff` (which lines are unchanged/changed; the complete diff is in `diff-cases.json`) and `sort` (JS only,
 Sort has no Rust implementation). The line model is implemented twice with the same rules:
 `src/utils/lines.ts` (`splitLines`, `joinLines`, `lineFormatOf`) and `src-tauri/src/line_endings.rs`.
 
@@ -74,6 +74,41 @@ line contents: CRLF vs. LF and a trailing newline on one side only are no differ
 (`combineColumns` in JS, `combine_columns` in Rust; the combined text is never split again, so trailing empty values
 keep their rows) with the line format of the text that was split (stored on a successful Split); the column copy uses
 the same format. One empty line without trailing newline and an empty result are both `""` (text representation).
+
+## Diff fixtures (`tests/fixtures/diff-cases.json`, Paket 7 B1)
+
+One line diff, implemented twice with the same steps: `src/utils/diff/` (JS: Web Worker and main-thread fallback) and
+`src-tauri/src/diff/` (Rust). `npm test` (`tests/unit/diff.test.ts`) and `cargo test` (`src-tauri/src/diff/tests.rs`)
+check the **complete** result of every case: row order, old and new line numbers, move links and statistics
+(notation in the file). Both suites also check every invariant (each old and new line exactly once and in order, original
+texts, equal rows have equal keys, each move has exactly one delete and one insert, statistics without double counting).
+
+| Section | Meaning |
+|---|---|
+| `cases` | hand-written cases (the 18 examples of the Phase A analysis and edge cases), expected values reviewed by hand |
+| `documents` | the exact JSON of a few `DiffDocument`s (field names, omitted `moveId`) |
+| `validatedDocuments` | valid and corrupted documents for the runtime validator (JS only): equal rows with different keys, moves between different, blank or repeated lines, unlinked unique moves, wrong id order |
+| `limit` | exact work units of one alignment: the work limit counts identically in both engines |
+| `generated` | 2000 random cases from the same xorshift32 generator in both suites; the FNV-1a digest of all results must match |
+
+Algorithm and rules (details in `src/utils/diff/myers.ts`, `lineDiff.ts`, `whitespace.ts`):
+
+- Myers, linear space (middle snake). Tie-break: lines that occur on one side only are removed first, common prefix/suffix,
+  bisection, then "earliest match" (of several equal lines the earliest ones are paired). Between two matched lines all
+  deletes come before all inserts. The result is minimal (as many unchanged lines as the LCS; checked against a DP).
+- Moves are only added afterwards: a delete and an insert with the same key that occurs exactly once in each text and is
+  not blank. Duplicates and blank lines stay delete + insert. `stats`: a move counts once (`moved`), not as removed/added.
+- `ignoreWhitespace` only changes the comparison key (trim + whitespace runs = one space), never the displayed text.
+  Whitespace = Unicode `White_Space` (25 code points, explicit list; not U+FEFF/U+200B). No NFC normalization; case matters.
+- Work limit `DIFF_WORK_LIMIT` = 100,000,000 units (diagonals + snake steps, counted, not timed): exceeding it is the input
+  error `diffTooComplex` (`errors.diffTooComplex`), never a partial result. Mostly equal or completely different texts are
+  cheap (prefix/suffix and one-sided lines cost nothing); the limit applies to many reordered common lines (about 10,000
+  reversed lines, about 1 s in JS).
+- Transport: Rust returns `{ document, metrics }` as structured IPC data (blocking pool, own `JobSlot`); the Web Worker
+  computes the diff from both complete texts in one message. `DiffService` validates every document and checks it against
+  the request (options, line counts, every original text), so a truncated or foreign result is `invalidResult`.
+  The validator also checks the semantics in linear time (equal rows have equal keys, moves follow the move rules) and
+  runs before the metrics are applied (`BaseService.checkResult`): a rejected result never sets metrics.
 
 ## Regex fixtures (`tests/fixtures/regex-cases.json`)
 
@@ -99,7 +134,7 @@ Catastrophic backtracking is not in the fixtures: see `worker-termination.test.t
 - **Rust:** `fancy-regex` with an explicit `REGEX_BACKTRACK_LIMIT` (= default 1,000,000 per match attempt). This is a
   step limit, not a time limit; patterns without fancy features run in the linear-time `regex` crate. Exceeding it is
   `regexRuntime` -> "too complex". All text commands are `async` (sync Tauri commands run on the main thread); Split,
-  Filter and Remove run on the blocking pool (`spawn_blocking`) through a `JobSlot` per operation (`job_slot.rs`): at
+  Filter, Remove and Diff run on the blocking pool (`spawn_blocking`) through a `JobSlot` per operation (`job_slot.rs`): at
   most one running and one waiting job, waiting happens in the async command (no blocked thread). A newer request
   replaces the waiting one, which never runs and drops its input (`superseded`). A running regex cannot be stopped.
   A panicking job is `internal` (backend error) and does not block later jobs.
@@ -147,7 +182,8 @@ They drive the **real application** and are not part of `npm test`.
 Split and Combine are checked with concrete results in both integration tests (late columns / B1,
 empty lines kept and skipped, Combine without row offset; Tauri: Rust backend and JS mode). For Sort,
 Filter, Remove and Diff the integration tests only check that the operations run and report results;
-known functional bugs (Diff, Filter semantics) are not encoded in these tests.
+known functional bugs (Filter semantics) are not encoded in these tests. The diff result itself is checked by the unit
+fixtures above (the DiffPage still renders it through a transitional adapter until Paket 7 B3).
 
 Error handling (`checkProcessingErrors` in `tests/e2e/lib/app.mjs`; browser: Web Worker, Tauri: Rust backend and
 JS mode): an invalid regex in Filter/Remove shows exactly one error message and no success message, keeps the
@@ -164,7 +200,8 @@ the newer result and one success message; a Split that finishes keeps the proces
 Line endings (`checkLineEndings`, Paket 6; browser: Web Worker, Tauri: Rust backend and JS mode): CRLF files with a
 trailing newline are imported through "Open File" (typing into a textarea turns CRLF into LF) and run through Split
 (no extra row, no `\r` in values), column copy, Combine, Filter, Remove (duplicates), Sort and Diff (CRLF file vs. the
-same text typed with LF = no difference). Results are read from React's props (`__t.raw`) and from the copied text
+same text typed with LF = no difference; Paket 7: a new text with more lines than the old one keeps every line, and a
+move is shown as removed + added with "1 moved" in the statistics). Results are read from React's props (`__t.raw`) and from the copied text
 (`__t.captureCopy`), because `textarea.value` also normalizes line breaks to LF.
 
 The Tauri test switches "Keep Empty Lines" explicitly, because an existing `settings.json` may still

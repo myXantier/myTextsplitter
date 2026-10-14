@@ -42,6 +42,8 @@ pub enum TextError {
     InvalidRegex(String),
     /// The regex failed while matching (e.g. backtrack limit exceeded).
     RegexRuntime(String),
+    /// The diff alignment needs more work than `diff::DIFF_WORK_LIMIT` (too many reordered lines). No partial result.
+    DiffTooComplex(String),
     /// The processing task itself failed (panic or cancelled task), not the user input.
     Internal(String),
     /// A newer request of the same operation replaced this one before it started (it never ran).
@@ -53,6 +55,7 @@ impl std::fmt::Display for TextError {
         match self {
             TextError::InvalidRegex(message) => write!(f, "invalid regex: {message}"),
             TextError::RegexRuntime(message) => write!(f, "regex runtime error: {message}"),
+            TextError::DiffTooComplex(message) => write!(f, "diff too complex: {message}"),
             TextError::Internal(message) => write!(f, "internal error: {message}"),
             TextError::Superseded => write!(f, "superseded by a newer request"),
         }
@@ -445,7 +448,7 @@ mod tests {
                 Ok(result) => Expected::Text(result.result_text),
                 Err(TextError::InvalidRegex(_)) => Expected::Error { error: "invalidRegex".into() },
                 Err(TextError::RegexRuntime(_)) => Expected::Error { error: "regexRuntime".into() },
-                Err(e @ (TextError::Internal(_) | TextError::Superseded)) => panic!("{}: {e}", c.name),
+                Err(e @ (TextError::Internal(_) | TextError::DiffTooComplex(_) | TextError::Superseded)) => panic!("{}: {e}", c.name),
             };
             if &actual != expected {
                 failures.push(format!("{}\n    expected: {:?}\n    actual:   {:?}", c.name, expected, actual));

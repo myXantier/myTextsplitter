@@ -118,6 +118,7 @@ export default {
       invalidPattern: 'Invalid pattern',
       invalidRegex: 'Invalid regex pattern',
       regexTooComplex: 'Regex pattern is too complex for this text',
+      diffTooComplex: 'The comparison is too complex (too many reordered lines)',
       regexRequiresWorker: 'Regular expressions cannot be run safely without a Web Worker',
       processingSuperseded: 'Processing was replaced by a newer one',
       fileTooLarge: 'File is too large. Maximum size is 10MB.',

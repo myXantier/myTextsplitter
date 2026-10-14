@@ -1,5 +1,5 @@
 // Line endings (Paket 6): shared fixtures `tests/fixtures/line-endings-cases.json`, also run by the Rust engine
-// (`cargo test`: line_endings.rs, text_processor.rs, text_diff.rs). The JS side runs the line model, the real worker
+// (`cargo test`: line_endings.rs, text_processor.rs, diff/tests.rs). The JS side runs the line model, the real worker
 // modules (in-process, `self` stand-in, as in regex-compat.test.ts) and the main-thread fallbacks of the services.
 import { installWindow, disableWorkerCleanupInterval } from './helpers/setup.ts';
 import { test } from 'node:test';
@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 const { splitLines, joinLines, lineFormatOf } = await import('../../src/utils/lines.ts');
 const { combineColumns } = await import('../../src/utils/combineColumns.ts');
 const { sortText } = await import('../../src/utils/sortLines.ts');
-const { computeLinearDiff } = await import('../../src/utils/diff.ts');
+const { computeLineDiff } = await import('../../src/utils/diff/lineDiff.ts');
 const { splitTextToColumns } = await import('../../src/utils/splitColumns.ts');
 const { FilterService, RemoveService } = await import('../../src/services/Services.ts');
 const { BaseService } = await import('../../src/services/BaseService.ts');
@@ -56,10 +56,10 @@ const removeArgs = (c: any): RemoveConfig => ({
   mainParam: c.pattern ?? '',
   configParams: { caseSensitive: true, useRegex: c.useRegex ?? false, trimParts: c.trimParts ?? false, removeMode: c.removeMode },
 });
-/** Diff entries reduced to what both engines must agree on (the algorithms differ in order and moved detection). */
-const diffSummary = (results: DiffResult[]) => ({
-  unchanged: results.filter((d) => d.type === 'unchanged').map((d) => d.text).sort(),
-  changes: results.filter((d) => d.type !== 'unchanged').map((d) => `${d.type}:${d.text}`).sort(),
+/** Which lines are unchanged and which are changes (the complete diff result is checked by diff.test.ts). */
+const diffSummary = (document: import('../../src/utils/diff/types.ts').DiffDocument) => ({
+  unchanged: document.rows.flatMap((r) => (r.kind === 'equal' ? [r.new.text] : [])).sort(),
+  changes: document.rows.flatMap((r) => (r.kind === 'delete' ? [`removed:${r.old.text}`] : r.kind === 'insert' ? [`added:${r.new.text}`] : [])).sort(),
 });
 
 test('line-ending fixtures are well-formed', () => {
@@ -169,8 +169,8 @@ for (const c of fixtures.diff) {
   test(`diff worker + main thread: ${c.name}`, () => {
     const expected = { unchanged: [...c.unchanged].sort(), changes: [...c.changes].sort() };
     const args: DiffConfig = { sourceText: c.old, mainParam: c.new, configParams: { caseSensitive: true, ignoreWhitespace: false } };
-    assert.deepEqual(diffSummary(JSON.parse(runWorker('diff', args))), expected, 'worker');
-    assert.deepEqual(diffSummary(computeLinearDiff(c.old, c.new)), expected, 'main thread');
+    assert.deepEqual(diffSummary(runWorker('diff', args)), expected, 'worker');
+    assert.deepEqual(diffSummary(computeLineDiff(c.old, c.new, { ignoreWhitespace: false })), expected, 'main thread');
   });
 }
 

@@ -1,84 +1,67 @@
 import { BaseService, type JobOutcome } from './BaseService';
-import { computeLinearDiff, getWordDiffs, pairDiffResults, groupDiffResults } from '../utils/diff';
-import { ProcessingError, ERROR_KEYS, assertBackendResult, createResult } from './ProcessingError';
+import { ProcessingError, ERROR_KEYS, createResult } from './ProcessingError';
+import { diffInJs } from '../utils/diff/jsEngine';
+import { diffDocumentError, diffInputMismatch } from '../utils/diff/validate';
+import { splitLines } from '../utils/lines';
+import type { DiffDocument } from '../utils/diff/types';
 
-// Map instead of an object literal: inherited properties (`constructor`, `__proto__`, …) must not count as diff types
-const BACKEND_DIFF_TYPES = new Map<unknown, DiffResult['type']>([
-  ['Added', 'added'],
-  ['Removed', 'removed'],
-  ['Moved', 'moved'],
-  ['Unchanged', 'unchanged'],
-]);
+const invalid = (detail: string) => new ProcessingError('invalidResult', ERROR_KEYS.general, `unexpected diff result: ${detail}`);
 
 /**
- * Converts the Rust diff JSON (`{ text, diff_type: 'Added', line_number }`) into the `DiffResult` format of the
- * JS engine (`{ type: 'added', text, lineNumber }`), so both paths deliver the same structure (B24).
- * Throws `invalidResult` for anything else.
+ * Checks the answer of the Rust command `get_text_diff`: `{ document, metrics }` with a complete, valid
+ * `DiffDocument` (structured IPC data, no JSON string). Throws `invalidResult` for anything else.
  */
-export function convertBackendDiff(json: string): DiffResult[] {
-  const invalid = (detail: string) => new ProcessingError('invalidResult', ERROR_KEYS.general, `unexpected diff result: ${detail}`);
-  let data: unknown;
-  try {
-    data = JSON.parse(json);
-  } catch {
-    throw invalid('no JSON');
+export function assertBackendDiff(value: unknown): { document: DiffDocument; metrics: BackendMetrics } {
+  const candidate = value as { document?: unknown; metrics?: BackendMetrics } | null;
+  if (!candidate || typeof candidate !== 'object' || Object.keys(candidate).sort().join() !== 'document,metrics') throw invalid('no diff response');
+  const error = diffDocumentError(candidate.document);
+  if (error) throw invalid(error);
+  const metrics = candidate.metrics;
+  if (!metrics || typeof metrics !== 'object' || !Number.isFinite(metrics.execution_time_ms) || !(metrics.memory_usage_kb === null || Number.isFinite(metrics.memory_usage_kb))) {
+    throw invalid('metrics');
   }
-  if (!Array.isArray(data)) throw invalid('no array');
-
-  return data.map((item) => {
-    const type = BACKEND_DIFF_TYPES.get(item?.diff_type);
-    if (!type || typeof item.text !== 'string' || !Number.isInteger(item.line_number)) throw invalid('entry');
-    return { type, text: item.text, lineNumber: item.line_number };
-  });
+  return { document: candidate.document as DiffDocument, metrics };
 }
 
 export class DiffService extends BaseService {
-  protected readonly resultType = 'Text';
+  protected readonly resultType = 'Diff';
 
   constructor() {
     super('diff');
   }
 
+  /**
+   * Every path (Rust, Web Worker, main thread) delivers a `Diff` result that `assertResult` validated (structure,
+   * order, equal keys, move rules, statistics) and that is checked here against the request: same options, all lines
+   * of both texts with their original content. Runs before the metrics are applied (BaseService): a partial or
+   * foreign result is an `invalidResult` error, never a displayed diff, and its metrics are discarded.
+   */
+  protected checkResult(result: myResult, args: DiffConfig): void {
+    const mismatch = diffInputMismatch(
+      result.result as DiffDocument,
+      splitLines(args.sourceText).lines,
+      splitLines(args.mainParam).lines,
+      args.configParams.ignoreWhitespace,
+    );
+    if (mismatch) throw invalid(mismatch);
+  }
+
   protected async invokeBackend(args: DiffConfig): Promise<JobOutcome> {
     const { sourceText, mainParam, configParams } = args;
-    const { ignoreWhitespace } = configParams;
 
     const { invokeUNSAFE } = await import('./tauriInvoke');
     const response = await invokeUNSAFE<unknown>('get_text_diff', {
       oldtext: sourceText,
       newtext: mainParam,
-      ignorewhitespace: ignoreWhitespace,
+      ignorewhitespace: configParams.ignoreWhitespace,
     });
 
-    const result = assertBackendResult(response, 'Text');
-    const diffJson = JSON.stringify(convertBackendDiff(result.result_text));
-    return this.backendOutcome(createResult('Text', diffJson), result.metrics, sourceText, result.result_text);
+    const { document, metrics } = assertBackendDiff(response);
+    // Output size for the metrics display, measured like the worker path (BaseService)
+    return this.backendOutcome(createResult('Diff', document), metrics, sourceText, JSON.stringify(document));
   }
 
   protected async frontendInMainThread(args: DiffConfig): Promise<myResult> {
-    const { sourceText, mainParam, configParams } = args;
-    const { ignoreWhitespace } = configParams;
-
-    const results = computeLinearDiff(
-      ignoreWhitespace ? sourceText.replace(BaseService.ignoreWhitespaceRegex, '') : sourceText,
-      ignoreWhitespace ? mainParam.replace(BaseService.ignoreWhitespaceRegex, '') : mainParam
-    );
-
-    return createResult('Text', JSON.stringify(results));
-  }
-
-  /** Process word-level diffs between two lines of text */
-  public getWordDiffs(oldLine: string, newLine: string) {
-    return getWordDiffs(oldLine, newLine);
-  }
-
-  /** Group diff results by type (added, removed, unchanged) */
-  public groupDiffResults(diffResults: DiffResult[]) {
-    return groupDiffResults(diffResults);
-  }
-
-  /** Pair diff results for side-by-side comparison */
-  public pairDiffResults(diffResults: DiffResult[]) {
-    return pairDiffResults(diffResults);
+    return createResult('Diff', diffInJs(args));
   }
 }

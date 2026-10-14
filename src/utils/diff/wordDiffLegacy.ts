@@ -1,73 +1,11 @@
-import { splitLines } from './lines';
+// Word highlighting of the current DiffPage (unchanged code from the former `src/utils/diff.ts`). Its known issues
+// (3-token lookahead, "changed" shows only the new word, partner choice in DiffPage) are replaced in Paket 7 B2/B3;
+// see docs/analyse/Paket7-PhaseA-Diff-Analyse.md, section 7. The line diff itself is `lineDiff.ts`.
 
 export interface WordDiff {
   text: string; 
   type: 'added' | 'removed' | 'unchanged' | 'changed' | 'moved';
 }
-
-/** Compares the data lines of both texts (shared line model): line endings and a trailing newline are not compared. */
-export const computeLinearDiff = (oldText: string, newText: string): DiffResult[] => {
-  return computeLinearDiffFromArray(splitLines(oldText ?? '').lines, splitLines(newText ?? '').lines);
-};
-  
-export const computeLinearDiffFromArray = (oldLines: string[], newLines: string[]): DiffResult[] => {
-  const result: DiffResult[] = [];
-  if ((oldLines?.length ?? 0) === 0 && (newLines?.length ?? 0) === 0) return result;
-
-  // First, identify unchanged lines
-  const oldLineSet = new Set(oldLines);
-  const newLineSet = new Set(newLines);
-  const commonLines = new Set([...oldLineSet].filter(line => newLineSet.has(line)));
-
-  // Identify added lines (in new but not in old)
-  // NEW
-  for (let i = 0; i < newLines.length; i++) {
-    const line = newLines[i];
-    const oldIndex = oldLines.indexOf(line);
-  
-    // 1) Wenn vorhanden, aber an anderer Position → moved
-    if (commonLines.has(line) && oldIndex !== -1 && oldIndex !== i) {
-      result.push({ type: 'moved', text: line, lineNumber: i + 1 });
-  
-    // 2) Wenn neu hinzugekommen oder öfter vorkommend → added
-    } else if (
-      !commonLines.has(line)
-      || countOccurrences(newLines, line) > countOccurrences(oldLines, line)
-    ) {
-      result.push({ type: 'added', text: line, lineNumber: i + 1 });
-  
-    // 3) sonst unverändert
-    } else {
-      result.push({ type: 'unchanged', text: line, lineNumber: i + 1 });
-    }
-  }
-  // OLD
-  // for (let i = 0; i < newLines.length; i++) {
-  //   const line = newLines[i];
-  //   if (!commonLines.has(line) || countOccurrences(newLines, line) > countOccurrences(oldLines, line)) {
-  //     result.push({ type: 'added', text: line, lineNumber: i + 1 });
-  //   } else if (commonLines.has(line)) {
-  //     result.push({ type: 'unchanged', text: line, lineNumber: i + 1 });
-  //   }
-  // }
-
-
-  // Identify removed lines (in old but not in new)
-  for (let i = 0; i < oldLines.length; i++) {
-    const line = oldLines[i];
-    if (!commonLines.has(line) || countOccurrences(oldLines, line) > countOccurrences(newLines, line)) {
-      result.push({ type: 'removed', text: line, lineNumber: i + 1 });
-    }
-  }
-
-  // Sort by line number
-  result.sort((a, b) => a.lineNumber - b.lineNumber);
-
-  // Detect moved lines
-  detectMovedLines(result);
-
-  return result;
-};
 
 // Calculate similarity between two strings
 export const calculateSimilarity = (str1: string, str2: string): number => {
@@ -87,34 +25,6 @@ export const calculateSimilarity = (str1: string, str2: string): number => {
   
   return commonChars / Math.max(len1, len2);
 };
-
-// Count occurrences of a string in an array
-function countOccurrences(arr: string[], value: string): number {
-  return arr.filter(item => item === value).length;
-}
-
-// Detect moved lines in the diff results
-function detectMovedLines(results: DiffResult[]): void {
-  const addedLines = results.filter(r => r.type === 'added');
-  const removedLines = results.filter(r => r.type === 'removed');
-  
-  const processedAdded = new Set<number>();
-  
-  for (const removed of removedLines) {
-    const similarAdded = addedLines.find((added, index) => 
-      !processedAdded.has(index) && 
-    removed.text === added.text //calculateSimilarity(removed.text, added.text) > 0.8
-    );
-    
-    if (similarAdded) {
-      const index = results.indexOf(similarAdded);
-      if (index !== -1) {
-        results[index].type = 'moved';
-        processedAdded.add(addedLines.indexOf(similarAdded));
-      }
-    }
-  }
-}
 
 // Compare two lines word by word and return an array of word differences
 export const getWordDiffs = (oldLine: string, newLine: string): WordDiff[] => {

@@ -8,6 +8,7 @@
 import { installWindow, disableWorkerCleanupInterval, rejectionOf, logged } from './helpers/setup.ts';
 import { test, beforeEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 const g = globalThis as any;
 
@@ -187,8 +188,71 @@ test('worker path: successful results reach the service', async () => {
   const split = await new SplitService().invoke(splitArgs('a,b', ','), false);
   assert.equal(split.type, 'ColumnList');
   const diff = await new DiffService().invoke({ sourceText: 'a', mainParam: 'b', configParams: { caseSensitive: true, ignoreWhitespace: false } }, false);
-  assert.equal(diff.type, 'Text');
-  assert.ok(Array.isArray(JSON.parse(diff.result as string)));
+  assert.equal(diff.type, 'Diff');
+  assert.deepEqual((diff.result as any).stats, { unchanged: 0, removed: 1, added: 1, moved: 0 });
+});
+
+const diffArgs = (sourceText: string, mainParam: string): DiffConfig => ({ sourceText, mainParam, configParams: { caseSensitive: true, ignoreWhitespace: false } });
+
+test('Paket 7: the diff worker keeps every new line when the new text is longer (former truncation)', async () => {
+  for (const [oldText, newText] of [['A', 'A\nB\nC\nD'], ['', 'A\nB'], ['A\nB', 'X\nA\nB\nC']]) {
+    const diff = await new DiffService().invoke(diffArgs(oldText, newText), false);
+    const document = diff.result as any;
+    assert.equal(document.newLineCount, newText.split('\n').length);
+    assert.deepEqual(
+      document.rows.flatMap((r: any) => (r.kind === 'delete' ? [] : [r.new.text])),
+      newText.split('\n'),
+    );
+  }
+  assert.ok(instances.some((w) => w.name === 'DiffWorker'), 'ran in the diff worker');
+});
+
+test('Paket 7: one diff worker message per job, even for long texts', () => {
+  const messages = runWorker('DiffWorker', diffArgs(Array.from({ length: 50 }, (_, i) => `l${i}`).join('\n'), 'x'));
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].success, true);
+  assert.equal(messages[0].result.type, 'Diff');
+});
+
+test('Paket 7: a too complex diff in the worker is an invalid-input error, no partial result', async () => {
+  const lines = Array.from({ length: 12_000 }, (_, i) => `line ${i}`);
+  const error = await rejectionOf(() => new DiffService().invoke(diffArgs(lines.join('\n'), [...lines].reverse().join('\n')), false));
+  assert.equal(error.kind, 'invalidInput');
+  assert.equal(error.message, 'errors.diffTooComplex');
+});
+
+const diffFixtures = JSON.parse(readFileSync(new URL('../fixtures/diff-cases.json', import.meta.url), 'utf8'));
+const { computeLineDiff } = await import('../../src/utils/diff/lineDiff.ts');
+const diffReply = (document: unknown) => ({ success: true, type: 'complete', result: { type: 'Diff', result: document, isNull: false, abort: false, __brand: 'myResult' } });
+
+for (const v of diffFixtures.validatedDocuments.filter((v: any) => !v.valid)) {
+  test(`Paket 7: corrupted diff worker answer (${v.name}) is invalidResult, no metrics`, async () => {
+    behaviour = { reply: diffReply(v.document) };
+    const service = new DiffService();
+    const error = await rejectionOf(() => service.invoke({ sourceText: v.old, mainParam: v.new, configParams: { caseSensitive: true, ignoreWhitespace: v.ignoreWhitespace } }, false));
+    assert.equal(error.kind, 'invalidResult');
+    assert.equal(service.getMetrics(), null);
+  });
+}
+
+for (const [label, document] of [
+  ['the diff of another input', computeLineDiff('a', 'x', { ignoreWhitespace: false })],
+  ['a truncated diff (new text cut)', computeLineDiff('a', 'a', { ignoreWhitespace: false })],
+] as const) {
+  test(`Paket 7: a diff worker answer with ${label} is invalidResult, no metrics`, async () => {
+    behaviour = { reply: diffReply(document) };
+    const service = new DiffService();
+    const error = await rejectionOf(() => service.invoke(diffArgs('a', 'a\nb'), false));
+    assert.equal(error.kind, 'invalidResult');
+    assert.equal(service.getMetrics(), null);
+  });
+}
+
+test('Paket 7: invalid diff worker arguments are a worker error', () => {
+  const messages = runWorker('DiffWorker', { sourceText: 'a', mainParam: 1, configParams: {} } as unknown as BaseConfig);
+  assert.equal(messages.length, 1);
+  assert.equal(messages[0].success, false);
+  assert.equal(messages[0].errorKind, 'worker');
 });
 
 for (const [name, run] of [

@@ -1,0 +1,1472 @@
+{
+  "description": "Paket 7 B1: line diff fixtures shared by npm test (tests/unit/diff.test.ts) and cargo test (src-tauri/src/diff/tests.rs). Expected values are the complete result: row order, old/new line numbers, move links and statistics. The texts of every row are checked against the input lines by the invariant check of both suites. `documents` additionally fixes the exact JSON shape of the DiffDocument.",
+  "notation": {
+    "rows": "\"=o/n\" equal (old line o, new line n), \"-o\" delete, \"+n\" insert, suffix \"mK\" = moveId K. Display order: matched lines in order; between two matched lines all deletes, then all inserts.",
+    "moves": "\"id:oldLine>newLine\"",
+    "stats": "unchanged + removed + moved = old line count; unchanged + added + moved = new line count (a move is counted once)",
+    "validatedDocuments": "complete documents for the runtime validator of results from Rust and the Web Worker (src/utils/diff/validate.ts): valid ones and deliberately corrupted ones with matching counts and statistics. JS only: Rust produces documents but never receives them; its test invariants check the same rules."
+  },
+  "cases": [
+    {
+      "name": "A01 insert at the start",
+      "note": "no moved lines after an insert (former B8)",
+      "old": "A\nB\nC",
+      "new": "X\nA\nB\nC",
+      "rows": "+1 =1/2 =2/3 =3/4",
+      "moves": [],
+      "stats": {
+        "unchanged": 3,
+        "removed": 0,
+        "added": 1,
+        "moved": 0
+      }
+    },
+    {
+      "name": "A02 delete at the start",
+      "old": "X\nA\nB\nC",
+      "new": "A\nB\nC",
+      "rows": "-1 =2/1 =3/2 =4/3",
+      "moves": [],
+      "stats": {
+        "unchanged": 3,
+        "removed": 1,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "A03 one line changed",
+      "old": "A\nB\nC",
+      "new": "A\nB2\nC",
+      "rows": "=1/1 -2 +2 =3/3",
+      "moves": [],
+      "stats": {
+        "unchanged": 2,
+        "removed": 1,
+        "added": 1,
+        "moved": 0
+      }
+    },
+    {
+      "name": "A04 neighbours swapped",
+      "note": "one move, not two",
+      "old": "A\nB\nC",
+      "new": "A\nC\nB",
+      "rows": "=1/1 -2m1 =3/2 +3m1",
+      "moves": [
+        "1:2>3"
+      ],
+      "stats": {
+        "unchanged": 2,
+        "removed": 0,
+        "added": 0,
+        "moved": 1
+      }
+    },
+    {
+      "name": "A05 block moved",
+      "note": "LCS keeps 4-6; 1-3 are three single-line moves",
+      "old": "1\n2\n3\n4\n5\n6",
+      "new": "4\n5\n6\n1\n2\n3",
+      "rows": "-1m1 -2m2 -3m3 =4/1 =5/2 =6/3 +4m1 +5m2 +6m3",
+      "moves": [
+        "1:1>4",
+        "2:2>5",
+        "3:3>6"
+      ],
+      "stats": {
+        "unchanged": 3,
+        "removed": 0,
+        "added": 0,
+        "moved": 3
+      }
+    },
+    {
+      "name": "A06 duplicates rotated",
+      "note": "duplicates are never moves",
+      "old": "x\ny\nx\ny",
+      "new": "y\nx\ny\nx",
+      "rows": "-1 =2/1 =3/2 =4/3 +4",
+      "moves": [],
+      "stats": {
+        "unchanged": 3,
+        "removed": 1,
+        "added": 1,
+        "moved": 0
+      }
+    },
+    {
+      "name": "A07 duplicate removed",
+      "note": "earliest match: the third A is deleted",
+      "old": "A\nA\nA\nB",
+      "new": "A\nA\nB",
+      "rows": "=1/1 =2/2 -3 =4/3",
+      "moves": [],
+      "stats": {
+        "unchanged": 3,
+        "removed": 1,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "A08 duplicate inserted",
+      "old": "A\nB",
+      "new": "A\nA\nB",
+      "rows": "=1/1 +2 =2/3",
+      "moves": [],
+      "stats": {
+        "unchanged": 2,
+        "removed": 0,
+        "added": 1,
+        "moved": 0
+      }
+    },
+    {
+      "name": "A09 new text longer",
+      "old": "A",
+      "new": "A\nB\nC\nD",
+      "rows": "=1/1 +2 +3 +4",
+      "moves": [],
+      "stats": {
+        "unchanged": 1,
+        "removed": 0,
+        "added": 3,
+        "moved": 0
+      }
+    },
+    {
+      "name": "A10 blank line deleted",
+      "old": "A\n\nB\n\nC",
+      "new": "A\nB\n\nC",
+      "rows": "=1/1 -2 =3/2 =4/3 =5/4",
+      "moves": [],
+      "stats": {
+        "unchanged": 4,
+        "removed": 1,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "A11 empty old text",
+      "old": "",
+      "new": "A\nB",
+      "rows": "+1 +2",
+      "moves": [],
+      "stats": {
+        "unchanged": 0,
+        "removed": 0,
+        "added": 2,
+        "moved": 0
+      }
+    },
+    {
+      "name": "A12 both texts empty",
+      "old": "",
+      "new": "",
+      "rows": "",
+      "moves": [],
+      "stats": {
+        "unchanged": 0,
+        "removed": 0,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "A13 CRLF and trailing newline vs LF",
+      "old": "A\r\nB\r\n",
+      "new": "A\nB",
+      "rows": "=1/1 =2/2",
+      "moves": [],
+      "stats": {
+        "unchanged": 2,
+        "removed": 0,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "A14 unicode NFC vs NFD (no normalization)",
+      "old": "Café\n😀\nStraße",
+      "new": "Cafe\u0301\n😀\nStrasse",
+      "rows": "-1 +1 =2/2 -3 +3",
+      "moves": [],
+      "stats": {
+        "unchanged": 1,
+        "removed": 2,
+        "added": 2,
+        "moved": 0
+      }
+    },
+    {
+      "name": "A15 ignoreWhitespace: indented old text",
+      "old": "  A\n  B\nC   D",
+      "new": "A\nB\nC D",
+      "ignoreWhitespace": true,
+      "rows": "=1/1 =2/2 =3/3",
+      "moves": [],
+      "stats": {
+        "unchanged": 3,
+        "removed": 0,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "A15b ignoreWhitespace: indented new text",
+      "old": "A\nB\nC",
+      "new": "  A\n  B\n  C",
+      "ignoreWhitespace": true,
+      "rows": "=1/1 =2/2 =3/3",
+      "moves": [],
+      "stats": {
+        "unchanged": 3,
+        "removed": 0,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "A16 ignoreWhitespace: tab and trailing space",
+      "old": "\tA\nB \nC",
+      "new": "A\nB\nC",
+      "ignoreWhitespace": true,
+      "rows": "=1/1 =2/2 =3/3",
+      "moves": [],
+      "stats": {
+        "unchanged": 3,
+        "removed": 0,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "A17 move plus change",
+      "old": "A\nB\nC\nD",
+      "new": "D\nA\nB2\nC",
+      "rows": "+1m1 =1/2 -2 +3 =3/4 -4m1",
+      "moves": [
+        "1:4>1"
+      ],
+      "stats": {
+        "unchanged": 2,
+        "removed": 1,
+        "added": 1,
+        "moved": 1
+      }
+    },
+    {
+      "name": "A18 case is significant",
+      "old": "Hallo",
+      "new": "hallo",
+      "rows": "-1 +1",
+      "moves": [],
+      "stats": {
+        "unchanged": 0,
+        "removed": 1,
+        "added": 1,
+        "moved": 0
+      }
+    },
+    {
+      "name": "insert in the middle",
+      "old": "A\nB\nC",
+      "new": "A\nX\nB\nC",
+      "rows": "=1/1 +2 =2/3 =3/4",
+      "moves": [],
+      "stats": {
+        "unchanged": 3,
+        "removed": 0,
+        "added": 1,
+        "moved": 0
+      }
+    },
+    {
+      "name": "insert at the end",
+      "old": "A\nB",
+      "new": "A\nB\nX",
+      "rows": "=1/1 =2/2 +3",
+      "moves": [],
+      "stats": {
+        "unchanged": 2,
+        "removed": 0,
+        "added": 1,
+        "moved": 0
+      }
+    },
+    {
+      "name": "delete in the middle",
+      "old": "A\nX\nB\nC",
+      "new": "A\nB\nC",
+      "rows": "=1/1 -2 =3/2 =4/3",
+      "moves": [],
+      "stats": {
+        "unchanged": 3,
+        "removed": 1,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "delete at the end",
+      "old": "A\nB\nX",
+      "new": "A\nB",
+      "rows": "=1/1 =2/2 -3",
+      "moves": [],
+      "stats": {
+        "unchanged": 2,
+        "removed": 1,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "consecutive changes: deletes before inserts",
+      "old": "A\nB\nC\nD\nE",
+      "new": "A\nX\nY\nD\nE",
+      "rows": "=1/1 -2 -3 +2 +3 =4/4 =5/5",
+      "moves": [],
+      "stats": {
+        "unchanged": 3,
+        "removed": 2,
+        "added": 2,
+        "moved": 0
+      }
+    },
+    {
+      "name": "everything replaced",
+      "old": "A\nB\nC",
+      "new": "X\nY\nZ",
+      "rows": "-1 -2 -3 +1 +2 +3",
+      "moves": [],
+      "stats": {
+        "unchanged": 0,
+        "removed": 3,
+        "added": 3,
+        "moved": 0
+      }
+    },
+    {
+      "name": "several separate changes",
+      "old": "1\n2\n3\n4\n5\n6\n7",
+      "new": "1\nx\n3\n4\ny\nz\n6\n7",
+      "rows": "=1/1 -2 +2 =3/3 =4/4 -5 +5 +6 =6/7 =7/8",
+      "moves": [],
+      "stats": {
+        "unchanged": 5,
+        "removed": 2,
+        "added": 3,
+        "moved": 0
+      }
+    },
+    {
+      "name": "unique line moved to the end",
+      "old": "A\nB\nC\nD\nE",
+      "new": "B\nC\nD\nE\nA",
+      "rows": "-1m1 =2/1 =3/2 =4/3 =5/4 +5m1",
+      "moves": [
+        "1:1>5"
+      ],
+      "stats": {
+        "unchanged": 4,
+        "removed": 0,
+        "added": 0,
+        "moved": 1
+      }
+    },
+    {
+      "name": "unique line moved to the start",
+      "old": "A\nB\nC\nD\nE",
+      "new": "E\nA\nB\nC\nD",
+      "rows": "+1m1 =1/2 =2/3 =3/4 =4/5 -5m1",
+      "moves": [
+        "1:5>1"
+      ],
+      "stats": {
+        "unchanged": 4,
+        "removed": 0,
+        "added": 0,
+        "moved": 1
+      }
+    },
+    {
+      "name": "two separate moves",
+      "old": "A\nB\nC\nD\nE\nF",
+      "new": "B\nA\nC\nD\nF\nE",
+      "rows": "-1m1 =2/1 +2m1 =3/3 =4/4 -5m2 =6/5 +6m2",
+      "moves": [
+        "1:1>2",
+        "2:5>6"
+      ],
+      "stats": {
+        "unchanged": 4,
+        "removed": 0,
+        "added": 0,
+        "moved": 2
+      }
+    },
+    {
+      "name": "duplicated line moved stays delete + insert",
+      "old": "A\nB\nA\nC",
+      "new": "B\nA\nC\nA",
+      "rows": "-1 =2/1 =3/2 =4/3 +4",
+      "moves": [],
+      "stats": {
+        "unchanged": 3,
+        "removed": 1,
+        "added": 1,
+        "moved": 0
+      }
+    },
+    {
+      "name": "unique line moved past duplicated lines",
+      "old": "A\nX\nB\nX",
+      "new": "X\nA\nB\nX",
+      "rows": "-1m1 =2/1 +2m1 =3/3 =4/4",
+      "moves": [
+        "1:1>2"
+      ],
+      "stats": {
+        "unchanged": 3,
+        "removed": 0,
+        "added": 0,
+        "moved": 1
+      }
+    },
+    {
+      "name": "line that also stays unchanged elsewhere is no move",
+      "note": "A occurs twice: delete + insert, no move",
+      "old": "A\nB\nA",
+      "new": "B\nA\nA",
+      "rows": "-1 =2/1 =3/2 +3",
+      "moves": [],
+      "stats": {
+        "unchanged": 2,
+        "removed": 1,
+        "added": 1,
+        "moved": 0
+      }
+    },
+    {
+      "name": "blank line moved is no move",
+      "note": "new text: A, B and one empty last line",
+      "old": "\nA\nB",
+      "new": "A\nB\n\n",
+      "rows": "-1 =2/1 =3/2 +3",
+      "moves": [],
+      "stats": {
+        "unchanged": 2,
+        "removed": 1,
+        "added": 1,
+        "moved": 0
+      }
+    },
+    {
+      "name": "whitespace-only line moved is no move",
+      "note": "unique, but blank lines are never moves",
+      "old": "  \nA\nB",
+      "new": "A\nB\n  ",
+      "rows": "-1 =2/1 =3/2 +3",
+      "moves": [],
+      "stats": {
+        "unchanged": 2,
+        "removed": 1,
+        "added": 1,
+        "moved": 0
+      }
+    },
+    {
+      "name": "move with ignoreWhitespace links lines with different whitespace",
+      "old": "  A\nB",
+      "new": "B\nA",
+      "ignoreWhitespace": true,
+      "rows": "-1m1 =2/1 +2m1",
+      "moves": [
+        "1:1>2"
+      ],
+      "stats": {
+        "unchanged": 1,
+        "removed": 0,
+        "added": 0,
+        "moved": 1
+      }
+    },
+    {
+      "name": "many blank lines reduced",
+      "old": "A\n\n\n\nB",
+      "new": "A\n\nB",
+      "rows": "=1/1 =2/2 -3 -4 =5/3",
+      "moves": [],
+      "stats": {
+        "unchanged": 3,
+        "removed": 2,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "blank lines added",
+      "old": "A\nB",
+      "new": "A\n\n\nB",
+      "rows": "=1/1 +2 +3 =2/4",
+      "moves": [],
+      "stats": {
+        "unchanged": 2,
+        "removed": 0,
+        "added": 2,
+        "moved": 0
+      }
+    },
+    {
+      "name": "repeated identical lines",
+      "old": "a\na\na",
+      "new": "a\na\na\na",
+      "rows": "=1/1 =2/2 =3/3 +4",
+      "moves": [],
+      "stats": {
+        "unchanged": 3,
+        "removed": 0,
+        "added": 1,
+        "moved": 0
+      }
+    },
+    {
+      "name": "repeated block",
+      "old": "x\ny\nx\ny\nx\ny",
+      "new": "x\ny\nx\ny",
+      "rows": "=1/1 =2/2 =3/3 =4/4 -5 -6",
+      "moves": [],
+      "stats": {
+        "unchanged": 4,
+        "removed": 2,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "empty new text",
+      "old": "A\nB",
+      "new": "",
+      "rows": "-1 -2",
+      "moves": [],
+      "stats": {
+        "unchanged": 0,
+        "removed": 2,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "single newline is one empty line",
+      "old": "\n",
+      "new": "",
+      "rows": "-1",
+      "moves": [],
+      "stats": {
+        "unchanged": 0,
+        "removed": 1,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "single LF vs single CRLF",
+      "old": "\n",
+      "new": "\r\n",
+      "rows": "=1/1",
+      "moves": [],
+      "stats": {
+        "unchanged": 1,
+        "removed": 0,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "CR vs CRLF vs LF",
+      "old": "A\rB\rC",
+      "new": "A\r\nB\nC\r\n",
+      "rows": "=1/1 =2/2 =3/3",
+      "moves": [],
+      "stats": {
+        "unchanged": 3,
+        "removed": 0,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "trailing newline only on one side",
+      "old": "A\nB\n",
+      "new": "A\nB",
+      "rows": "=1/1 =2/2",
+      "moves": [],
+      "stats": {
+        "unchanged": 2,
+        "removed": 0,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "two trailing newlines = one empty last line",
+      "old": "A\n\n",
+      "new": "A\n",
+      "rows": "=1/1 -2",
+      "moves": [],
+      "stats": {
+        "unchanged": 1,
+        "removed": 1,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "mixed line endings with change",
+      "old": "A\r\nB\nC\r",
+      "new": "A\nX\r\nC",
+      "rows": "=1/1 -2 +2 =3/3",
+      "moves": [],
+      "stats": {
+        "unchanged": 2,
+        "removed": 1,
+        "added": 1,
+        "moved": 0
+      }
+    },
+    {
+      "name": "whitespace significant without the option",
+      "old": "a  b\n a\na ",
+      "new": "a b\na\na",
+      "rows": "-1 -2 -3 +1 +2 +3",
+      "moves": [],
+      "stats": {
+        "unchanged": 0,
+        "removed": 3,
+        "added": 3,
+        "moved": 0
+      }
+    },
+    {
+      "name": "inner whitespace runs compare equal",
+      "old": "a  b\na\t\tb",
+      "new": "a b\na b",
+      "ignoreWhitespace": true,
+      "rows": "=1/1 =2/2",
+      "moves": [],
+      "stats": {
+        "unchanged": 2,
+        "removed": 0,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "unicode spaces are whitespace",
+      "old": "a\u00A0b\n\u3000c\nd\u2003",
+      "new": "a b\nc\nd",
+      "ignoreWhitespace": true,
+      "rows": "=1/1 =2/2 =3/3",
+      "moves": [],
+      "stats": {
+        "unchanged": 3,
+        "removed": 0,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "NEL and LINE SEPARATOR are whitespace inside a line",
+      "old": "a\u0085b\nc\u2028",
+      "new": "a b\nc",
+      "ignoreWhitespace": true,
+      "rows": "=1/1 =2/2",
+      "moves": [],
+      "stats": {
+        "unchanged": 2,
+        "removed": 0,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "BOM and zero width space are not whitespace",
+      "old": "\uFEFFa\nb\u200Bc",
+      "new": "a\nb c",
+      "ignoreWhitespace": true,
+      "rows": "-1 -2 +1 +2",
+      "moves": [],
+      "stats": {
+        "unchanged": 0,
+        "removed": 2,
+        "added": 2,
+        "moved": 0
+      }
+    },
+    {
+      "name": "whitespace-only lines equal empty lines with the option",
+      "old": "A\n \t \nB",
+      "new": "A\n\nB",
+      "ignoreWhitespace": true,
+      "rows": "=1/1 =2/2 =3/3",
+      "moves": [],
+      "stats": {
+        "unchanged": 3,
+        "removed": 0,
+        "added": 0,
+        "moved": 0
+      }
+    },
+    {
+      "name": "whitespace option does not ignore case",
+      "old": " Hallo",
+      "new": "hallo ",
+      "ignoreWhitespace": true,
+      "rows": "-1 +1",
+      "moves": [],
+      "stats": {
+        "unchanged": 0,
+        "removed": 1,
+        "added": 1,
+        "moved": 0
+      }
+    },
+    {
+      "name": "unicode lines",
+      "old": "Grüße\n👨\u200D👩\u200D👧\n我喜欢猫",
+      "new": "👨\u200D👩\u200D👧\nGrüße\n我喜欢狗",
+      "rows": "-1m1 =2/1 -3 +2m1 +3",
+      "moves": [
+        "1:1>2"
+      ],
+      "stats": {
+        "unchanged": 1,
+        "removed": 1,
+        "added": 1,
+        "moved": 1
+      }
+    }
+  ],
+  "documents": [
+    {
+      "name": "A04 neighbours swapped",
+      "old": "A\nB\nC",
+      "new": "A\nC\nB",
+      "ignoreWhitespace": false,
+      "document": {
+        "version": 2,
+        "options": {
+          "ignoreWhitespace": false
+        },
+        "oldLineCount": 3,
+        "newLineCount": 3,
+        "rows": [
+          {
+            "kind": "equal",
+            "old": {
+              "line": 1,
+              "text": "A"
+            },
+            "new": {
+              "line": 1,
+              "text": "A"
+            }
+          },
+          {
+            "kind": "delete",
+            "old": {
+              "line": 2,
+              "text": "B"
+            },
+            "moveId": 1
+          },
+          {
+            "kind": "equal",
+            "old": {
+              "line": 3,
+              "text": "C"
+            },
+            "new": {
+              "line": 2,
+              "text": "C"
+            }
+          },
+          {
+            "kind": "insert",
+            "new": {
+              "line": 3,
+              "text": "B"
+            },
+            "moveId": 1
+          }
+        ],
+        "moves": [
+          {
+            "id": 1,
+            "oldLine": 2,
+            "newLine": 3
+          }
+        ],
+        "stats": {
+          "unchanged": 2,
+          "removed": 0,
+          "added": 0,
+          "moved": 1
+        }
+      }
+    },
+    {
+      "name": "A15 ignoreWhitespace: indented old text",
+      "old": "  A\n  B\nC   D",
+      "new": "A\nB\nC D",
+      "ignoreWhitespace": true,
+      "document": {
+        "version": 2,
+        "options": {
+          "ignoreWhitespace": true
+        },
+        "oldLineCount": 3,
+        "newLineCount": 3,
+        "rows": [
+          {
+            "kind": "equal",
+            "old": {
+              "line": 1,
+              "text": "  A"
+            },
+            "new": {
+              "line": 1,
+              "text": "A"
+            }
+          },
+          {
+            "kind": "equal",
+            "old": {
+              "line": 2,
+              "text": "  B"
+            },
+            "new": {
+              "line": 2,
+              "text": "B"
+            }
+          },
+          {
+            "kind": "equal",
+            "old": {
+              "line": 3,
+              "text": "C   D"
+            },
+            "new": {
+              "line": 3,
+              "text": "C D"
+            }
+          }
+        ],
+        "moves": [],
+        "stats": {
+          "unchanged": 3,
+          "removed": 0,
+          "added": 0,
+          "moved": 0
+        }
+      }
+    },
+    {
+      "name": "A12 both texts empty",
+      "old": "",
+      "new": "",
+      "ignoreWhitespace": false,
+      "document": {
+        "version": 2,
+        "options": {
+          "ignoreWhitespace": false
+        },
+        "oldLineCount": 0,
+        "newLineCount": 0,
+        "rows": [],
+        "moves": [],
+        "stats": {
+          "unchanged": 0,
+          "removed": 0,
+          "added": 0,
+          "moved": 0
+        }
+      }
+    }
+  ],
+  "validatedDocuments": [
+    {
+      "name": "equal row with different texts",
+      "note": "counts and statistics match, but A and B are no equal lines",
+      "old": "A",
+      "new": "B",
+      "ignoreWhitespace": false,
+      "valid": false,
+      "document": {
+        "version": 2,
+        "options": {
+          "ignoreWhitespace": false
+        },
+        "oldLineCount": 1,
+        "newLineCount": 1,
+        "rows": [
+          {
+            "kind": "equal",
+            "old": {
+              "line": 1,
+              "text": "A"
+            },
+            "new": {
+              "line": 1,
+              "text": "B"
+            }
+          }
+        ],
+        "moves": [],
+        "stats": {
+          "unchanged": 1,
+          "removed": 0,
+          "added": 0,
+          "moved": 0
+        }
+      }
+    },
+    {
+      "name": "equal row with different whitespace, option on",
+      "note": "the keys are equal after the whitespace normalization",
+      "old": " A",
+      "new": "A",
+      "ignoreWhitespace": true,
+      "valid": true,
+      "document": {
+        "version": 2,
+        "options": {
+          "ignoreWhitespace": true
+        },
+        "oldLineCount": 1,
+        "newLineCount": 1,
+        "rows": [
+          {
+            "kind": "equal",
+            "old": {
+              "line": 1,
+              "text": " A"
+            },
+            "new": {
+              "line": 1,
+              "text": "A"
+            }
+          }
+        ],
+        "moves": [],
+        "stats": {
+          "unchanged": 1,
+          "removed": 0,
+          "added": 0,
+          "moved": 0
+        }
+      }
+    },
+    {
+      "name": "equal row with different whitespace, option off",
+      "note": "without the option the keys differ",
+      "old": " A",
+      "new": "A",
+      "ignoreWhitespace": false,
+      "valid": false,
+      "document": {
+        "version": 2,
+        "options": {
+          "ignoreWhitespace": false
+        },
+        "oldLineCount": 1,
+        "newLineCount": 1,
+        "rows": [
+          {
+            "kind": "equal",
+            "old": {
+              "line": 1,
+              "text": " A"
+            },
+            "new": {
+              "line": 1,
+              "text": "A"
+            }
+          }
+        ],
+        "moves": [],
+        "stats": {
+          "unchanged": 1,
+          "removed": 0,
+          "added": 0,
+          "moved": 0
+        }
+      }
+    },
+    {
+      "name": "move links different lines",
+      "note": "ids, positions and statistics match",
+      "old": "A",
+      "new": "B",
+      "ignoreWhitespace": false,
+      "valid": false,
+      "document": {
+        "version": 2,
+        "options": {
+          "ignoreWhitespace": false
+        },
+        "oldLineCount": 1,
+        "newLineCount": 1,
+        "rows": [
+          {
+            "kind": "delete",
+            "old": {
+              "line": 1,
+              "text": "A"
+            },
+            "moveId": 1
+          },
+          {
+            "kind": "insert",
+            "new": {
+              "line": 1,
+              "text": "B"
+            },
+            "moveId": 1
+          }
+        ],
+        "moves": [
+          {
+            "id": 1,
+            "oldLine": 1,
+            "newLine": 1
+          }
+        ],
+        "stats": {
+          "unchanged": 0,
+          "removed": 0,
+          "added": 0,
+          "moved": 1
+        }
+      }
+    },
+    {
+      "name": "move with ignoreWhitespace",
+      "note": "keys equal after normalization",
+      "old": "  A\nB",
+      "new": "B\nA",
+      "ignoreWhitespace": true,
+      "valid": true,
+      "document": {
+        "version": 2,
+        "options": {
+          "ignoreWhitespace": true
+        },
+        "oldLineCount": 2,
+        "newLineCount": 2,
+        "rows": [
+          {
+            "kind": "delete",
+            "old": {
+              "line": 1,
+              "text": "  A"
+            },
+            "moveId": 1
+          },
+          {
+            "kind": "equal",
+            "old": {
+              "line": 2,
+              "text": "B"
+            },
+            "new": {
+              "line": 1,
+              "text": "B"
+            }
+          },
+          {
+            "kind": "insert",
+            "new": {
+              "line": 2,
+              "text": "A"
+            },
+            "moveId": 1
+          }
+        ],
+        "moves": [
+          {
+            "id": 1,
+            "oldLine": 1,
+            "newLine": 2
+          }
+        ],
+        "stats": {
+          "unchanged": 1,
+          "removed": 0,
+          "added": 0,
+          "moved": 1
+        }
+      }
+    },
+    {
+      "name": "move with different whitespace, option off",
+      "note": "without the option the keys differ",
+      "old": "  A\nB",
+      "new": "B\nA",
+      "ignoreWhitespace": false,
+      "valid": false,
+      "document": {
+        "version": 2,
+        "options": {
+          "ignoreWhitespace": false
+        },
+        "oldLineCount": 2,
+        "newLineCount": 2,
+        "rows": [
+          {
+            "kind": "delete",
+            "old": {
+              "line": 1,
+              "text": "  A"
+            },
+            "moveId": 1
+          },
+          {
+            "kind": "equal",
+            "old": {
+              "line": 2,
+              "text": "B"
+            },
+            "new": {
+              "line": 1,
+              "text": "B"
+            }
+          },
+          {
+            "kind": "insert",
+            "new": {
+              "line": 2,
+              "text": "A"
+            },
+            "moveId": 1
+          }
+        ],
+        "moves": [
+          {
+            "id": 1,
+            "oldLine": 1,
+            "newLine": 2
+          }
+        ],
+        "stats": {
+          "unchanged": 1,
+          "removed": 0,
+          "added": 0,
+          "moved": 1
+        }
+      }
+    },
+    {
+      "name": "move of a blank line",
+      "note": "blank lines are never moves",
+      "old": "\nA",
+      "new": "A\n\n",
+      "ignoreWhitespace": false,
+      "valid": false,
+      "document": {
+        "version": 2,
+        "options": {
+          "ignoreWhitespace": false
+        },
+        "oldLineCount": 2,
+        "newLineCount": 2,
+        "rows": [
+          {
+            "kind": "delete",
+            "old": {
+              "line": 1,
+              "text": ""
+            },
+            "moveId": 1
+          },
+          {
+            "kind": "equal",
+            "old": {
+              "line": 2,
+              "text": "A"
+            },
+            "new": {
+              "line": 1,
+              "text": "A"
+            }
+          },
+          {
+            "kind": "insert",
+            "new": {
+              "line": 2,
+              "text": ""
+            },
+            "moveId": 1
+          }
+        ],
+        "moves": [
+          {
+            "id": 1,
+            "oldLine": 1,
+            "newLine": 2
+          }
+        ],
+        "stats": {
+          "unchanged": 1,
+          "removed": 0,
+          "added": 0,
+          "moved": 1
+        }
+      }
+    },
+    {
+      "name": "move of a repeated line",
+      "note": "A occurs twice in each text",
+      "old": "A\nB\nA",
+      "new": "B\nA\nA",
+      "ignoreWhitespace": false,
+      "valid": false,
+      "document": {
+        "version": 2,
+        "options": {
+          "ignoreWhitespace": false
+        },
+        "oldLineCount": 3,
+        "newLineCount": 3,
+        "rows": [
+          {
+            "kind": "delete",
+            "old": {
+              "line": 1,
+              "text": "A"
+            },
+            "moveId": 1
+          },
+          {
+            "kind": "equal",
+            "old": {
+              "line": 2,
+              "text": "B"
+            },
+            "new": {
+              "line": 1,
+              "text": "B"
+            }
+          },
+          {
+            "kind": "equal",
+            "old": {
+              "line": 3,
+              "text": "A"
+            },
+            "new": {
+              "line": 2,
+              "text": "A"
+            }
+          },
+          {
+            "kind": "insert",
+            "new": {
+              "line": 3,
+              "text": "A"
+            },
+            "moveId": 1
+          }
+        ],
+        "moves": [
+          {
+            "id": 1,
+            "oldLine": 1,
+            "newLine": 3
+          }
+        ],
+        "stats": {
+          "unchanged": 2,
+          "removed": 0,
+          "added": 0,
+          "moved": 1
+        }
+      }
+    },
+    {
+      "name": "unique moved line not linked",
+      "note": "the move rules link every unique non-blank delete/insert pair",
+      "old": "A\nB",
+      "new": "B\nA",
+      "ignoreWhitespace": false,
+      "valid": false,
+      "document": {
+        "version": 2,
+        "options": {
+          "ignoreWhitespace": false
+        },
+        "oldLineCount": 2,
+        "newLineCount": 2,
+        "rows": [
+          {
+            "kind": "delete",
+            "old": {
+              "line": 1,
+              "text": "A"
+            }
+          },
+          {
+            "kind": "equal",
+            "old": {
+              "line": 2,
+              "text": "B"
+            },
+            "new": {
+              "line": 1,
+              "text": "B"
+            }
+          },
+          {
+            "kind": "insert",
+            "new": {
+              "line": 2,
+              "text": "A"
+            }
+          }
+        ],
+        "moves": [],
+        "stats": {
+          "unchanged": 1,
+          "removed": 1,
+          "added": 1,
+          "moved": 0
+        }
+      }
+    },
+    {
+      "name": "move ids not in old-line order",
+      "note": "ids ascend with the old line",
+      "old": "A\nB\nC\nD\nE\nF",
+      "new": "B\nA\nC\nD\nF\nE",
+      "ignoreWhitespace": false,
+      "valid": false,
+      "document": {
+        "version": 2,
+        "options": {
+          "ignoreWhitespace": false
+        },
+        "oldLineCount": 6,
+        "newLineCount": 6,
+        "rows": [
+          {
+            "kind": "delete",
+            "old": {
+              "line": 1,
+              "text": "A"
+            },
+            "moveId": 2
+          },
+          {
+            "kind": "equal",
+            "old": {
+              "line": 2,
+              "text": "B"
+            },
+            "new": {
+              "line": 1,
+              "text": "B"
+            }
+          },
+          {
+            "kind": "insert",
+            "new": {
+              "line": 2,
+              "text": "A"
+            },
+            "moveId": 2
+          },
+          {
+            "kind": "equal",
+            "old": {
+              "line": 3,
+              "text": "C"
+            },
+            "new": {
+              "line": 3,
+              "text": "C"
+            }
+          },
+          {
+            "kind": "equal",
+            "old": {
+              "line": 4,
+              "text": "D"
+            },
+            "new": {
+              "line": 4,
+              "text": "D"
+            }
+          },
+          {
+            "kind": "delete",
+            "old": {
+              "line": 5,
+              "text": "E"
+            },
+            "moveId": 1
+          },
+          {
+            "kind": "equal",
+            "old": {
+              "line": 6,
+              "text": "F"
+            },
+            "new": {
+              "line": 5,
+              "text": "F"
+            }
+          },
+          {
+            "kind": "insert",
+            "new": {
+              "line": 6,
+              "text": "E"
+            },
+            "moveId": 1
+          }
+        ],
+        "moves": [
+          {
+            "id": 1,
+            "oldLine": 5,
+            "newLine": 6
+          },
+          {
+            "id": 2,
+            "oldLine": 1,
+            "newLine": 2
+          }
+        ],
+        "stats": {
+          "unchanged": 4,
+          "removed": 0,
+          "added": 0,
+          "moved": 2
+        }
+      }
+    }
+  ],
+  "limit": {
+    "description": "Exact work units (diagonals visited + snake steps) of aligning the ids 0..n-1 with their reversal: succeeds with this limit, fails with one unit less. Fixes the counting of DIFF_WORK_LIMIT (100,000,000) in both engines.",
+    "reversedLines": 300,
+    "work": 90302
+  },
+  "generated": {
+    "description": "Random cases built by the same xorshift32 generator in both suites (see generatedCases in both tests); digest = FNV-1a 32 (hex) of the compact rows of all cases, each followed by a newline. A mismatch means that Rust and JS differ or the algorithm changed (then check and update the digest deliberately).",
+    "seed": 20261014,
+    "count": 2000,
+    "digest": "13af15a4"
+  }
+}

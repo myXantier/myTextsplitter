@@ -4,6 +4,8 @@
 //          (empty strings and empty arrays are valid results).
 // Failure: the services reject with a `ProcessingError`; nothing is replaced by `{}`, `[]` or `''`.
 // Kept free of app imports so the workers and `npm test` can load it directly.
+import { isDiffDocument } from '../utils/diff/validate';
+import type { DiffDocument } from '../utils/diff/types';
 
 export type ProcessingErrorKind =
   /** The user input cannot be processed, e.g. an invalid regex. */
@@ -27,6 +29,8 @@ export const ERROR_KEYS = {
   regexTooComplex: 'errors.regexTooComplex',
   /** A regex cannot be run without Web Worker (it could block the UI thread). */
   regexRequiresWorker: 'errors.regexRequiresWorker',
+  /** The diff needs more than `DIFF_WORK_LIMIT` work units (many reordered lines). */
+  diffTooComplex: 'errors.diffTooComplex',
   timeout: 'errors.processingTimeout',
   superseded: 'errors.processingSuperseded',
   general: 'errors.processingError',
@@ -74,6 +78,7 @@ export function fromBackendError(error: unknown): ProcessingError {
     if (kind === 'invalidRegex') return invalidRegexError(detail);
     // The pattern needs too much backtracking for this text (fancy-regex limit): a problem of the input, not of the app
     if (kind === 'regexRuntime') return new ProcessingError('invalidInput', ERROR_KEYS.regexTooComplex, detail);
+    if (kind === 'diffTooComplex') return new ProcessingError('invalidInput', ERROR_KEYS.diffTooComplex, detail);
     // The Rust job slot replaced this request by a newer one before it ran. BaseService reports it as `superseded`
     // when a newer job exists; for the latest job (requests arrived out of order) it stays a visible backend error.
     if (kind === 'superseded') return new ProcessingError('backend', ERROR_KEYS.general, 'superseded by a newer backend request');
@@ -147,6 +152,8 @@ const VALIDATORS: Record<NonNullable<myResultDataType>, (value: unknown) => bool
   Column: isStringArray,
   ColumnList: isStringArrayArray,
   TextV2: isTextV2,
+  // Structure and every invariant of the line diff (`src/utils/diff/validate.ts`)
+  Diff: isDiffDocument,
 };
 
 /** Data type of a `myResult` type. */
@@ -155,6 +162,7 @@ export interface ResultData {
   Column: string[];
   ColumnList: string[][];
   TextV2: RemoveResultData;
+  Diff: DiffDocument;
 }
 export type ResultType = keyof ResultData;
 

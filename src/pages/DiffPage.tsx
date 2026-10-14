@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowRight } from 'lucide-react';
 import IconRoundedButton from '../components/IconRoundedButton';
@@ -13,7 +13,9 @@ import { fontSizeToIconSize } from '../utils/helper';
 import useSnackbar from '../hooks/useSnackbar';
 import { isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import { usePermanentSetting } from '../hooks/useSettings';
-import { getWordDiffs } from '../utils/diff';
+import { getWordDiffs } from '../utils/diff/wordDiffLegacy';
+import { toLegacyDiffResults } from '../utils/diff/legacy';
+import type { DiffDocument } from '../utils/diff/types';
 import './styles/DiffPageStyle.css';
 
 interface DiffPageProps {
@@ -33,7 +35,9 @@ export default function DiffPage({
   const snackbar = useSnackbar();
   const [newText, setNewText] = useState('');
   const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
-  const [diffResults, setDiffResults] = useState<DiffResult[]>([]);
+  const [diffDocument, setDiffDocument] = useState<DiffDocument | null>(null);
+  // Transitional (Paket 7 B1): the views still render the former entry list; moves appear as removed + added
+  const diffResults = useMemo(() => (diffDocument ? toLegacyDiffResults(diffDocument) : []), [diffDocument]);
   const [diffViewType, setDiffViewType] = useState<DiffViewType>('unified');
   const [showLineNumbers, setShowLineNumbers] = useState(true);
   const [showWordDiff, setShowWordDiff] = useState(true);
@@ -64,8 +68,9 @@ export default function DiffPage({
   };
 
   const handleDiffText = useCallback(async () => {
-    if (!sourceText || !newText) {
-      snackbar.error(t('errors.textAndPatternRequired'));
+    // One side may be empty (everything added or removed); comparing two empty texts shows nothing
+    if (!sourceText && !newText) {
+      snackbar.error(t('errors.textRequired'));
       return;
     }
 
@@ -79,9 +84,8 @@ export default function DiffPage({
         },
       });
 
-      // DiffService delivers the same DiffResult JSON in backend and JS mode; on failure the previous diff stays
-      const diffResult: DiffResult[] = JSON.parse(unwrapResult(window.myResultConverter(result, 'Text')));
-      setDiffResults(diffResult);
+      // DiffService delivers the same validated DiffDocument in backend and JS mode; on failure the previous diff stays
+      setDiffDocument(unwrapResult(window.myResultConverter(result, 'Diff')));
       snackbar.success(t('textDiff.processed'));
     } catch (error) {
       // A superseded job was replaced by a newer click: nothing to report
@@ -153,12 +157,11 @@ export default function DiffPage({
       }
     });
     
-    // Sort by line number
-    return pairs.sort((a, b) => {
-      const aLine = a.left?.lineNumber || a.right?.lineNumber || 0;
-      const bLine = b.left?.lineNumber || b.right?.lineNumber || 0;
-      return aLine - bLine;
-    });
+    // Order of the diff result (line numbers mix old and new positions and are no sort key)
+    const position = new Map(diffResults.map((entry, index) => [entry, index]));
+    const at = (pair: { left: DiffResult | null; right: DiffResult | null }) =>
+      Math.min(pair.left ? position.get(pair.left)! : Infinity, pair.right ? position.get(pair.right)! : Infinity);
+    return pairs.sort((a, b) => at(a) - at(b));
   })();
 
   const renderUnifiedDiffView = () => {
@@ -405,10 +408,12 @@ export default function DiffPage({
               <span className="left">{t('textDiff.result')}</span>
               <div className="title-actions">
                 <CopyButton toCopy={diffResults.map(r => `${getDiffTypeIcon(r.type)} ${r.text}`).join('\n')} />
-                <span className="diff-stats">
-                  {diffResults.filter(r => r.type === 'added').length} added, 
-                  {diffResults.filter(r => r.type === 'removed').length} removed
-                </span>
+                {diffDocument && (
+                  <span className="diff-stats">
+                    {diffDocument.stats.added} added, {diffDocument.stats.removed} removed
+                    {diffDocument.stats.moved > 0 && `, ${diffDocument.stats.moved} moved (shown as - / +)`}
+                  </span>
+                )}
               </div>
             </div>
             <div className="content flex-column">

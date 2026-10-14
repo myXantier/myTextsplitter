@@ -220,9 +220,14 @@ export abstract class BaseService implements IBaseService {
 
     if (!this.isLatestJob(job)) throw supersededError();
     const result = assertResult(outcome.result, this.resultType);
+    // Before the metrics: a result rejected here is a failed job, its metrics are never applied
+    this.checkResult(result, args);
     if (outcome.metrics) this.applyMetrics(outcome.metrics);
     return result;
   }
+
+  /** Service-specific check of a result against its request (throws `invalidResult`); no check by default. */
+  protected checkResult(_result: myResult, _args: BaseConfig): void {}
 
   protected abstract invokeBackend(args: BaseConfig): Promise<JobOutcome>;
 

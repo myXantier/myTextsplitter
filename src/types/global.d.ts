@@ -49,7 +49,7 @@ type Result<T, E> =
 	| { status: "ok"; data: T }
 	| { status: "error"; error: E };
 
-type myResultDataType = null | 'Text' | 'Column' | 'ColumnList' | 'TextV2';
+type myResultDataType = null | 'Text' | 'Column' | 'ColumnList' | 'TextV2' | 'Diff';
 type myResultBrand = { __brand: 'myResult' };
 
 interface myResultBase<T> extends myResultBrand {
@@ -64,14 +64,17 @@ type myResultText = myResultBase<string> & { readonly type: 'Text' };
 type myResultColumn = myResultBase<string[]> & { readonly type: 'Column' };
 type myResultColumnList = myResultBase<string[][]> & { readonly type: 'ColumnList' };
 type myResultTextV2 = myResultBase<ProcessedText> & { readonly type: 'TextV2' };
+/** Line diff (`src/utils/diff/types.ts`, Paket 7) */
+type myResultDiff = myResultBase<import('../utils/diff/types').DiffDocument> & { readonly type: 'Diff' };
 
-type myResult = myResultText | myResultColumn | myResultColumnList | myResultTextV2;
+type myResult = myResultText | myResultColumn | myResultColumnList | myResultTextV2 | myResultDiff;
 
 type AllowedResultTypes = string | ProcessedText | string[] | string[][];
 
 type IsMyText<T extends AllowedResultTypes> = T extends string ? "Yes" : "No";
 
 
+/** Former diff entry; only still produced by the transitional adapter `src/utils/diff/legacy.ts` for the DiffPage. */
 interface DiffResult {
   type: 'added' | 'removed' | 'moved' | 'unchanged';
   text: string;

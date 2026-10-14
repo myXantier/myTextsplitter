@@ -546,6 +546,24 @@ export async function checkLineEndings(page, r, label, errorsSince) {
   const changed = await page.eval(`__t.page().querySelectorAll('.diff-line.diff-added, .diff-line.diff-removed, .diff-line.diff-moved').length`);
   r.check(`${label}: Diff CRLF vs LF -> 3 unchanged lines, no difference`, diffDone && changed === 0, `lines=${await page.eval(`__t.page().querySelectorAll('.diff-line').length`)} changed=${changed}`);
 
+  // --- Diff (Paket 7): more new than old lines (the old worker cut the new text) and a move (shown as - / +) ---
+  await page.eval(`__t.set(__t.textareas()[0], 'A\\nB'); true`);
+  await sleepMs(150);
+  await page.eval(`__t.set(__t.textareas()[1], 'B\\nA\\nC\\nD'); true`);
+  await sleepMs(150);
+  await page.eval(`__t.watchSnacks(); __t.page().querySelector('.diff-button').click(); true`);
+  await page.waitFor(`__t.snackLog.length > 0`, 8000);
+  // Removed lines: class only (the legacy word highlighting renders them together with another line's words, B2/B3)
+  const lineTexts = `[...__t.page().querySelectorAll('.unified-diff-view .diff-line')].map((l) => { const type = l.className.replace('diff-line', '').trim(); return type === 'diff-removed' ? type : type + ':' + l.querySelector('.diff-line-content').textContent; })`;
+  const expectedLines = ['diff-removed', ':B', 'diff-added:A', 'diff-added:C', 'diff-added:D'];
+  const longerDone = await page.waitFor(`JSON.stringify(${lineTexts}) === ${JSON.stringify(JSON.stringify(expectedLines))}`, 3000);
+  const stats = await page.eval(`__t.page().querySelector('.diff-stats')?.textContent ?? ''`);
+  r.check(
+    `${label}: Diff keeps every new line, move shown as removed + added`,
+    longerDone && stats.replace(/\s+/g, ' ').trim() === '2 added, 0 removed, 1 moved (shown as - / +)',
+    `lines=${json(await page.eval(lineTexts))} stats=${json(stats)}`,
+  );
+
   r.check(`${label}: line-ending checks without errors`, errorsSince(n).length === 0, json(errorsSince(n)));
 
   // The source text is shared by the pages: leave the usual one for the following checks
