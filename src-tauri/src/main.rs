@@ -105,16 +105,17 @@ async fn combine_columns(
     Ok(TextProcessor::combine_columns(&columns, &used, format))
 }
 
-/// Line diff (Paket 7): returns the `DiffDocumentV2` as structured IPC data (no JSON string inside the JSON).
-/// Runs on the blocking pool through its own job slot like Split/Filter/Remove; a too complex diff is
-/// `TextError::DiffTooComplex`.
+/// Line diff (Paket 7): returns the `DiffDocumentV2` and, only when `worddiff` is true, its word diff as structured IPC
+/// data (no JSON string inside the JSON). Runs on the blocking pool through its own job slot like Split/Filter/Remove;
+/// a too complex line diff is `TextError::DiffTooComplex`.
 #[tauri::command]
 async fn get_text_diff(
     oldtext: String,
     newtext: String,
     ignorewhitespace: bool,
+    worddiff: bool,
 ) -> Result<diff::DiffResponse, TextError> {
-    DIFF_JOBS.run(move || diff::get_diff(&oldtext, &newtext, ignorewhitespace)).await
+    DIFF_JOBS.run(move || diff::get_diff(&oldtext, &newtext, ignorewhitespace, worddiff)).await
 }
 
 /// Filter Text Method

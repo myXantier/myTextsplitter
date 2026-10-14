@@ -114,7 +114,7 @@ Algorithm and rules (details in `src/utils/diff/myers.ts`, `lineDiff.ts`, `white
 
 Optional word diff (intraline), implemented twice: `src/utils/diff/tokenize.ts` + `intraline.ts` and
 `src-tauri/src/diff/tokenize.rs` + `intraline.rs`. It is a separate analysis of a finished `DiffDocument`
-(`computeIntraline` / `compute_intraline`); the line diff, its transport and the DiffPage do not call it yet (B3).
+(`computeIntraline` / `compute_intraline`), computed only when a diff job requests it (see "Diff integration").
 `npm test` (`tests/unit/intraline.test.ts`) and `cargo test` (`src-tauri/src/diff/intraline_tests.rs`) check:
 
 | Section | Meaning |
@@ -131,6 +131,22 @@ the similarity tokens >= 0.5 (words, numbers, CJK, emoji, symbols; punctuation o
 with the Myers code of the line diff: first the words, then (without `ignoreWhitespace`) the whitespace inside each gap.
 Segments are texts (no offsets) and rebuild each line exactly. Limits never produce partial segments: `lineTooLong`,
 `hunkTooLarge`, `budgetExceeded` (this and every later hunk) or a `tooComplex` pair; the line diff stays complete.
+
+## Diff integration (Paket 7 B3)
+
+- **Contract:** `DiffConfig.configParams.wordDiff` (optional, default off). Every path delivers the `Diff` result
+  `{ document, intraline }` (`src/utils/diff/result.ts`): Rust `get_text_diff(oldtext, newtext, ignorewhitespace,
+  worddiff)` answers `{ document, intraline, metrics }`, the Web Worker and the main-thread fallback use `diffInJs`.
+  The line diff runs once; the word diff is computed from that document only when requested (`intraline: null`
+  otherwise). `DiffService` validates the document (B1), the word diff (`intralineError`), the input texts and that the
+  word diff is present exactly when requested, before metrics are applied.
+- **View model:** `buildDiffView(document, intraline | null)` (`src/utils/diff/viewModel.ts`, no React) builds unified
+  rows (document order, old/new line numbers), split rows (per hunk: word diff pairs on one row, other lines side by
+  side), moves with the other position, statistics and skipped word diff lines; `formatDiffText` is the copy text
+  (`"  "`, `"- "`, `"+ "` per line). The DiffPage only renders it (`tests/unit/diffView.test.ts`).
+- **E2E:** `checkWordDiff` (`tests/e2e/lib/app.mjs`) runs in the browser (Web Worker) and in Tauri (Rust backend and JS
+  mode): off by default, highlighted words of the paired lines only, split rows, copy text, hiding without a new
+  comparison and switching the word diff on during a running comparison.
 
 ## Regex fixtures (`tests/fixtures/regex-cases.json`)
 
@@ -205,7 +221,7 @@ Split and Combine are checked with concrete results in both integration tests (l
 empty lines kept and skipped, Combine without row offset; Tauri: Rust backend and JS mode). For Sort,
 Filter, Remove and Diff the integration tests only check that the operations run and report results;
 known functional bugs (Filter semantics) are not encoded in these tests. The diff result itself is checked by the unit
-fixtures above (the DiffPage still renders it through a transitional adapter until Paket 7 B3).
+fixtures above; the rendered diff and word diff by `checkLineEndings` and `checkWordDiff`.
 
 Error handling (`checkProcessingErrors` in `tests/e2e/lib/app.mjs`; browser: Web Worker, Tauri: Rust backend and
 JS mode): an invalid regex in Filter/Remove shows exactly one error message and no success message, keeps the
@@ -223,7 +239,7 @@ Line endings (`checkLineEndings`, Paket 6; browser: Web Worker, Tauri: Rust back
 trailing newline are imported through "Open File" (typing into a textarea turns CRLF into LF) and run through Split
 (no extra row, no `\r` in values), column copy, Combine, Filter, Remove (duplicates), Sort and Diff (CRLF file vs. the
 same text typed with LF = no difference; Paket 7: a new text with more lines than the old one keeps every line, and a
-move is shown as removed + added with "1 moved" in the statistics). Results are read from React's props (`__t.raw`) and from the copied text
+move keeps both positions and is counted once). Results are read from React's props (`__t.raw`) and from the copied text
 (`__t.captureCopy`), because `textarea.value` also normalizes line breaks to LF.
 
 The Tauri test switches "Keep Empty Lines" explicitly, because an existing `settings.json` may still

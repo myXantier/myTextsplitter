@@ -164,12 +164,25 @@
 .title-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 12px;
+  min-width: 0;
 }
 
 .diff-stats {
   color: var(--color-2);
   font-size: 0.85em;
+}
+
+.diff-stats-pairs {
+  white-space: nowrap;
+}
+
+/* The section title has a fixed height (AppStyle.css); the result title grows when the statistics wrap */
+.diff-text .diff-result-title {
+  height: auto;
+  min-height: 26px;
 }
 
 /* Unified Diff View */
@@ -182,6 +195,8 @@
 
 .diff-line {
   display: flex;
+  /* The app root centers text (AppBordersStyle.css): diff text starts behind number and marker */
+  text-align: left;
   padding: 4px 0;
   border-radius: 0;
   margin: 0;
@@ -208,6 +223,53 @@
   display: flex;
   align-items: center;
   justify-content: flex-end;
+}
+
+/* Unified view: old and new line number side by side */
+.unified-diff-view .diff-line-number {
+  min-width: 2.5em;
+  margin-right: 0;
+}
+
+.unified-diff-view .diff-line-number.new {
+  margin-right: 8px;
+}
+
+/* Moved lines and skipped word diffs (Paket 7) */
+.diff-move-hint,
+.diff-skip-hint {
+  flex-shrink: 0;
+  align-self: center;
+  margin-left: 8px;
+  padding: 0 6px;
+  border-radius: 3px;
+  font-size: 0.8em;
+  opacity: 0.8;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.diff-move-hint {
+  border: 1px dashed var(--accent-color);
+}
+
+.diff-skip-hint {
+  border: 1px dotted var(--color-2);
+}
+
+.diff-word-skips {
+  font-size: 0.85em;
+  opacity: 0.8;
+  padding: 4px 8px;
+}
+
+.diff-more-rows {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 8px;
+  font-size: 0.85em;
 }
 
 .diff-line-marker {

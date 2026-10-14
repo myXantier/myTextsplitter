@@ -2,11 +2,9 @@
 //! (`src/utils/diff/lineDiff.ts`, types in `src/utils/diff/types.ts`); the shared fixtures
 //! `tests/fixtures/diff-cases.json` check the complete result of both engines.
 
-// Optional word diff (B2): pure functions, called by the Tauri command and the UI from Paket 7 B3 on
-#[allow(dead_code)]
+// Optional word diff (B2), computed by `get_diff` only when it is requested
 pub mod intraline;
 mod myers;
-#[allow(dead_code)]
 mod tokenize;
 mod whitespace;
 
@@ -80,10 +78,12 @@ pub struct DiffDocument {
     pub stats: DiffStats,
 }
 
-/// Answer of the `get_text_diff` command: the document itself (no JSON string inside the IPC JSON) + metrics.
+/// Answer of the `get_text_diff` command: the document itself (no JSON string inside the IPC JSON), the word diff of
+/// it (`null` when it was not requested) and the metrics. Same `{ document, intraline }` as the JS engines.
 #[derive(Debug, Clone, Serialize)]
 pub struct DiffResponse {
     pub document: DiffDocument,
+    pub intraline: Option<intraline::IntralineAnalysis>,
     pub metrics: BackendMetrics,
 }
 
@@ -212,14 +212,17 @@ fn pair_mut(rows: &mut [DiffRow], first: usize, second: usize) -> (&mut DiffRow,
     }
 }
 
-/// Diff with metrics for the Tauri command. Exceeding the work limit is an input error (`diffTooComplex`).
-pub fn get_diff(old_text: &str, new_text: &str, ignore_whitespace: bool) -> Result<DiffResponse, TextError> {
+/// Diff with metrics for the Tauri command: the line diff once and, only when `word_diff` is set, the word diff of
+/// it (otherwise nothing of the word diff runs). Exceeding the line diff work limit is an input error
+/// (`diffTooComplex`); the word diff has its own limits (skip reasons, never an error).
+pub fn get_diff(old_text: &str, new_text: &str, ignore_whitespace: bool, word_diff: bool) -> Result<DiffResponse, TextError> {
     let before_mem = memory_stats::memory_stats();
     let start_time = std::time::Instant::now();
     let document = compute_line_diff(old_text, new_text, ignore_whitespace, DIFF_WORK_LIMIT)
         .map_err(|e| TextError::DiffTooComplex(format!("diff needs more than {} work units", e.limit)))?;
+    let intraline = word_diff.then(|| intraline::compute_intraline(&document, intraline::INTRALINE_LIMITS));
     let execution_time = start_time.elapsed().as_secs_f64() * 1000.0;
-    Ok(DiffResponse { document, metrics: get_backend_metrics(execution_time, before_mem) })
+    Ok(DiffResponse { document, intraline, metrics: get_backend_metrics(execution_time, before_mem) })
 }
 
 #[cfg(test)]

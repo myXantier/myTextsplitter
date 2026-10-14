@@ -459,6 +459,323 @@ export async function checkCombineState(page, r, label, errorsSince) {
 }
 
 /**
+ * Word diff (Paket 7 B3) in the current processing mode (Rust backend or JS worker): off by default, switched on it
+ * highlights the words of the changed line pairs only (never the new introduction line), in the unified and the split
+ * view (pairs on one row); switching it during a running comparison shows the current mode; copy text and statistics.
+ */
+export async function checkWordDiff(page, r, label, errorsSince) {
+  const n = page.logs.length;
+  const json = (value) => JSON.stringify(value);
+  const checkbox = `__t.page().querySelector('.word-diff-option input')`;
+  const words = (kind, scope = '.diff-result-container') => `[...__t.page().querySelectorAll('${scope} .word-diff.diff-${kind}')].map((w) => w.textContent)`;
+  const viewButton = (index) => `__t.page().querySelectorAll('.view-type-options .view-option')[${index}]`;
+  await page.eval(`__t.nav('diff'); true`);
+  await sleepMs(200);
+  await page.eval(`${viewButton(0)}.click(); if (${checkbox}.checked) ${checkbox}.click(); true`);
+  await sleepMs(150);
+  await page.eval(`__t.set(__t.textareas()[0], ${json('Titel\nDie schnelle braune Katze springt.\nHallo, Welt!\nEnde')}); true`);
+  await sleepMs(150);
+  await page.eval(`__t.set(__t.textareas()[1], ${json('Neue Einleitung\nTitel\nDie schnelle schwarze Katze läuft.\nHallo Welt!\nEnde')}); true`);
+  await sleepMs(150);
+
+  // Off (default): line diff only
+  await page.eval(`__t.watchSnacks(); __t.page().querySelector('.diff-button').click(); true`);
+  await page.waitFor(`__t.snackLog.length > 0`, 8000);
+  const offDone = await page.waitFor(`__t.page().querySelectorAll('.unified-diff-view .diff-line').length === 7`, 3000);
+  const offWords = await page.eval(`__t.page().querySelectorAll('.word-diff').length`);
+  const offStats = await page.eval(`JSON.stringify({ ...__t.page().querySelector('.diff-stats').dataset })`);
+  r.check(
+    `${label}: word diff off by default -> plain removed/added lines`,
+    offDone && offWords === 0 && (await page.eval(`${checkbox}.checked`)) === false && offStats === json({ unchanged: '2', added: '3', removed: '2', moved: '0', changed: '0', wordDiff: 'false' }),
+    `words=${offWords} stats=${offStats}`,
+  );
+
+  // On: computed for the same comparison, only the paired lines are highlighted
+  await page.eval(`${checkbox}.click(); true`);
+  const onDone = await page.waitFor(`${words('removed')}.length > 0`, 8000);
+  const removedWords = await page.eval(words('removed'));
+  const addedWords = await page.eval(words('added'));
+  const intro = await page.eval(`[...__t.page().querySelectorAll('.unified-diff-view .diff-line')].find((l) => l.textContent.includes('Neue Einleitung')).querySelectorAll('.word-diff').length`);
+  const onStats = await page.eval(`JSON.stringify({ changed: __t.page().querySelector('.diff-stats').dataset.changed, wordDiff: __t.page().querySelector('.diff-stats').dataset.wordDiff })`);
+  r.check(
+    `${label}: word diff on -> removed/added words of the paired lines, introduction line not compared`,
+    onDone && json(removedWords) === json(['braune', 'springt', ',']) && json(addedWords) === json(['schwarze', 'läuft']) && intro === 0 && onStats === json({ changed: '2', wordDiff: 'true' }),
+    `removed=${json(removedWords)} added=${json(addedWords)} intro=${intro} stats=${onStats}`,
+  );
+
+  // Split view: the pair shares one row, old words left, new words right
+  await page.eval(`${viewButton(1)}.click(); true`);
+  await page.waitFor(`!!__t.page().querySelector('.split-diff-view')`, 3000);
+  const rowOf = (side, line) => `[...__t.page().querySelectorAll('.split-diff-${side} .split-diff-content > .diff-line')].findIndex((l) => l.dataset.line === '${line}')`;
+  const rows = await page.eval(`[${rowOf('original', 2)}, ${rowOf('new', 3)}, ${rowOf('original', 3)}, ${rowOf('new', 4)}, ${rowOf('new', 1)}]`);
+  const leftAdded = await page.eval(words('added', '.split-diff-original'));
+  const rightRemoved = await page.eval(words('removed', '.split-diff-new'));
+  const splitRemoved = await page.eval(words('removed', '.split-diff-original'));
+  r.check(
+    `${label}: split view -> pairs on one row, removed words left, added words right`,
+    rows[0] === rows[1] && rows[2] === rows[3] && rows[0] >= 0 && rows[2] >= 0 && rows[4] >= 0 && leftAdded.length === 0 && rightRemoved.length === 0 && json(splitRemoved) === json(['braune', 'springt', ',']),
+    `rows=${json(rows)} leftAdded=${json(leftAdded)} rightRemoved=${json(rightRemoved)} removed=${json(splitRemoved)}`,
+  );
+  await page.eval(`${viewButton(0)}.click(); true`);
+  await sleepMs(150);
+
+  // Copy: readable unified text
+  await page.eval(`__t.captureCopy(); __t.page().querySelector('.title-actions .copy-button').click(); true`);
+  await page.waitFor(`__t.copied !== null`, 3000);
+  const copied = await page.eval('__t.copied');
+  await page.eval('__t.releaseCopy(); true');
+  r.check(
+    `${label}: copied diff is readable text`,
+    copied === '+ Neue Einleitung\n  Titel\n- Die schnelle braune Katze springt.\n- Hallo, Welt!\n+ Die schnelle schwarze Katze läuft.\n+ Hallo Welt!\n  Ende',
+    json(copied),
+  );
+
+  // Off again: hidden at once, no recomputation
+  await page.eval(`__t.watchSnacks(); ${checkbox}.click(); true`);
+  await sleepMs(300);
+  const hidden = await page.eval(`__t.page().querySelectorAll('.word-diff').length`);
+  r.check(`${label}: switching the word diff off hides it without a new comparison`, hidden === 0 && __noSnacks(await page.eval('__t.takeSnacks()')), `words=${hidden}`);
+
+  // Switched on while the comparison (without word diff) is still running: the shown result has the word diff
+  await page.eval(`__t.watchSnacks(); __t.page().querySelector('.diff-button').click(); ${checkbox}.click(); true`);
+  const raceDone = await page.waitFor(`${words('removed')}.length === 3`, 8000);
+  await sleepMs(500);
+  const raceSnacks = await page.eval('__t.takeSnacks()');
+  r.check(
+    `${label}: word diff switched on during a running comparison -> current mode shown, no error`,
+    raceDone && (await page.eval(`${checkbox}.checked`)) === true && raceSnacks.every((s) => !s.startsWith('error')),
+    `snacks=${json(raceSnacks)}`,
+  );
+
+  // Leave the defaults for the following checks
+  await page.eval(`if (${checkbox}.checked) ${checkbox}.click(); true`);
+  await sleepMs(150);
+  r.check(`${label}: word diff checks without errors`, errorsSince(n).length === 0, json(errorsSince(n)));
+}
+
+const __noSnacks = (snacks) => snacks.length === 0;
+
+/**
+ * Diff page details (Paket 7 B3), measured in the rendered page: rows are left-aligned behind number and marker in both
+ * views (whitespace and tabs kept, word segments complete), the colors and the strike-through of the word diff are
+ * unchanged, the whitespace option is labelled "ignore", the statistics name the changed line pairs only with word
+ * diff, moves are shown on both sides of the split view, and after a valid comparison that failed (too complex) the word
+ * diff is computed for the shown comparison without repeating the failed one.
+ */
+export async function checkDiffDetails(page, r, label, errorsSince) {
+  const n = page.logs.length;
+  const json = (value) => JSON.stringify(value);
+  const checkbox = `__t.page().querySelector('.word-diff-option input')`;
+  const finished = `!!__t.page().querySelector('.mode-toggle')`; // only rendered when not processing
+  const viewButton = (index) => `__t.page().querySelectorAll('.view-type-options .view-option')[${index}]`;
+  const compare = async (oldText, newText) => {
+    await page.eval(`__t.set(__t.textareas()[0], ${json(oldText)}); true`);
+    await sleepMs(150);
+    await page.eval(`__t.set(__t.textareas()[1], ${json(newText)}); true`);
+    await sleepMs(150);
+    await page.eval(`__t.watchSnacks(); __t.page().querySelector('.diff-button').click(); true`);
+    await page.waitFor(`__t.snackLog.length > 0`, 8000);
+    await page.waitFor(finished, 8000);
+    return page.eval('__t.takeSnacks()');
+  };
+  /** Per rendered row of `scope`: left edge of the content box, left edge of its first text, its text */
+  const layout = (scope) => `[...__t.page().querySelectorAll('${scope} .diff-line')].filter((l) => !l.classList.contains('empty-slot')).map((l) => {
+    const content = l.querySelector('.diff-line-content');
+    const range = document.createRange();
+    range.selectNodeContents(content);
+    return { box: Math.round(content.getBoundingClientRect().left), text: Math.round(range.getClientRects()[0].left), value: content.textContent };
+  })`;
+  const leftAligned = (rows) => rows.length > 0 && rows.every((row) => row.box === rows[0].box && Math.abs(row.text - row.box) <= 1);
+
+  await page.eval(`__t.nav('diff'); true`);
+  await sleepMs(200);
+  await page.eval(`${viewButton(0)}.click(); if (${checkbox}.checked) ${checkbox}.click(); true`);
+  await sleepMs(150);
+
+  // Whitespace option label: it ignores whitespace for the comparison, nothing is removed
+  const optionLabel = await page.eval(`[...__t.page().querySelectorAll('.input-options-container .checkbox-label')][0].textContent`);
+  r.check(`${label}: whitespace option is labelled "ignore"`, ['Leerzeichen ignorieren', 'Ignore whitespace'].includes(optionLabel), json(optionLabel));
+
+  // Left alignment, whitespace and complete word segments (unified and split)
+  const oldText = 'kurz\nDie schnelle braune Katze springt.\n\teingerückt\n    vier Leerzeichen\nA';
+  const newText = 'kurz\nDie schnelle schwarze Katze läuft.\n\teingerückt\n    vier Leerzeichen\nB\nA';
+  await compare(oldText, newText);
+  await page.eval(`${checkbox}.click(); true`);
+  await page.waitFor(`__t.page().querySelectorAll('.word-diff.diff-removed').length === 2`, 8000);
+  await page.waitFor(finished, 8000);
+  const unified = await page.eval(layout('.unified-diff-view'));
+  const expectedTexts = ['kurz', 'Die schnelle braune Katze springt.', 'Die schnelle schwarze Katze läuft.', '\teingerückt', '    vier Leerzeichen', 'B', 'A'];
+  r.check(
+    `${label}: unified diff rows are left-aligned, whitespace and word segments kept`,
+    leftAligned(unified) && json(unified.map((row) => row.value)) === json(expectedTexts),
+    json(unified),
+  );
+  await page.eval(`${viewButton(1)}.click(); true`);
+  await page.waitFor(`!!__t.page().querySelector('.split-diff-view')`, 3000);
+  const splitOld = await page.eval(layout('.split-diff-original'));
+  const splitNew = await page.eval(layout('.split-diff-new'));
+  r.check(
+    `${label}: split diff rows are left-aligned on both sides`,
+    leftAligned(splitOld) && leftAligned(splitNew) && splitOld.length === 5 && splitNew.length === 6,
+    json({ splitOld, splitNew }),
+  );
+
+  // Colors and strike-through of the word diff stay as they are
+  const style = await page.eval(`(() => {
+    const css = (selector, ...props) => { const e = __t.page().querySelector(selector); const s = getComputedStyle(e); return props.map((p) => s[p]); };
+    return {
+      removedWord: css('.split-diff-original .word-diff.diff-removed', 'backgroundColor', 'textDecorationLine'),
+      addedWord: css('.split-diff-new .word-diff.diff-added', 'backgroundColor', 'textDecorationLine'),
+      removedRow: css('.split-diff-original .diff-line.diff-removed', 'backgroundColor'),
+      addedRow: css('.split-diff-new .diff-line.diff-added', 'backgroundColor'),
+    };
+  })()`);
+  r.check(
+    `${label}: word diff colors and strike-through unchanged`,
+    json(style) ===
+      json({
+        removedWord: ['rgba(224, 107, 116, 0.2)', 'line-through'],
+        addedWord: ['rgba(152, 195, 121, 0.2)', 'none'],
+        removedRow: ['rgba(224, 107, 116, 0.1)'],
+        addedRow: ['rgba(152, 195, 121, 0.1)'],
+      }),
+    json(style),
+  );
+
+  // Statistics: the changed line pairs are named as part of added/removed, only with word diff
+  const statsText = () => page.eval(`__t.page().querySelector('.diff-stats').textContent`);
+  const withWordDiff = await statsText();
+  await page.eval(`${checkbox}.click(); true`);
+  await sleepMs(200);
+  const withoutWordDiff = await statsText();
+  r.check(
+    `${label}: statistics name the changed line pairs only with word diff, as part of added/removed`,
+    /(1 geändertes Zeilenpaar|1 changed line pair)/.test(withWordDiff) && /(hinzugefügt\/entfernt|added\/removed)/.test(withWordDiff) &&
+      !/(Zeilenpaar|line pair)/.test(withoutWordDiff) && !/geändert,|changed,/.test(withWordDiff),
+    json({ withWordDiff, withoutWordDiff }),
+  );
+
+  // Moved lines on both sides of the split view
+  await compare('A\nB\nC\nD', 'A\nC\nD\nB');
+  const moved = await page.eval(`[...__t.page().querySelectorAll('.split-diff-view .diff-line.diff-moved')].map((l) => l.closest('.split-diff-original') ? 'old:' + l.dataset.line : 'new:' + l.dataset.line).concat([...__t.page().querySelectorAll('.split-diff-view .diff-move-hint')].map(() => 'hint'))`);
+  r.check(`${label}: moved line on both sides of the split view with its other position`, json(moved) === json(['old:2', 'new:4', 'hint', 'hint']), json(moved));
+  await page.eval(`${viewButton(0)}.click(); true`);
+  await sleepMs(150);
+
+  // A valid comparison fails (too complex), then the word diff is switched on: it uses the shown comparison
+  await compare('Die Katze schläft', 'Die Katze träumt');
+  const lines = Array.from({ length: 12_000 }, (_, i) => `line ${i}`);
+  const failed = await compare(lines.join('\n'), [...lines].reverse().join('\n'));
+  const rowsAfterFailure = await page.eval(`[...__t.page().querySelectorAll('.unified-diff-view .diff-line-content')].map((c) => c.textContent)`);
+  await page.eval(`__t.watchSnacks(); ${checkbox}.click(); true`);
+  const wordDone = await page.waitFor(`[...__t.page().querySelectorAll('.word-diff.diff-removed')].map((w) => w.textContent).join() === 'schläft'`, 8000);
+  await page.waitFor(finished, 8000);
+  await sleepMs(500);
+  const toggleSnacks = await page.eval('__t.takeSnacks()');
+  r.check(
+    `${label}: after a failed valid comparison the word diff uses the shown comparison (failed one not repeated)`,
+    failed.length === 1 && failed[0].startsWith('error') && json(rowsAfterFailure) === json(['Die Katze schläft', 'Die Katze träumt']) && wordDone && toggleSnacks.length === 0,
+    json({ failed, rowsAfterFailure, toggleSnacks }),
+  );
+  await page.eval(`${checkbox}.click(); true`);
+  await sleepMs(150);
+  const next = await compare('x\ny', 'x\nz');
+  r.check(`${label}: valid comparison after the failed one`, next.length === 1 && next[0].startsWith('success'), json(next));
+
+  await compare('a', 'a');
+  r.check(`${label}: Diff detail checks without errors`, errorsSince(n).length === 0, json(errorsSince(n)));
+}
+
+/**
+ * Diff page (Paket 7 B3): a running comparison is outdated by a newer click with two empty texts (it shows neither its
+ * result nor a message, the shown result stays, the processing state ends; switching the word diff on then uses the
+ * shown comparison), a later valid comparison works, and results over 2,000 lines are paged while copying copies all.
+ */
+export async function checkDiffCancelAndPaging(page, r, label, errorsSince) {
+  const n = page.logs.length;
+  const json = (value) => JSON.stringify(value);
+  const checkbox = `__t.page().querySelector('.word-diff-option input')`;
+  const rows = `[...__t.page().querySelectorAll('.unified-diff-view .diff-line')].map((l) => l.querySelector('.diff-line-content').textContent)`;
+  const finished = `!!__t.page().querySelector('.mode-toggle')`; // only rendered when not processing
+  const compare = async (oldText, newText) => {
+    await page.eval(`__t.set(__t.textareas()[0], ${json(oldText)}); true`);
+    await sleepMs(150);
+    await page.eval(`__t.set(__t.textareas()[1], ${json(newText)}); true`);
+    await sleepMs(150);
+    await page.eval(`__t.watchSnacks(); __t.page().querySelector('.diff-button').click(); true`);
+    await page.waitFor(`__t.snackLog.length > 0`, 8000);
+    await page.waitFor(finished, 8000);
+    return page.eval('__t.takeSnacks()');
+  };
+  await page.eval(`__t.nav('diff'); true`);
+  await sleepMs(200);
+  await page.eval(`__t.page().querySelectorAll('.view-type-options .view-option')[0].click(); if (${checkbox}.checked) ${checkbox}.click(); true`);
+  await sleepMs(150);
+
+  // Shown result
+  await compare('Die Katze schläft', 'Die Katze träumt');
+  const shown = await page.eval(rows);
+
+  // A long comparison (about 98,000,000 work units, below the limit) is outdated by a click with two empty texts
+  const lines = Array.from({ length: 9_900 }, (_, i) => `line ${i}`);
+  await page.eval(`__t.set(__t.textareas()[0], ${json(lines.join('\n'))}); true`);
+  await sleepMs(150);
+  await page.eval(`__t.set(__t.textareas()[1], ${json([...lines].reverse().join('\n'))}); true`);
+  await sleepMs(150);
+  await page.eval(`(async () => {
+    __t.watchSnacks();
+    __t.page().querySelector('.diff-button').click();
+    __t.set(__t.textareas()[0], '');
+    __t.set(__t.textareas()[1], '');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    __t.page().querySelector('.diff-button').click();
+    return true;
+  })()`);
+  await sleepMs(3_000); // the old job ends meanwhile (a Rust job cannot be stopped, its late result is discarded)
+  const snacks = await page.eval('__t.takeSnacks()');
+  const after = await page.eval(rows);
+  const ended = await page.eval(finished);
+  r.check(
+    `${label}: Diff with two empty texts outdates the running comparison -> one error, old result kept, no late result`,
+    snacks.length === 1 && snacks[0].startsWith('error') && json(after) === json(shown) && ended,
+    `snacks=${json(snacks)} rows=${after.length} finished=${ended}`,
+  );
+
+  // Word diff switched on now: computed for the shown comparison (not the cancelled one)
+  await page.eval(`__t.watchSnacks(); ${checkbox}.click(); true`);
+  const wordDone = await page.waitFor(`[...__t.page().querySelectorAll('.word-diff.diff-removed')].map((w) => w.textContent).join() === 'schläft'`, 8000);
+  await page.waitFor(finished, 8000);
+  r.check(`${label}: word diff after the cancellation uses the shown comparison`, wordDone && __noSnacks(await page.eval('__t.takeSnacks()')), json(await page.eval(rows)));
+  await page.eval(`${checkbox}.click(); true`);
+  await sleepMs(150);
+
+  // A later valid comparison works normally
+  const nextSnacks = await compare('x\ny', 'x\nz');
+  const next = await page.eval(rows);
+  r.check(`${label}: valid comparison after the cancellation`, json(next) === json(['x', 'y', 'z']) && nextSnacks.length === 1 && nextSnacks[0].startsWith('success'), `rows=${json(next)} snacks=${json(nextSnacks)}`);
+
+  // Paging: 2,500 result lines, 2,000 shown at first, copy has all
+  const many = Array.from({ length: 2_500 }, (_, i) => `neu ${i}`);
+  await compare('', many.join('\n'));
+  const firstPage = await page.eval(`__t.page().querySelectorAll('.unified-diff-view .diff-line').length`);
+  await page.eval(`__t.captureCopy(); __t.page().querySelector('.title-actions .copy-button').click(); true`);
+  await page.waitFor(`__t.copied !== null`, 3000);
+  const copied = await page.eval('__t.copied');
+  await page.eval('__t.releaseCopy(); true');
+  await page.eval(`__t.page().querySelector('.diff-more-rows button').click(); true`);
+  const allShown = await page.waitFor(`__t.page().querySelectorAll('.unified-diff-view .diff-line').length === 2500 && !__t.page().querySelector('.diff-more-rows')`, 5000);
+  const copiedLines = copied.split('\n');
+  r.check(
+    `${label}: 2,500 result lines -> 2,000 shown, "show more" shows all, copy has all lines`,
+    firstPage === 2_000 && allShown && copiedLines.length === 2_500 && copiedLines[0] === '+ neu 0' && copiedLines[2_499] === '+ neu 2499',
+    `first=${firstPage} copied=${copiedLines.length}`,
+  );
+
+  await compare('a', 'a');
+  r.check(`${label}: Diff cancellation and paging checks without errors`, errorsSince(n).length === 0, json(errorsSince(n)));
+}
+
+/**
  * Line endings (Paket 6) in the current processing mode (Split, Filter, Remove and Diff in Rust or JS; Sort and the
  * column copy are always JS; Combine uses `combine_columns` in Rust mode). Every input is a CRLF file with a trailing
  * newline imported through "Open File": a textarea would turn CRLF into LF. Results are read from React's props and
@@ -546,22 +863,21 @@ export async function checkLineEndings(page, r, label, errorsSince) {
   const changed = await page.eval(`__t.page().querySelectorAll('.diff-line.diff-added, .diff-line.diff-removed, .diff-line.diff-moved').length`);
   r.check(`${label}: Diff CRLF vs LF -> 3 unchanged lines, no difference`, diffDone && changed === 0, `lines=${await page.eval(`__t.page().querySelectorAll('.diff-line').length`)} changed=${changed}`);
 
-  // --- Diff (Paket 7): more new than old lines (the old worker cut the new text) and a move (shown as - / +) ---
+  // --- Diff (Paket 7): more new than old lines (the old worker cut the new text) and a move with both positions ---
   await page.eval(`__t.set(__t.textareas()[0], 'A\\nB'); true`);
   await sleepMs(150);
   await page.eval(`__t.set(__t.textareas()[1], 'B\\nA\\nC\\nD'); true`);
   await sleepMs(150);
   await page.eval(`__t.watchSnacks(); __t.page().querySelector('.diff-button').click(); true`);
   await page.waitFor(`__t.snackLog.length > 0`, 8000);
-  // Removed lines: class only (the legacy word highlighting renders them together with another line's words, B2/B3)
-  const lineTexts = `[...__t.page().querySelectorAll('.unified-diff-view .diff-line')].map((l) => { const type = l.className.replace('diff-line', '').trim(); return type === 'diff-removed' ? type : type + ':' + l.querySelector('.diff-line-content').textContent; })`;
-  const expectedLines = ['diff-removed', ':B', 'diff-added:A', 'diff-added:C', 'diff-added:D'];
+  const lineTexts = `[...__t.page().querySelectorAll('.unified-diff-view .diff-line')].map((l) => [l.className.replace('diff-line', '').trim(), l.dataset.oldLine + '/' + l.dataset.newLine, l.querySelector('.diff-line-content').textContent, l.querySelector('.diff-move-hint') ? 'hint' : ''].join('|'))`;
+  const expectedLines = ['diff-removed diff-moved|1/|A|hint', '|2/1|B|', 'diff-added diff-moved|/2|A|hint', 'diff-added|/3|C|', 'diff-added|/4|D|'];
   const longerDone = await page.waitFor(`JSON.stringify(${lineTexts}) === ${JSON.stringify(JSON.stringify(expectedLines))}`, 3000);
-  const stats = await page.eval(`__t.page().querySelector('.diff-stats')?.textContent ?? ''`);
+  const stats = await page.eval(`JSON.stringify({ ...__t.page().querySelector('.diff-stats')?.dataset })`);
   r.check(
-    `${label}: Diff keeps every new line, move shown as removed + added`,
-    longerDone && stats.replace(/\s+/g, ' ').trim() === '2 added, 0 removed, 1 moved (shown as - / +)',
-    `lines=${json(await page.eval(lineTexts))} stats=${json(stats)}`,
+    `${label}: Diff keeps every new line, a move keeps both positions and is counted once`,
+    longerDone && stats === JSON.stringify({ unchanged: '1', added: '2', removed: '0', moved: '1', changed: '0', wordDiff: 'false' }),
+    `lines=${json(await page.eval(lineTexts))} stats=${stats}`,
   );
 
   r.check(`${label}: line-ending checks without errors`, errorsSince(n).length === 0, json(errorsSince(n)));

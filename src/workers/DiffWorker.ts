@@ -12,10 +12,11 @@ export class DiffWorker extends BaseWorker {
   public process(options: ProcessOptions): void {
     try {
       const args = options?.args as DiffConfig | undefined;
-      if (!args || typeof args.sourceText !== 'string' || typeof args.mainParam !== 'string' || typeof args.configParams?.ignoreWhitespace !== 'boolean') {
+      const wordDiff = args?.configParams?.wordDiff;
+      if (!args || typeof args.sourceText !== 'string' || typeof args.mainParam !== 'string' || typeof args.configParams?.ignoreWhitespace !== 'boolean' || (wordDiff !== undefined && typeof wordDiff !== 'boolean')) {
         throw new Error('diff: invalid arguments');
       }
-      WorkerLogger.debug(`🔍 Diff-Prozess, Ignore Whitespace: ${args.configParams.ignoreWhitespace}`);
+      WorkerLogger.debug(`🔍 Diff-Prozess, Ignore Whitespace: ${args.configParams.ignoreWhitespace}, Wort-Diff: ${wordDiff === true}`);
       self.postMessage({ success: true, type: 'complete', result: createResult('Diff', diffInJs(args)) });
     } catch (error) {
       this.postError(error);

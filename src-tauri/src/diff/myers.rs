@@ -19,8 +19,7 @@ pub struct DiffLimitExceeded {
 pub struct Matches {
     pub old: Vec<usize>,
     pub new: Vec<usize>,
-    /// Read by the word diff (`intraline.rs`), which is wired into the commands in Paket 7 B3
-    #[allow(dead_code)]
+    /// Read by the word diff (`intraline.rs`) for its budget
     pub work: u64,
 }
 

@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowRight } from 'lucide-react';
 import IconRoundedButton from '../components/IconRoundedButton';
@@ -13,9 +13,10 @@ import { fontSizeToIconSize } from '../utils/helper';
 import useSnackbar from '../hooks/useSnackbar';
 import { isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import { usePermanentSetting } from '../hooks/useSettings';
-import { getWordDiffs } from '../utils/diff/wordDiffLegacy';
-import { toLegacyDiffResults } from '../utils/diff/legacy';
-import type { DiffDocument } from '../utils/diff/types';
+import { BaseService } from '../services/BaseService';
+import { buildDiffView, formatDiffText, type DiffViewCell } from '../utils/diff/viewModel';
+import type { DiffData } from '../utils/diff/result';
+import type { IntralineSkipReason } from '../utils/diff/types';
 import './styles/DiffPageStyle.css';
 
 interface DiffPageProps {
@@ -26,6 +27,18 @@ interface DiffPageProps {
 
 type DiffViewType = 'unified' | 'split';
 
+/** The compared texts of a request (kept to recompute the same comparison with word diff). */
+interface DiffRequest {
+  sourceText: string;
+  newText: string;
+  ignoreWhitespace: boolean;
+}
+
+/** Rows rendered at once; more on request (large diffs would otherwise create tens of thousands of DOM rows). */
+const ROW_PAGE = 2_000;
+
+const SKIP_REASONS: IntralineSkipReason[] = ['lineTooLong', 'hunkTooLarge', 'budgetExceeded', 'tooComplex'];
+
 export default function DiffPage({
   sourceText,
   setSourceText,
@@ -35,254 +48,196 @@ export default function DiffPage({
   const snackbar = useSnackbar();
   const [newText, setNewText] = useState('');
   const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
-  const [diffDocument, setDiffDocument] = useState<DiffDocument | null>(null);
-  // Transitional (Paket 7 B1): the views still render the former entry list; moves appear as removed + added
-  const diffResults = useMemo(() => (diffDocument ? toLegacyDiffResults(diffDocument) : []), [diffDocument]);
+  const [diffData, setDiffData] = useState<DiffData | null>(null);
   const [diffViewType, setDiffViewType] = useState<DiffViewType>('unified');
   const [showLineNumbers, setShowLineNumbers] = useState(true);
-  const [showWordDiff, setShowWordDiff] = useState(true);
+  // Optional word diff, off by default (page state only, it was never persisted)
+  const [wordDiff, setWordDiff] = useState(false);
+  const [rowLimit, setRowLimit] = useState(ROW_PAGE);
+
+  /** Latest requested comparison, and whether its running job computes the word diff (`null`: no job running). */
+  const lastRequest = useRef<DiffRequest | null>(null);
+  const runningWordDiff = useRef<boolean | null>(null);
+  /** Comparison of the shown result (`lastRequest` falls back to it when a running comparison is cancelled). */
+  const shownRequest = useRef<DiffRequest | null>(null);
+  /** Page job number: only the latest job may change the result or show a message. */
+  const jobCounter = useRef(0);
 
   const { diffText } = useBackendProcessor();
   const fontSize = usePermanentSetting('fontSize');
 
-  // Function to get class name based on diff type
-  const getDiffTypeClass = (type: string) => {
-    switch (type) {
-      case 'added': return 'diff-added';
-      case 'removed': return 'diff-removed';
-      case 'moved': return 'diff-moved';
-      case 'changed': return 'diff-changed';
-      case 'unchanged': default: return '';
-    }
-  };
+  /**
+   * Runs a comparison. Only the latest job is delivered (BaseService: an older one ends as `superseded`), so a late
+   * result never replaces a newer one; in addition an outdated page job changes no state and shows no message. The word
+   * diff is shown only while the switch is on (`view` below), so a result with word diff that arrives after the switch
+   * was turned off is displayed without it.
+   */
+  const runDiff = useCallback(
+    async (request: DiffRequest, withWordDiff: boolean, announce: boolean) => {
+      const job = ++jobCounter.current;
+      lastRequest.current = request;
+      runningWordDiff.current = withWordDiff;
+      try {
+        const result = await diffText({
+          sourceText: request.sourceText,
+          mainParam: request.newText,
+          configParams: { caseSensitive: true, ignoreWhitespace: request.ignoreWhitespace, wordDiff: withWordDiff },
+        });
+        if (job !== jobCounter.current) return;
+        // Validated in DiffService (line diff, word diff of it, present exactly when requested); on failure the previous diff stays
+        setDiffData(unwrapResult(window.myResultConverter(result, 'Diff')));
+        shownRequest.current = request;
+        if (announce) snackbar.success(t('textDiff.processed'));
+      } catch (error) {
+        // A superseded or cancelled job was replaced by a newer action: nothing to report
+        if (job === jobCounter.current && !isSuperseded(error)) snackbar.error(processingErrorMessage(error, t));
+      } finally {
+        if (job === jobCounter.current) runningWordDiff.current = null;
+      }
+    },
+    [diffText, snackbar, t],
+  );
 
-  // Get icon based on diff type
-  const getDiffTypeIcon = (type: string) => {
-    switch (type) {
-      case 'added': return '+';
-      case 'removed': return '-';
-      case 'moved': return '↷';
-      case 'changed': return '~';
-      default: return ' ';
-    }
-  };
+  /**
+   * Makes a running comparison outdated (a newer action replaced it): the worker job is terminated, a Rust job (cannot
+   * be stopped) has its late result discarded (`BaseService.cancelPending`, its promise ends as `superseded`), and the
+   * page ignores it. The shown result stays; switching the word diff on afterwards uses the shown comparison.
+   */
+  const cancelRunningDiff = useCallback(() => {
+    jobCounter.current++;
+    runningWordDiff.current = null;
+    lastRequest.current = shownRequest.current;
+    BaseService.cancelPending('diff');
+  }, []);
 
-  const handleDiffText = useCallback(async () => {
+  const handleDiffText = useCallback(() => {
     // One side may be empty (everything added or removed); comparing two empty texts shows nothing
     if (!sourceText && !newText) {
+      // The result of a still running older comparison would no longer match the input
+      cancelRunningDiff();
       snackbar.error(t('errors.textRequired'));
       return;
     }
+    void runDiff({ sourceText, newText, ignoreWhitespace }, wordDiff, true);
+  }, [sourceText, newText, ignoreWhitespace, wordDiff, runDiff, cancelRunningDiff, snackbar, t]);
 
-    try {
-      const result = await diffText({
-        sourceText,
-        mainParam: newText,
-        configParams: {
-          caseSensitive: true,
-          ignoreWhitespace,
-        },
-      });
-
-      // DiffService delivers the same validated DiffDocument in backend and JS mode; on failure the previous diff stays
-      setDiffDocument(unwrapResult(window.myResultConverter(result, 'Diff')));
-      snackbar.success(t('textDiff.processed'));
-    } catch (error) {
-      // A superseded job was replaced by a newer click: nothing to report
-      if (!isSuperseded(error)) snackbar.error(processingErrorMessage(error, t));
+  /**
+   * Switching the word diff on computes it if it is missing (same texts as the comparison, not the edited textareas):
+   * while a comparison without word diff runs, for that running comparison (it is replaced); otherwise for the shown
+   * result, never for a comparison that failed. Switching it off only hides it.
+   */
+  const handleWordDiffChange = (checked: boolean) => {
+    setWordDiff(checked);
+    if (!checked) return;
+    const running = runningWordDiff.current;
+    if (running === true) return;
+    if (running === false) {
+      if (lastRequest.current) void runDiff(lastRequest.current, true, false);
+      return;
     }
-  }, [sourceText, newText, ignoreWhitespace, diffText, t]);
-
-  // Render word-level diff content for a single line
-  const renderWordDiff = (line1: string, line2: string | null) => {
-    if (!showWordDiff || !line2) return <span className="diff-line-content">{line1}</span>;
-    
-    const wordDiffs = getWordDiffs(line1, line2);
-    
-    return (
-      <span className="diff-line-content">
-        {wordDiffs.map((word, i) => (
-          <span key={i} className={`word-diff ${getDiffTypeClass(word.type)}`}>
-            {word.text}
-          </span>
-        ))}
-      </span>
-    );
+    if (!diffData?.intraline && shownRequest.current) void runDiff(shownRequest.current, true, false);
   };
 
-  // Prepare paired diff results for split view
-  const pairedDiffResults = (() => {
-    if (!diffResults.length) return [];
-    
-    // Group by type
-    const groups = {
-      removed: diffResults.filter(r => r.type === 'removed'),
-      added: diffResults.filter(r => r.type === 'added'),
-      unchanged: diffResults.filter(r => r.type === 'unchanged') 
-    };
-    
-    const pairs: Array<{ left: DiffResult | null, right: DiffResult | null }> = [];
-    
-    // First add all unchanged lines
-    groups.unchanged.forEach(line => pairs.push({ left: line, right: line }));
-    
-    // Then process removed and added lines, attempting to pair them
-    const processedRemoved = new Set<number>();
-    const processedAdded = new Set<number>();
-    
-    // Match lines with similar content
-    groups.removed.forEach((removedLine, index) => {
-      const matchingAdded = groups.added.find((addedLine, idx) => 
-        !processedAdded.has(idx) && 
-        getWordDiffs(removedLine.text, addedLine.text).some(w => w.type !== 'unchanged')
-      );
-      
-      if (matchingAdded) {
-        pairs.push({ left: removedLine, right: matchingAdded });
-        processedRemoved.add(index);
-        processedAdded.add(groups.added.indexOf(matchingAdded));
-      }
-    });
-    
-    // Add remaining unmatched lines
-    groups.removed.forEach((removedLine, index) => {
-      if (!processedRemoved.has(index)) {
-        pairs.push({ left: removedLine, right: null });
-      }
-    });
-    
-    groups.added.forEach((addedLine, index) => {
-      if (!processedAdded.has(index)) {
-        pairs.push({ left: null, right: addedLine });
-      }
-    });
-    
-    // Order of the diff result (line numbers mix old and new positions and are no sort key)
-    const position = new Map(diffResults.map((entry, index) => [entry, index]));
-    const at = (pair: { left: DiffResult | null; right: DiffResult | null }) =>
-      Math.min(pair.left ? position.get(pair.left)! : Infinity, pair.right ? position.get(pair.right)! : Infinity);
-    return pairs.sort((a, b) => at(a) - at(b));
-  })();
+  // Only rebuilt when the result or the word diff switch changes (not on every keystroke in the textareas)
+  const view = useMemo(() => (diffData ? buildDiffView(diffData.document, wordDiff ? diffData.intraline : null) : null), [diffData, wordDiff]);
+  const copyText = useMemo(() => (view ? formatDiffText(view) : ''), [view]);
+  useEffect(() => setRowLimit(ROW_PAGE), [view]);
 
-  const renderUnifiedDiffView = () => {
-    return (
-      <div className="unified-diff-view">
-        {diffResults.map((result, index) => (
-          <div
-            key={index}
-            className={`diff-line ${getDiffTypeClass(result.type)}`}
-          >
-            {showLineNumbers && (
-              <span className="diff-line-number">{result.lineNumber}</span>
-            )}
-            <span className="diff-line-marker">{getDiffTypeIcon(result.type)}</span>
-            
-            {result.text ? (
-              showWordDiff && result.type !== 'unchanged' ? (
-                renderWordDiff(
-                  result.text,
-                  result.type === 'removed' 
-                    ? diffResults.find(r => r.type === 'added' && 
-                        getWordDiffs(r.text, result.text).some(w => w.type !== 'unchanged'))?.text || null
-                    : null
-                )
-              ) : (
-                <span className="diff-line-content">{result.text}</span>
-              )
+  const kindClass = (cell: DiffViewCell) =>
+    [cell.kind === 'removed' ? 'diff-removed' : cell.kind === 'added' ? 'diff-added' : '', cell.move ? 'diff-moved' : '', cell.segments ? 'diff-paired' : '']
+      .filter(Boolean)
+      .join(' ');
+  const marker = (cell: DiffViewCell) => (cell.move ? '↷' : cell.kind === 'removed' ? '-' : cell.kind === 'added' ? '+' : ' ');
+
+  const renderContent = (cell: DiffViewCell) => {
+    if (cell.segments) {
+      return (
+        <span className="diff-line-content">
+          {cell.segments.map((segment, i) =>
+            segment.op === 'equal' ? (
+              <span key={i}>{segment.text}</span>
             ) : (
-              <em className="diff-line-content empty-line">{t('textDiff.emptyLine')}</em>
-            )}
-          </div>
-        ))}
+              <span key={i} className={`word-diff ${segment.op === 'delete' ? 'diff-removed' : 'diff-added'}`}>
+                {segment.text}
+              </span>
+            ),
+          )}
+        </span>
+      );
+    }
+    if (cell.text === '') return <em className="diff-line-content empty-line">{t('textDiff.emptyLine')}</em>;
+    return <span className="diff-line-content">{cell.text}</span>;
+  };
+
+  const renderHints = (cell: DiffViewCell) => (
+    <>
+      {cell.move && (
+        <span className="diff-move-hint">
+          {t(cell.kind === 'removed' ? 'textDiff.movedTo' : 'textDiff.movedFrom', { line: cell.move.otherLine })}
+        </span>
+      )}
+      {cell.wordDiffSkipped && (
+        <span className="diff-skip-hint" data-reason={cell.wordDiffSkipped}>
+          {t(`textDiff.skipReasons.${cell.wordDiffSkipped}`)}
+        </span>
+      )}
+    </>
+  );
+
+  const renderUnifiedDiffView = () => (
+    <div className="unified-diff-view">
+      {view!.unified.slice(0, rowLimit).map((row, index) => (
+        <div key={index} className={`diff-line ${kindClass(row)}`} data-old-line={row.oldLine ?? ''} data-new-line={row.newLine ?? ''}>
+          {showLineNumbers && (
+            <>
+              <span className="diff-line-number old">{row.oldLine ?? ''}</span>
+              <span className="diff-line-number new">{row.newLine ?? ''}</span>
+            </>
+          )}
+          <span className="diff-line-marker">{marker(row)}</span>
+          {renderContent(row)}
+          {renderHints(row)}
+        </div>
+      ))}
+    </div>
+  );
+
+  const renderSplitCell = (cell: DiffViewCell | null, side: 'old' | 'new', index: number) =>
+    cell ? (
+      <div key={`${side}-${index}`} className={`diff-line ${kindClass(cell)}`} data-line={cell.line}>
+        {showLineNumbers && <span className="diff-line-number">{cell.line}</span>}
+        <span className="diff-line-marker">{marker(cell)}</span>
+        {renderContent(cell)}
+        {renderHints(cell)}
+      </div>
+    ) : (
+      <div key={`${side}-${index}`} className="diff-line empty-slot">
+        <span className="diff-line-placeholder"></span>
       </div>
     );
-  };
 
   const renderSplitDiffView = () => {
+    const rows = view!.split.slice(0, rowLimit);
     return (
       <div className="split-diff-view">
         <div className="split-diff-original">
           <div className="split-diff-header">
             <h3>{t('textDiff.oldText')}</h3>
           </div>
-          <div className="split-diff-content">
-            {pairedDiffResults.map((pair, index) => (
-              <div key={`left-${index}`} className={`diff-line ${pair.left ? getDiffTypeClass(pair.left.type) : 'empty-slot'}`}>
-                {showLineNumbers && pair.left && (
-                  <span className="diff-line-number">
-                    {pair.left.lineNumber}
-                  </span>
-                )}
-                
-                {pair.left ? (
-                  <>
-                    <span className="diff-line-marker">
-                      {getDiffTypeIcon(pair.left.type)}
-                    </span>
-                    
-                    {pair.left.text ? (
-                      showWordDiff && pair.left.type !== 'unchanged' ? (
-                        renderWordDiff(
-                          pair.left.text,
-                          pair.right?.text || null
-                        )
-                      ) : (
-                        <span className="diff-line-content">{pair.left.text}</span>
-                      )
-                    ) : (
-                      <em className="diff-line-content empty-line">{t('textDiff.emptyLine')}</em>
-                    )}
-                  </>
-                ) : (
-                  <span className="diff-line-placeholder"></span>
-                )}
-              </div>
-            ))}
-          </div>
+          <div className="split-diff-content">{rows.map((row, index) => renderSplitCell(row.old, 'old', index))}</div>
         </div>
-
         <div className="split-diff-new">
           <div className="split-diff-header">
             <h3>{t('textDiff.newText')}</h3>
           </div>
-          <div className="split-diff-content">
-            {pairedDiffResults.map((pair, index) => (
-              <div key={`right-${index}`} className={`diff-line ${pair.right ? getDiffTypeClass(pair.right.type) : 'empty-slot'}`}>
-                {showLineNumbers && pair.right && (
-                  <span className="diff-line-number">
-                    {pair.right.lineNumber}
-                  </span>
-                )}
-                
-                {pair.right ? (
-                  <>
-                    <span className="diff-line-marker">
-                      {getDiffTypeIcon(pair.right.type)}
-                    </span>
-                    
-                    {pair.right.text ? (
-                      showWordDiff && pair.right.type !== 'unchanged' ? (
-                        renderWordDiff(
-                          pair.right.text,
-                          pair.left?.text || null
-                        )
-                      ) : (
-                        <span className="diff-line-content">{pair.right.text}</span>
-                      )
-                    ) : (
-                      <em className="diff-line-content empty-line">{t('textDiff.emptyLine')}</em>
-                    )}
-                  </>
-                ) : (
-                  <span className="diff-line-placeholder"></span>
-                )}
-              </div>
-            ))}
-          </div>
+          <div className="split-diff-content">{rows.map((row, index) => renderSplitCell(row.new, 'new', index))}</div>
         </div>
       </div>
     );
   };
+
+  const totalRows = view ? (diffViewType === 'unified' ? view.unified.length : view.split.length) : 0;
+  const stats = view?.stats;
 
   return (
     <div className={`diff-text app-container-column ${visible ? '' : 'hide-page'}`}>
@@ -341,8 +296,8 @@ export default function DiffPage({
 
         <section className="app-section">
           <div className="title">
-            <span className="left">DIFF OPTIONS</span>
-            <span className="right">Configure how the text should be compared</span>
+            <span className="left">{t('textDiff.options.title')}</span>
+            <span className="right">{t('textDiff.options.hint')}</span>
           </div>
           <div className="content flex-column">
             <div className="input-options-container">
@@ -356,34 +311,34 @@ export default function DiffPage({
 
               <div className="input-box">
                 <Checkbox
-                  label="Show Line Numbers"
+                  label={t('textDiff.options.lineNumbers')}
                   checked={showLineNumbers}
                   onChange={setShowLineNumbers}
                 />
               </div>
-              
-              <div className="input-box">
+
+              <div className="input-box word-diff-option">
                 <Checkbox
-                  label="Word-level Highlighting"
-                  checked={showWordDiff}
-                  onChange={setShowWordDiff}
+                  label={t('textDiff.options.wordDiff')}
+                  checked={wordDiff}
+                  onChange={handleWordDiffChange}
                 />
               </div>
-              
+
               <div className="input-box view-type-selector">
-                <span className="view-type-label">View Type:</span>
+                <span className="view-type-label">{t('textDiff.view.label')}</span>
                 <div className="view-type-options">
-                  <button 
+                  <button
                     className={`view-option ${diffViewType === 'unified' ? 'active' : ''}`}
                     onClick={() => setDiffViewType('unified')}
                   >
-                    Unified
+                    {t('textDiff.view.unified')}
                   </button>
-                  <button 
+                  <button
                     className={`view-option ${diffViewType === 'split' ? 'active' : ''}`}
                     onClick={() => setDiffViewType('split')}
                   >
-                    Split
+                    {t('textDiff.view.split')}
                   </button>
                 </div>
               </div>
@@ -402,43 +357,75 @@ export default function DiffPage({
           </div>
         </section>
 
-        {diffResults.length > 0 && (
+        {view && stats && view.unified.length > 0 && (
           <section className="app-section flex-1">
-            <div className="title">
+            <div className="title diff-result-title">
               <span className="left">{t('textDiff.result')}</span>
               <div className="title-actions">
-                <CopyButton toCopy={diffResults.map(r => `${getDiffTypeIcon(r.type)} ${r.text}`).join('\n')} />
-                {diffDocument && (
-                  <span className="diff-stats">
-                    {diffDocument.stats.added} added, {diffDocument.stats.removed} removed
-                    {diffDocument.stats.moved > 0 && `, ${diffDocument.stats.moved} moved (shown as - / +)`}
-                  </span>
-                )}
+                <CopyButton toCopy={copyText} />
+                <span
+                  className="diff-stats"
+                  data-unchanged={stats.unchanged}
+                  data-added={stats.added}
+                  data-removed={stats.removed}
+                  data-moved={stats.moved}
+                  data-changed={stats.changed}
+                  data-word-diff={view.wordDiff}
+                >
+                  {[
+                    t('textDiff.stats.unchanged', { count: stats.unchanged }),
+                    t('textDiff.stats.added', { count: stats.added }),
+                    t('textDiff.stats.removed', { count: stats.removed }),
+                    t('textDiff.stats.moved', { count: stats.moved }),
+                  ].join(' · ')}
+                  {/* The changed line pairs are part of added/removed, not a category of their own */}
+                  {view.wordDiff && stats.changed > 0 && (
+                    <span className="diff-stats-pairs"> — {t('textDiff.stats.changedPairs', { count: stats.changed })}</span>
+                  )}
+                </span>
               </div>
             </div>
             <div className="content flex-column">
+              {view.wordDiff && stats.wordDiffSkippedLines > 0 && (
+                <div className="diff-word-skips" data-lines={stats.wordDiffSkippedLines}>
+                  {t('textDiff.wordDiffSkipped', { count: stats.wordDiffSkippedLines })}{' '}
+                  ({SKIP_REASONS.filter((reason) => view.wordDiffSkips[reason])
+                    .map((reason) => `${t(`textDiff.skipReasons.${reason}`)}: ${view.wordDiffSkips[reason]}`)
+                    .join(', ')})
+                </div>
+              )}
+
               <div className="diff-result-container">
                 {diffViewType === 'unified' ? renderUnifiedDiffView() : renderSplitDiffView()}
               </div>
-              
+
+              {totalRows > rowLimit && (
+                <div className="diff-more-rows">
+                  <span>{t('textDiff.rowsShown', { shown: rowLimit, total: totalRows })}</span>
+                  <button className="view-option" onClick={() => setRowLimit((limit) => limit + ROW_PAGE)}>
+                    {t('textDiff.showMore', { count: Math.min(ROW_PAGE, totalRows - rowLimit) })}
+                  </button>
+                </div>
+              )}
+
               <div className="diff-legend">
                 <div className="legend-item">
                   <span className="legend-marker added">+</span>
-                  <span>Added</span>
+                  <span>{t('textDiff.legend.added')}</span>
                 </div>
                 <div className="legend-item">
                   <span className="legend-marker removed">-</span>
-                  <span>Removed</span>
+                  <span>{t('textDiff.legend.removed')}</span>
                 </div>
-                {showWordDiff && (
+                {view.wordDiff && (
                   <div className="legend-item">
                     <span className="legend-marker changed">~</span>
-                    <span>Changed</span>
+                    <span>{t('textDiff.legend.changed')}</span>
                   </div>
                 )}
                 <div className="legend-item">
                   <span className="legend-marker moved">↷</span>
-                  <span>Moved</span>
+                  <span>{t('textDiff.legend.moved')}</span>
                 </div>
               </div>
             </div>

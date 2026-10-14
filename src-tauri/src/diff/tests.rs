@@ -223,7 +223,7 @@ fn diff_generated_cases_match_the_js_engine() {
 fn too_many_reordered_lines_are_a_diff_too_complex_error() {
     let lines: Vec<String> = (0..12_000).map(|i| format!("line {i}")).collect();
     let reversed: Vec<String> = lines.iter().rev().cloned().collect();
-    let result = get_diff(&lines.join("\n"), &reversed.join("\n"), false);
+    let result = get_diff(&lines.join("\n"), &reversed.join("\n"), false, true);
     assert!(matches!(result, Err(TextError::DiffTooComplex(_))), "{:?}", result.map(|r| r.document.stats));
     assert_eq!(
         serde_json::to_value(TextError::DiffTooComplex("x".into())).unwrap(),
@@ -250,7 +250,7 @@ fn long_texts_mostly_equal_or_completely_different() {
 
 #[test]
 fn response_is_structured_ipc_data() {
-    let response = get_diff("a\nb", "b\nc", false).unwrap();
+    let response = get_diff("a\nb", "b\nc", false, false).unwrap();
     let json = serde_json::to_value(&response).unwrap();
     assert!(json["document"].is_object(), "no JSON string inside the IPC JSON");
     assert!(json["metrics"]["execution_time_ms"].is_number());

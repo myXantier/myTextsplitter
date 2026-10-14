@@ -268,8 +268,15 @@ fn intraline_generated_cases_match_the_js_engine() {
 }
 
 #[test]
-fn word_diff_is_not_part_of_the_line_diff_response() {
-    let response = super::get_diff("Die schnelle braune Katze springt.", "Die schnelle schwarze Katze läuft.", false).unwrap();
-    let json = serde_json::to_value(&response).unwrap();
-    assert!(!json.to_string().contains("segments") && json["document"]["rows"].as_array().unwrap().iter().all(|r| r.get("old").map_or(true, |o| o.as_object().unwrap().len() == 2)));
+fn word_diff_is_in_the_response_only_when_requested() {
+    let (old, new) = ("Titel\nDie schnelle braune Katze springt.", "Neue Einleitung\nTitel\nDie schnelle schwarze Katze läuft.");
+    let without = serde_json::to_value(super::get_diff(old, new, false, false).unwrap()).unwrap();
+    assert!(without["intraline"].is_null(), "no word diff when it is not requested");
+    let with = super::get_diff(old, new, false, true).unwrap();
+    assert_eq!(serde_json::to_value(&with.document).unwrap(), without["document"], "the same line diff in both modes");
+    let analysis = with.intraline.clone().expect("word diff when it is requested");
+    assert_eq!(analysis, compute_intraline(&with.document, INTRALINE_LIMITS));
+    assert_eq!((analysis.pairs.len(), analysis.pairs[0].old_line, analysis.pairs[0].new_line), (1, 2, 3), "the introduction line is not paired");
+    let keys: Vec<String> = serde_json::to_value(&with).unwrap().as_object().unwrap().keys().cloned().collect();
+    assert_eq!(keys, ["document", "intraline", "metrics"]);
 }

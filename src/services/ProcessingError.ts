@@ -4,8 +4,7 @@
 //          (empty strings and empty arrays are valid results).
 // Failure: the services reject with a `ProcessingError`; nothing is replaced by `{}`, `[]` or `''`.
 // Kept free of app imports so the workers and `npm test` can load it directly.
-import { isDiffDocument } from '../utils/diff/validate';
-import type { DiffDocument } from '../utils/diff/types';
+import { isDiffData, type DiffData } from '../utils/diff/result';
 
 export type ProcessingErrorKind =
   /** The user input cannot be processed, e.g. an invalid regex. */
@@ -153,7 +152,7 @@ const VALIDATORS: Record<NonNullable<myResultDataType>, (value: unknown) => bool
   ColumnList: isStringArrayArray,
   TextV2: isTextV2,
   // Structure and every invariant of the line diff (`src/utils/diff/validate.ts`)
-  Diff: isDiffDocument,
+  Diff: isDiffData,
 };
 
 /** Data type of a `myResult` type. */
@@ -162,7 +161,7 @@ export interface ResultData {
   Column: string[];
   ColumnList: string[][];
   TextV2: RemoveResultData;
-  Diff: DiffDocument;
+  Diff: DiffData;
 }
 export type ResultType = keyof ResultData;
 

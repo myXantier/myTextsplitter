@@ -9,10 +9,10 @@ import { readFileSync } from 'node:fs';
 const { DiffService, assertBackendDiff } = await import('../../src/services/Services.ts').then(async () => import('../../src/services/DiffService.ts'));
 const { BaseService } = await import('../../src/services/BaseService.ts');
 const { computeLineDiff } = await import('../../src/utils/diff/lineDiff.ts');
+const { computeIntraline } = await import('../../src/utils/diff/intraline.ts');
 const { alignSequences, DiffLimitError, DIFF_WORK_LIMIT } = await import('../../src/utils/diff/myers.ts');
 const { comparisonKey, isBlankLine } = await import('../../src/utils/diff/whitespace.ts');
 const { diffDocumentError, diffInputMismatch } = await import('../../src/utils/diff/validate.ts');
-const { toLegacyDiffResults } = await import('../../src/utils/diff/legacy.ts');
 const { splitLines } = await import('../../src/utils/lines.ts');
 type DiffDocument = import('../../src/utils/diff/types.ts').DiffDocument;
 
@@ -250,25 +250,28 @@ test('diff main thread (no Web Worker): complete Diff result, also for an empty 
   for (const [oldText, newText] of [['A', 'A\nB\nC\nD'], ['', 'A\nB'], ['A\nB', ''], ['', '']]) {
     const result = await new DiffService().invoke(diffArgs(oldText, newText), false);
     assert.equal(result.type, 'Diff');
-    assertInvariants(result.result as DiffDocument, oldText, newText, false);
+    assert.equal((result.result as any).intraline, null, 'no word diff unless requested');
+    assertInvariants((result.result as any).document as DiffDocument, oldText, newText, false);
   }
 });
 
 test('diff backend: structured document is accepted and checked against the request', async () => {
   const document = computeLineDiff('one', 'one\ntwo', { ignoreWhitespace: false });
-  installWindow(() => ({ document, metrics: backendMetrics }));
+  installWindow(() => ({ document, intraline: null, metrics: backendMetrics }));
   const result = await new DiffService().invoke(diffArgs('one', 'one\ntwo'), true);
   assert.equal(result.type, 'Diff');
-  assert.deepEqual(result.result, document);
+  assert.deepEqual(result.result, { document, intraline: null });
 });
 
 for (const [name, answer] of [
   ['former JSON string format', () => ({ result_text: '[]', removed_lines: 0, metrics: backendMetrics })],
-  ['document as JSON string', () => ({ document: JSON.stringify(computeLineDiff('a', 'b', { ignoreWhitespace: false })), metrics: backendMetrics })],
-  ['missing metrics', () => ({ document: computeLineDiff('a', 'b', { ignoreWhitespace: false }) })],
-  ['document of another input', () => ({ document: computeLineDiff('a', 'x', { ignoreWhitespace: false }), metrics: backendMetrics })],
-  ['truncated document (new text cut)', () => ({ document: computeLineDiff('a', 'a', { ignoreWhitespace: false }), metrics: backendMetrics })],
-  ['other whitespace option', () => ({ document: computeLineDiff('a', 'b', { ignoreWhitespace: true }), metrics: backendMetrics })],
+  ['document as JSON string', () => ({ document: JSON.stringify(computeLineDiff('a', 'b', { ignoreWhitespace: false })), intraline: null, metrics: backendMetrics })],
+  ['missing metrics', () => ({ document: computeLineDiff('a', 'b', { ignoreWhitespace: false }), intraline: null })],
+  ['missing intraline field (former B1 format)', () => ({ document: computeLineDiff('a', 'b', { ignoreWhitespace: false }), metrics: backendMetrics })],
+  ['word diff that was not requested', () => { const document = computeLineDiff('a', 'b', { ignoreWhitespace: false }); return { document, intraline: computeIntraline(document), metrics: backendMetrics }; }],
+  ['document of another input', () => ({ document: computeLineDiff('a', 'x', { ignoreWhitespace: false }), intraline: null, metrics: backendMetrics })],
+  ['truncated document (new text cut)', () => ({ document: computeLineDiff('a', 'a', { ignoreWhitespace: false }), intraline: null, metrics: backendMetrics })],
+  ['other whitespace option', () => ({ document: computeLineDiff('a', 'b', { ignoreWhitespace: true }), intraline: null, metrics: backendMetrics })],
 ] as const) {
   test(`diff backend: ${name} is an invalid-result error`, async () => {
     installWindow(answer);
@@ -280,7 +283,7 @@ for (const [name, answer] of [
 for (const v of fixtures.validatedDocuments.filter((v: any) => !v.valid)) {
   test(`diff backend: corrupted answer (${v.name}) is invalidResult, its metrics are not applied`, async () => {
     const service = new DiffService();
-    installWindow(() => ({ document: v.document, metrics: { ...backendMetrics, execution_time_ms: 99 } }));
+    installWindow(() => ({ document: v.document, intraline: null, metrics: { ...backendMetrics, execution_time_ms: 99 } }));
     const error = await rejectionOf(() => service.invoke(diffArgs(v.old, v.new, v.ignoreWhitespace), true));
     assert.equal(error.kind, 'invalidResult');
     assert.equal(service.getMetrics(), null);
@@ -289,11 +292,11 @@ for (const v of fixtures.validatedDocuments.filter((v: any) => !v.valid)) {
 
 test('diff backend: a valid document of another input keeps the metrics of the previous job', async () => {
   const service = new DiffService();
-  installWindow(() => ({ document: computeLineDiff('a', 'b', { ignoreWhitespace: false }), metrics: { ...backendMetrics, execution_time_ms: 5 } }));
+  installWindow(() => ({ document: computeLineDiff('a', 'b', { ignoreWhitespace: false }), intraline: null, metrics: { ...backendMetrics, execution_time_ms: 5 } }));
   await service.invoke(diffArgs('a', 'b'), true);
   assert.equal(service.getMetrics()?.executionTime, 5);
 
-  installWindow(() => ({ document: computeLineDiff('a', 'x', { ignoreWhitespace: false }), metrics: { ...backendMetrics, execution_time_ms: 99 } }));
+  installWindow(() => ({ document: computeLineDiff('a', 'x', { ignoreWhitespace: false }), intraline: null, metrics: { ...backendMetrics, execution_time_ms: 99 } }));
   const error = await rejectionOf(() => service.invoke(diffArgs('a', 'b'), true));
   assert.equal(error.kind, 'invalidResult');
   assert.equal(service.getMetrics()?.executionTime, 5, 'metrics of the failed job are not applied');
@@ -310,19 +313,93 @@ test('diff backend: diffTooComplex from Rust is the same input error as in JS', 
 
 test('assertBackendDiff accepts null memory metrics', () => {
   const document = computeLineDiff('a', 'b', { ignoreWhitespace: false });
-  assert.equal(assertBackendDiff({ document, metrics: { ...backendMetrics, memory_usage_kb: null } }).document, document);
+  assert.equal(assertBackendDiff({ document, intraline: null, metrics: { ...backendMetrics, memory_usage_kb: null } }).data.document, document);
 });
 
-// --- transitional adapter for the current DiffPage ---
+// --- Paket 7 B3: optional word diff through the Rust IPC contract ---
 
-test('legacy adapter keeps every line; moves are shown as removed + added', () => {
-  const d = computeLineDiff('A\nB\nC', 'A\nC\nB\nD', { ignoreWhitespace: false });
-  assert.deepEqual(toLegacyDiffResults(d), [
-    { type: 'unchanged', text: 'A', lineNumber: 1 },
-    { type: 'removed', text: 'B', lineNumber: 2 },
-    { type: 'unchanged', text: 'C', lineNumber: 2 },
-    { type: 'added', text: 'B', lineNumber: 3 },
-    { type: 'added', text: 'D', lineNumber: 4 },
-  ]);
-  assert.equal(d.stats.moved, 1);
+test('diff backend: the word diff is requested with `worddiff` and checked against the document', async () => {
+  const calls: Record<string, unknown>[] = [];
+  const document = computeLineDiff('a b c', 'a b x', { ignoreWhitespace: false });
+  installWindow((_cmd, args) => {
+    calls.push(args);
+    return { document, intraline: args.worddiff ? computeIntraline(document) : null, metrics: backendMetrics };
+  });
+  const off = await new DiffService().invoke(diffArgs('a b c', 'a b x'), true);
+  const on = await new DiffService().invoke({ ...diffArgs('a b c', 'a b x'), configParams: { caseSensitive: true, ignoreWhitespace: false, wordDiff: true } }, true);
+  assert.deepEqual(calls.map((c) => c.worddiff), [false, true]);
+  assert.equal((off.result as any).intraline, null);
+  assert.deepEqual((on.result as any).intraline, computeIntraline(document));
+});
+
+for (const [name, answer, wordDiff] of [
+  ['requested word diff missing', () => ({ document: computeLineDiff('a b c', 'a b x', { ignoreWhitespace: false }), intraline: null, metrics: backendMetrics }), true],
+  ['word diff of another document', () => ({ document: computeLineDiff('a b c', 'a b x', { ignoreWhitespace: false }), intraline: computeIntraline(computeLineDiff('q r s', 'q r t', { ignoreWhitespace: false })), metrics: backendMetrics }), true],
+  ['word diff with invalid work', () => { const document = computeLineDiff('a b c', 'a b x', { ignoreWhitespace: false }); return { document, intraline: { ...computeIntraline(document), work: -1 }, metrics: backendMetrics }; }, true],
+] as const) {
+  test(`diff backend: ${name} is invalidResult, no metrics`, async () => {
+    installWindow(answer);
+    const service = new DiffService();
+    const error = await rejectionOf(() => service.invoke({ ...diffArgs('a b c', 'a b x'), configParams: { caseSensitive: true, ignoreWhitespace: false, wordDiff } }, true));
+    assert.equal(error.kind, 'invalidResult');
+    assert.equal(service.getMetrics(), null);
+  });
+}
+
+// --- Paket 7 B3: a running comparison cancelled by a newer (invalid) action, as the DiffPage does it ---
+
+const { BaseService: Base } = await import('../../src/services/BaseService.ts');
+
+/** Backend whose answer the test releases later (a long Rust job that cannot be stopped). */
+function lateBackend() {
+  let release: (answer: () => unknown) => void = () => {};
+  installWindow(() => new Promise((resolve, reject) => (release = (answer) => { try { resolve(answer()); } catch (e) { reject(e); } })));
+  return (answer: () => unknown) => release(answer);
+}
+const flushTasks = () => new Promise((resolve) => setImmediate(resolve));
+
+for (const [ending, answer] of [
+  ['successfully', () => ({ document: computeLineDiff('a', 'b', { ignoreWhitespace: false }), intraline: null, metrics: { ...backendMetrics, execution_time_ms: 99 } })],
+  ['with a technical error', () => { throw { kind: 'internal', message: 'boom' }; }],
+] as const) {
+  test(`diff cancelled while running in Rust, the late job ends ${ending}: superseded, no result, no metrics`, async () => {
+    const release = lateBackend();
+    const service = new DiffService();
+    const running = rejectionOf(() => service.invoke(diffArgs('a', 'b'), true));
+    await flushTasks();
+    Base.cancelPending('diff'); // the DiffPage after a click with empty texts
+    release(answer);
+    const error = await running;
+    assert.equal(error.kind, 'superseded', 'no result and no error message for the old job');
+    assert.equal(service.getMetrics(), null);
+
+    // A later valid comparison (also with word diff) works normally
+    const document = computeLineDiff('a b c', 'a b x', { ignoreWhitespace: false });
+    installWindow(() => ({ document, intraline: computeIntraline(document), metrics: backendMetrics }));
+    const next = await service.invoke({ ...diffArgs('a b c', 'a b x'), configParams: { caseSensitive: true, ignoreWhitespace: false, wordDiff: true } }, true);
+    assert.equal((next.result as any).intraline.pairs.length, 1);
+  });
+}
+
+test('diff backend: a failed valid comparison keeps the shown result usable; its word diff is computed afterwards', async () => {
+  const service = new DiffService();
+  const shown = computeLineDiff('Die Katze schläft', 'Die Katze träumt', { ignoreWhitespace: false });
+  installWindow(() => ({ document: shown, intraline: null, metrics: { ...backendMetrics, execution_time_ms: 5 } }));
+  await service.invoke(diffArgs('Die Katze schläft', 'Die Katze träumt'), true);
+
+  installWindow(() => {
+    throw { kind: 'diffTooComplex', message: 'diff needs more than 100000000 work units' };
+  });
+  const error = await rejectionOf(() => service.invoke(diffArgs('many', 'reordered'), true));
+  assert.equal(error.message, 'errors.diffTooComplex');
+  assert.equal(service.getMetrics()?.executionTime, 5, 'the failed comparison sets no metrics');
+
+  const calls: Record<string, unknown>[] = [];
+  installWindow((_cmd, args) => {
+    calls.push(args);
+    return { document: shown, intraline: computeIntraline(shown), metrics: backendMetrics };
+  });
+  const withWordDiff = await service.invoke({ ...diffArgs('Die Katze schläft', 'Die Katze träumt'), configParams: { caseSensitive: true, ignoreWhitespace: false, wordDiff: true } }, true);
+  assert.deepEqual(calls.map((c) => [c.oldtext, c.newtext, c.worddiff]), [['Die Katze schläft', 'Die Katze träumt', true]]);
+  assert.equal((withWordDiff.result as any).intraline.pairs.length, 1);
 });

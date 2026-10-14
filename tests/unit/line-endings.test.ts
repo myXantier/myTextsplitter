@@ -169,7 +169,7 @@ for (const c of fixtures.diff) {
   test(`diff worker + main thread: ${c.name}`, () => {
     const expected = { unchanged: [...c.unchanged].sort(), changes: [...c.changes].sort() };
     const args: DiffConfig = { sourceText: c.old, mainParam: c.new, configParams: { caseSensitive: true, ignoreWhitespace: false } };
-    assert.deepEqual(diffSummary(runWorker('diff', args)), expected, 'worker');
+    assert.deepEqual(diffSummary(runWorker('diff', args).document), expected, 'worker');
     assert.deepEqual(diffSummary(computeLineDiff(c.old, c.new, { ignoreWhitespace: false })), expected, 'main thread');
   });
 }

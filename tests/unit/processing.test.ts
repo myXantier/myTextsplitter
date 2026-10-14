@@ -214,15 +214,15 @@ test('B24: diff delivers the same Diff document in backend and main-thread mode'
     moves: [],
     stats: { unchanged: 1, removed: 0, added: 1, moved: 0 },
   };
-  backend(() => ({ document, metrics: backendMetrics }));
+  backend(() => ({ document, intraline: null, metrics: backendMetrics }));
   const fromBackend = await new DiffService().invoke(diffArgs('one', 'one\ntwo'), true);
   assert.equal(fromBackend.type, 'Diff');
-  assert.deepEqual(fromBackend.result, document);
+  assert.deepEqual(fromBackend.result, { document, intraline: null });
 
   installWindow();
   const fromJs = await new DiffService().invoke(diffArgs('one', 'one\ntwo'), false);
   assert.equal(fromJs.type, 'Diff');
-  assert.deepEqual(fromJs.result, document);
+  assert.deepEqual(fromJs.result, { document, intraline: null });
 });
 
 // --- Main-thread fallback (no Web Worker) ---
@@ -468,13 +468,13 @@ test('B23: TypeConverter rejects unsupported conversions instead of returning {}
 const rustDiff = (kind: unknown) => {
   const document: any = computeLineDiff('a', 'b', { ignoreWhitespace: false });
   for (const row of document.rows) row.kind = kind;
-  return { document, metrics: backendMetrics };
+  return { document, intraline: null, metrics: backendMetrics };
 };
 
 test('diff: all defined Rust row kinds are accepted', () => {
   const document = computeLineDiff('a\nb\nc', 'b\na\nx', { ignoreWhitespace: false });
   assert.deepEqual(new Set(document.rows.map((r) => r.kind)), new Set(['equal', 'delete', 'insert']));
-  assert.equal(assertBackendDiff({ document, metrics: backendMetrics }).document, document);
+  assert.equal(assertBackendDiff({ document, intraline: null, metrics: backendMetrics }).data.document, document);
 });
 
 test('diff: unknown row kinds and inherited property names are rejected', () => {

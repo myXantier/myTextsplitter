@@ -1,7 +1,6 @@
 //! Optional word diff (Paket 7, B2): a pure analysis of a finished `DiffDocument`, step-for-step identical to
 //! `src/utils/diff/intraline.ts` (rules, tie-breaks and limits are documented there). Nothing of it runs unless
-//! `compute_intraline` is called; the line diff (`get_diff`) never calls it. The Tauri command and the UI use it from
-//! Paket 7 B3 on.
+//! `compute_intraline` is called; `get_diff` (Tauri command) calls it only when the word diff is requested.
 
 use std::collections::HashMap;
 

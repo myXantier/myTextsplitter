@@ -128,12 +128,35 @@ test('intraline generated cases: invariants, every skip path, and the shared Rus
 
 // --- optional: nothing runs unless requested ---
 
-test('word diff is optional: the line diff, its engines and its transport do not use it', () => {
-  for (const file of ['src/utils/diff/lineDiff.ts', 'src/utils/diff/jsEngine.ts', 'src/utils/diff/validate.ts', 'src/services/DiffService.ts', 'src/workers/DiffWorker.ts', 'src-tauri/src/diff/mod.rs']) {
+test('word diff is optional: the line diff and its validator do not use it', () => {
+  for (const file of ['src/utils/diff/lineDiff.ts', 'src/utils/diff/myers.ts', 'src/utils/diff/validate.ts']) {
     const source = readFileSync(new URL(`../../${file}`, import.meta.url), 'utf8');
-    const uses = source.split('\n').filter((line) => /import|use |intraline::|tokenize/.test(line) && /intraline|tokenize/.test(line) && !/^\s*(\/\/|#\[|pub mod intraline|mod tokenize)/.test(line));
+    const uses = source.split('\n').filter((line) => /import/.test(line) && /intraline|tokenize/.test(line));
     assert.deepEqual(uses, [], file);
   }
+});
+
+test('word diff is optional: the JS engine runs the analysis only when requested, once, on the computed document', async () => {
+  const { diffInJs } = await import('../../src/utils/diff/jsEngine.ts');
+  const calls: unknown[] = [];
+  const spy = (document: any) => {
+    calls.push(document);
+    return computeIntraline(document);
+  };
+  const args = (wordDiff?: boolean): DiffConfig => ({
+    sourceText: 'Die schnelle braune Katze springt.',
+    mainParam: 'Die schnelle schwarze Katze läuft.',
+    configParams: { caseSensitive: true, ignoreWhitespace: false, ...(wordDiff === undefined ? {} : { wordDiff }) },
+  });
+  for (const off of [args(), args(false)]) {
+    const result = diffInJs(off, spy);
+    assert.equal(result.intraline, null);
+  }
+  assert.equal(calls.length, 0, 'no tokenizing, pairing or token diff without the option');
+  const on = diffInJs(args(true), spy);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0], on.document, 'the analysis gets the line diff that is delivered (no second line diff)');
+  assert.deepEqual(on.document, diffInJs(args(false), spy).document, 'the same line diff in both modes');
 });
 
 test('word diff is optional: the line diff is the same with and without a later analysis', () => {

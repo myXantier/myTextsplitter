@@ -64,8 +64,8 @@ type myResultText = myResultBase<string> & { readonly type: 'Text' };
 type myResultColumn = myResultBase<string[]> & { readonly type: 'Column' };
 type myResultColumnList = myResultBase<string[][]> & { readonly type: 'ColumnList' };
 type myResultTextV2 = myResultBase<ProcessedText> & { readonly type: 'TextV2' };
-/** Line diff (`src/utils/diff/types.ts`, Paket 7) */
-type myResultDiff = myResultBase<import('../utils/diff/types').DiffDocument> & { readonly type: 'Diff' };
+/** Line diff + optional word diff (`src/utils/diff/result.ts`, Paket 7) */
+type myResultDiff = myResultBase<import('../utils/diff/result').DiffData> & { readonly type: 'Diff' };
 
 type myResult = myResultText | myResultColumn | myResultColumnList | myResultTextV2 | myResultDiff;
 
@@ -74,12 +74,6 @@ type AllowedResultTypes = string | ProcessedText | string[] | string[][];
 type IsMyText<T extends AllowedResultTypes> = T extends string ? "Yes" : "No";
 
 
-/** Former diff entry; only still produced by the transitional adapter `src/utils/diff/legacy.ts` for the DiffPage. */
-interface DiffResult {
-  type: 'added' | 'removed' | 'moved' | 'unchanged';
-  text: string;
-  lineNumber: number;
-}
 
 
 
@@ -132,7 +126,9 @@ interface SplitConfig extends BaseConfig {
 interface DiffConfig extends BaseConfig {
   configParams: {
     caseSensitive: boolean,
-    ignoreWhitespace: boolean
+    ignoreWhitespace: boolean,
+    /** Optional word diff (Paket 7 B2/B3); off when missing */
+    wordDiff?: boolean
   };
 }
 
