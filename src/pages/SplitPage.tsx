@@ -12,9 +12,9 @@ import { useBackendProcessor } from '../hooks/useBackendProcessor';
 import { useRuntimeSetting, usePermanentSetting, setRuntimeSetting, setPermanentSetting } from '../hooks/useSettings';
 import { useCombineHistoryStore } from '../hooks/useCombineHistoryStore';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
-import { validateRegexPattern } from '../utils/regex';
+import { hasValidPatternLength } from '../utils/regex';
 import { BaseService } from '../services/BaseService';
-import { processingErrorMessage, unwrapResult } from '../services/ProcessingError';
+import { isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
 import useSnackbar from '../hooks/useSnackbar';
@@ -110,13 +110,18 @@ export default function SplitPage({
     }
 
     setIsLoading(true);
+    // A superseded job leaves the loading state to the newer job (which may still be running)
+    let superseded = false;
 
     try {
       const delimiter = separator;
 
-      if (useRegex && !validateRegexPattern(delimiter)) {
+      // Only the engine-neutral limits here: the syntax is checked by the engine that runs the split
+      // (Rust: fancy-regex, JS: RegExp in the worker), so Rust-only patterns like `(?i)` are not rejected
+      if (useRegex && !hasValidPatternLength(delimiter)) {
+        // The result of a still running older split would no longer match the input
+        BaseService.cancelPending('split');
         snackbar.error(t('errors.invalidRegex'));
-        setIsLoading(false);
         return;
       }
 
@@ -133,9 +138,11 @@ export default function SplitPage({
       // Previous results stay visible if the processing or the result check fails
       setSplitResults(unwrapResult(window.myResultConverter(result, 'ColumnList')));
     } catch (error) {
-      snackbar.error(processingErrorMessage(error, t));
+      // A superseded job was replaced by a newer click: nothing to report
+      superseded = isSuperseded(error);
+      if (!superseded) snackbar.error(processingErrorMessage(error, t));
     } finally {
-      setIsLoading(false);
+      if (!superseded) setIsLoading(false);
     }
   }, [sourceText, useRegex, trimParts, keepEmptyLines, separator, splitText, setSplitResults, currentWorkerAbort, t]);
 

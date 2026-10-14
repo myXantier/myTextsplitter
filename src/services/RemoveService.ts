@@ -1,6 +1,6 @@
-import { BaseService } from './BaseService';
-import { validateRegexPattern } from '../utils/regex';
-import { assertBackendResult, createResult, invalidRegexError } from './ProcessingError';
+import { BaseService, type JobOutcome, type JobRegex } from './BaseService';
+import { compileUserRegex } from '../utils/regex';
+import { assertBackendResult, createResult } from './ProcessingError';
 
 export class RemoveService extends BaseService {
   protected readonly resultType = 'TextV2';
@@ -9,7 +9,7 @@ export class RemoveService extends BaseService {
     super('remove');
   }
 
-  protected async invokeBackend(args: RemoveConfig): Promise<myResult> {
+  protected async invokeBackend(args: RemoveConfig): Promise<JobOutcome> {
     const { sourceText, mainParam, configParams } = args;
     const { caseSensitive, useRegex, trimParts, removeMode } = configParams;
     const { invokeUNSAFE } = await import('./tauriInvoke');
@@ -18,8 +18,12 @@ export class RemoveService extends BaseService {
 
     // An empty `result_text` is a valid result (all lines removed)
     const result = assertBackendResult(response, 'Text');
-    this.setMetrics(result.metrics, sourceText, result.result_text);
-    return createResult('TextV2', result);
+    return this.backendOutcome(createResult('TextV2', result), result.metrics, sourceText, result.result_text);
+  }
+
+  protected regexOf({ mainParam, configParams }: RemoveConfig): JobRegex | null {
+    const { useRegex, removeMode, caseSensitive } = configParams;
+    return useRegex && removeMode !== 'duplicates' ? { pattern: mainParam, flags: caseSensitive ? '' : 'i' } : null;
   }
 
   protected async frontendInMainThread(args: RemoveConfig): Promise<myResult> {
@@ -42,10 +46,7 @@ export class RemoveService extends BaseService {
       let matcher: (line: string) => boolean;
 
       if (useRegex) {
-        if (!validateRegexPattern(mainParam)) {
-          throw invalidRegexError();
-        }
-        const regex = new RegExp(mainParam, caseSensitive ? '' : 'i');
+        const regex = compileUserRegex(mainParam, caseSensitive ? '' : 'i');
         matcher = (line) => regex.test(line);
       } else {
         matcher = (line) => {

@@ -60,6 +60,17 @@
   cursor: not-allowed;
 }
 
+/* Engine hint and preview errors (Paket 5) */
+.match-preview .preview-note {
+  flex: 1 1 100%;
+  font-size: 0.85em;
+  color: var(--color-2);
+}
+
+.match-preview .preview-note.error {
+  color: var(--app-color-red);
+}
+
 /* Match highlighting styles */
 .match-preview .match-highlight {
   background-color: var(--background-4);

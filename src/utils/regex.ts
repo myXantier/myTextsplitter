@@ -1,12 +1,15 @@
-/** Utility functions for safe regex handling */
+/** Utility functions for regex handling with the native JS RegExp engine */
+import { invalidRegexError } from '../services/ProcessingError';
 
-const MAX_PATTERN_LENGTH = 10_000;
-const REGEX_TIMEOUT_MS = 10_000;
+export const MAX_PATTERN_LENGTH = 10_000;
 
-/** Validates a regex pattern for safety @param pattern The regex pattern to validate @returns True if pattern is safe, false otherwise */
+/** Engine-neutral precheck (non-empty, at most MAX_PATTERN_LENGTH). No syntax check: Rust and JS have different dialects. */
+export const hasValidPatternLength = (pattern: string): boolean => !!pattern && pattern.length <= MAX_PATTERN_LENGTH;
+
+/** True if the native JS RegExp engine accepts the pattern (JS dialect only, not valid for the Rust backend) */
 export const validateRegexPattern = (pattern: string): boolean => {
-  if (!pattern || pattern.length > MAX_PATTERN_LENGTH) return false;
-  
+  if (!hasValidPatternLength(pattern)) return false;
+
   try {
     new RegExp(pattern);
     return true;
@@ -15,19 +18,26 @@ export const validateRegexPattern = (pattern: string): boolean => {
   }
 };
 
-/** Safely executes a regex pattern with timeout protection @param pattern Regex pattern @param input Input string @returns RegExp match result or null */
+/**
+ * Compiles a user pattern with the native JS RegExp engine. Throws an `invalidInput` ProcessingError that keeps
+ * the engine's message as detail. Compiling is safe in any thread; *executing* a user regex is not (see BaseService).
+ */
+export function compileUserRegex(pattern: string, flags: string): RegExp {
+  if (!hasValidPatternLength(pattern)) throw invalidRegexError();
+  try {
+    return new RegExp(pattern, flags);
+  } catch (error) {
+    throw invalidRegexError(error instanceof Error ? error.message : String(error));
+  }
+}
+
+/**
+ * Executes a regex synchronously. There is **no** timeout protection (a timer in the same thread cannot stop a
+ * running regex): call it only in a Web Worker for user patterns. Not used by the active text processing.
+ */
 export const safeRegexExec = (pattern: string, input: string): RegExpExecArray | null => {
   if (!validateRegexPattern(pattern)) return null;
-
-  const timeout = setTimeout(() => {
-    throw new Error('Regex execution timeout');
-  }, REGEX_TIMEOUT_MS);
-
-  try {
-    return new RegExp(pattern).exec(input);
-  } finally {
-    clearTimeout(timeout);
-  }
+  return new RegExp(pattern).exec(input);
 };
 
 /** Escape a string by replacing <, >, &, ', ", `, \ and / with HTML entities. */

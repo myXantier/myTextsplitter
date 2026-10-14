@@ -369,6 +369,65 @@
       "expectedRust": [[""], ["a"], ["b"], ["c"], [""]],
       "expectedJs": [["a"], ["b"], ["c"]],
       "divergence": "Empty delimiter: Rust str::split(\"\") yields an empty part before and after the characters, JS split('') yields only the characters."
+    },
+    {
+      "name": "regex: non-capturing group keeps the columns",
+      "input": "a,b;c",
+      "delimiter": "(?:,|;)",
+      "useRegex": true,
+      "expected": [["a"], ["b"], ["c"]]
+    },
+    {
+      "name": "regex: emoji as delimiter",
+      "input": "a😀b😀c\nd",
+      "delimiter": "😀",
+      "useRegex": true,
+      "expected": [["a", "d"], ["b", ""], ["c", ""]]
+    },
+    {
+      "name": "regex: named capture group",
+      "input": "a,b;c",
+      "delimiter": "(?<sep>[,;])",
+      "useRegex": true,
+      "expectedRust": [["a"], ["b"], ["c"]],
+      "expectedJs": [["a"], [","], ["b"], [";"], ["c"]],
+      "divergence": "Capture groups (also named ones): fancy-regex split drops captured text, JS String.prototype.split inserts every capture as an extra part (= extra column)."
+    },
+    {
+      "name": "regex: capture group that does not participate in the match",
+      "input": "a;b",
+      "delimiter": "(,)|;",
+      "useRegex": true,
+      "expectedRust": [["a"], ["b"]],
+      "expectedJs": [["a"], [""], ["b"]],
+      "divergence": "JS split inserts a non-participating capture as undefined (stored as an empty column value); fancy-regex split ignores captures."
+    },
+    {
+      "name": "regex: zero-width match at the start of the line",
+      "input": "abc",
+      "delimiter": "(?=a)",
+      "useRegex": true,
+      "expectedRust": [[""], ["abc"]],
+      "expectedJs": [["abc"]],
+      "divergence": "Empty matches: fancy-regex split yields an empty part before an empty match at position 0, JS split ignores an empty match at the start of the string."
+    },
+    {
+      "name": "regex: word boundary as delimiter",
+      "input": "a b",
+      "delimiter": "\\b",
+      "useRegex": true,
+      "expectedRust": [[""], ["a"], [" "], ["b"], [""]],
+      "expectedJs": [["a"], [" "], ["b"]],
+      "divergence": "Empty matches at the start and end of the line: fancy-regex split yields empty parts there, JS split does not."
+    },
+    {
+      "name": "regex: Unicode digit as delimiter",
+      "input": "a١b",
+      "delimiter": "\\d",
+      "useRegex": true,
+      "expectedRust": [["a"], ["b"]],
+      "expectedJs": [["a١b"]],
+      "divergence": "Unicode classes: \\d matches Unicode decimal digits in fancy-regex, only [0-9] in JS."
     }
   ]
 }

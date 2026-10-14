@@ -184,3 +184,209 @@ export async function checkProcessingErrors(page, r, label, errorsSince) {
   await page.eval(`${regexCheckbox}.checked && ${regexCheckbox}.click(); true`);
   await setPattern('');
 }
+
+/** Pattern + text with catastrophic backtracking: about two minutes in V8, fancy-regex stops at its backtrack limit. */
+const CATASTROPHIC = { pattern: '(a|b|ab)*(?=c)', text: 'ab'.repeat(40) };
+
+/**
+ * Regex robustness (Paket 5) in the current processing mode; `engine` = 'js' (Web Worker) or 'rust' (backend):
+ * - Filter with a catastrophic regex: the UI stays responsive, exactly one error message (JS: worker timeout,
+ *   Rust: backtracking limit), the previous result is kept, and a normal Filter works again afterwards.
+ * - Split with the Rust-only pattern `(?i)x`: Rust splits (no JS pre-validation), JS reports the JS syntax error.
+ * - Pattern preview: matches highlighted in a worker; Rust mode shows the JS-engine hint; a pattern that JS cannot
+ *   compile and a too expensive pattern show a note instead of a (seemingly binding) result.
+ */
+export async function checkRegexRobustness(page, r, label, errorsSince, engine) {
+  const result = () => page.eval(`__t.textareas()[1]?.value ?? null`);
+  const finished = () => page.eval(`!!__t.page().querySelector('.mode-toggle')`);
+  const exceptionsSince = (n) => errorsSince(n).filter((l) => l.kind === 'exception');
+  const setInput = async (value) => {
+    await page.eval(`__t.set(__t.page().querySelector('.form-add-render input'), ${JSON.stringify(value)}); true`);
+    await sleepMs(150);
+  };
+  const setText = async (value) => {
+    await page.eval(`__t.set(__t.textareas()[0], ${JSON.stringify(value)}); true`);
+    await sleepMs(150);
+  };
+  /** Longest answer time of the page (ms) during `ms`: a blocked UI thread cannot answer CDP evaluations */
+  const maxLatency = async (ms) => {
+    let max = 0;
+    for (const end = Date.now() + ms; Date.now() < end; ) {
+      const start = Date.now();
+      await page.eval('1');
+      max = Math.max(max, Date.now() - start);
+      await sleepMs(100);
+    }
+    return max;
+  };
+  const filterKeep = `__t.page().querySelectorAll('.filter-actions button')[1].click()`;
+  const expectedError = engine === 'js' ? /timed out|Zeitüberschreitung/i : /too complex|aufwendig/i;
+
+  // --- Filter: catastrophic regex ---
+  await page.eval(`__t.nav('filter'); true`);
+  await sleepMs(200);
+  await setText('apple\nbanana');
+  await setInput('an');
+  await page.eval(`__t.watchSnacks(); ${filterKeep}; true`);
+  await page.waitFor(`__t.snackLog.length > 0`, 8000);
+  const before = await result();
+  r.check(`${label}: Filter before the catastrophic regex`, before === 'anan', JSON.stringify(before));
+
+  let n = page.logs.length;
+  await setText(CATASTROPHIC.text);
+  await setInput(CATASTROPHIC.pattern);
+  await page.eval(`__t.watchSnacks(); ${filterKeep}; true`);
+  const latency = await maxLatency(1500);
+  r.check(`${label}: UI stays responsive during a catastrophic regex`, latency < 1000, `max ${latency} ms`);
+  await page.waitFor(`__t.snackLog.length > 0`, 20000);
+  await sleepMs(300);
+  let snacks = await page.eval('__t.takeSnacks()');
+  r.check(
+    `${label}: catastrophic regex -> one error message (${engine === 'js' ? 'worker timeout' : 'backtracking limit'})`,
+    snacks.length === 1 && snacks[0].startsWith('error') && expectedError.test(snacks[0]),
+    JSON.stringify(snacks)
+  );
+  r.check(`${label}: catastrophic regex -> previous result kept`, (await result()) === before, JSON.stringify(await result()));
+  r.check(`${label}: catastrophic regex -> processing finished, no exception`, (await finished()) && exceptionsSince(n).length === 0, JSON.stringify(exceptionsSince(n)));
+
+  n = page.logs.length;
+  await setText('apple\nbanana');
+  await setInput('an');
+  await page.eval(`__t.watchSnacks(); ${filterKeep}; true`);
+  await page.waitFor(`__t.snackLog.length > 0`, 8000);
+  await sleepMs(300);
+  snacks = await page.eval('__t.takeSnacks()');
+  r.check(
+    `${label}: normal Filter works again after the catastrophic regex`,
+    (await result()) === 'anan' && snacks.length === 1 && snacks[0].startsWith('success') && errorsSince(n).length === 0,
+    `${JSON.stringify(await result())} ${JSON.stringify(snacks)}`
+  );
+
+  // The following checks need a first run that is still running when the second one starts: the JS run of the
+  // catastrophic regex lasts until the worker timeout. Rust stops it within a fraction of a second at the
+  // backtracking limit (no reliable overlap); the Rust order cases are unit tests (processing.test.ts).
+  if (engine === 'js') {
+    // --- Two rapid Filter runs: the older (catastrophic) one is superseded, only the newer one reports ---
+    n = page.logs.length;
+    await setText(CATASTROPHIC.text);
+    await setInput(CATASTROPHIC.pattern);
+    await page.eval(`__t.watchSnacks(); ${filterKeep}; true`);
+    await setText('apple\nbanana');
+    await setInput('an');
+    await page.eval(`${filterKeep}; true`);
+    await page.waitFor(`__t.snackLog.length > 0`, 20000);
+    await page.waitFor(`!!__t.page().querySelector('.mode-toggle')`, 20000);
+    await sleepMs(500);
+    snacks = await page.eval('__t.takeSnacks()');
+    r.check(
+      `${label}: two rapid Filter runs -> newer result, one success message, no message of the superseded run`,
+      (await result()) === 'anan' && snacks.length === 1 && snacks[0].startsWith('success') && exceptionsSince(n).length === 0,
+      `${JSON.stringify(await result())} ${JSON.stringify(snacks)}`
+    );
+
+    // --- A Split that finishes does not end the processing state of a Filter that is still running ---
+    const splitCheckbox = `[...__t.page().querySelectorAll('.input-box')].find(e => /regex/i.test(e.innerText)).querySelector('input')`;
+    n = page.logs.length;
+    await setText(CATASTROPHIC.text);
+    await setInput(CATASTROPHIC.pattern);
+    await page.eval(`__t.watchSnacks(); ${filterKeep}; true`);
+    await page.eval(`__t.nav('split'); true`);
+    await sleepMs(200);
+    await page.eval(`${splitCheckbox}.checked && ${splitCheckbox}.click(); true`);
+    await setText('a_b');
+    await setInput('_');
+    await page.eval(`__t.page().querySelector('button[title="Split text"]').click(); true`);
+    const splitDone = await page.waitFor(`JSON.stringify(__t.columns()) === ${JSON.stringify(JSON.stringify([['a'], ['b']]))}`, 5000);
+    await sleepMs(300);
+    const stillProcessing = !(await finished());
+    r.check(`${label}: finished Split keeps the processing state of the running Filter`, splitDone && stillProcessing, `split=${splitDone} processing=${stillProcessing}`);
+    await page.waitFor(`__t.snackLog.some((s) => s.startsWith('error'))`, 20000);
+    const ended = await page.waitFor(`!!__t.page().querySelector('.mode-toggle')`, 5000);
+    snacks = await page.eval('__t.takeSnacks()');
+    r.check(
+      `${label}: the Filter timeout ends the processing state afterwards`,
+      ended && snacks.filter((s) => s.startsWith('error')).length === 1 && expectedError.test(snacks.find((s) => s.startsWith('error'))) && exceptionsSince(n).length === 0,
+      JSON.stringify(snacks)
+    );
+    await page.eval(`__t.nav('filter'); true`);
+    await sleepMs(200);
+    await setText('apple\nbanana');
+  }
+  await setInput('');
+
+  // --- Split: Rust-only pattern is validated by the engine that runs it ---
+  const regexCheckbox = `[...__t.page().querySelectorAll('.input-box')].find(e => /regex/i.test(e.innerText)).querySelector('input')`;
+  await page.eval(`__t.nav('split'); true`);
+  await sleepMs(200);
+  await setText('aXb');
+  await page.eval(`${regexCheckbox}.checked || ${regexCheckbox}.click(); true`);
+  await sleepMs(150);
+  await setInput('(?i)x');
+  n = page.logs.length;
+  await page.eval(`__t.watchSnacks(); __t.page().querySelector('button[title="Split text"]').click(); true`);
+  if (engine === 'rust') {
+    const split = await page.waitFor(`JSON.stringify(__t.columns()) === ${JSON.stringify(JSON.stringify([['a'], ['b']]))}`, 5000);
+    const errors = (await page.eval('__t.takeSnacks()')).filter((s) => s.startsWith('error'));
+    r.check(`${label}: Split with Rust-only pattern (?i)x is processed by Rust`, split && errors.length === 0, `${JSON.stringify(await page.eval('__t.columns()'))} ${JSON.stringify(errors)}`);
+  } else {
+    await page.waitFor(`__t.snackLog.length > 0`, 5000);
+    await sleepMs(300);
+    snacks = await page.eval('__t.takeSnacks()');
+    r.check(
+      `${label}: Split with (?i)x -> invalid regex with the JS engine message`,
+      snacks.length === 1 && /^error: .*(regex|regul).*Invalid regular expression/i.test(snacks[0]) && exceptionsSince(n).length === 0,
+      JSON.stringify(snacks)
+    );
+  }
+  await page.eval(`${regexCheckbox}.checked && ${regexCheckbox}.click(); true`);
+  await setInput('_');
+
+  // --- Filter pattern preview (runs in the preview worker) ---
+  const previewCheckbox = `[...__t.page().querySelectorAll('.input-box')].find(e => /pattern matches/i.test(e.innerText)).querySelector('input')`;
+  const note = () => page.eval(`__t.page().querySelector('.match-preview .preview-note')?.innerText ?? null`);
+  await page.eval(`__t.nav('filter'); true`);
+  await sleepMs(200);
+  await page.eval(`${previewCheckbox}.checked || ${previewCheckbox}.click(); true`);
+  await setText('an apple');
+  n = page.logs.length;
+  await setInput('ap');
+  const highlighted = await page.waitFor(`__t.page().querySelector('.match-preview .match-highlight')?.innerText === 'ap'`, 5000);
+  const hint = await note();
+  r.check(
+    `${label}: preview highlights the match${engine === 'rust' ? ' and names the JS engine' : ''}`,
+    highlighted && (engine === 'rust' ? /JavaScript/.test(hint ?? '') : hint === null),
+    JSON.stringify(hint)
+  );
+
+  await setInput('(?i)ap');
+  const unsupported = engine === 'rust' ? /JavaScript/ : /Invalid regular expression/;
+  const noteShown = await page.waitFor(`/${unsupported.source}/.test(__t.page().querySelector('.match-preview .preview-note.error')?.innerText ?? '')`, 5000);
+  r.check(
+    `${label}: preview of a pattern JS cannot compile -> note, no matches`,
+    noteShown && !(await page.eval(`!!__t.page().querySelector('.match-preview .match-highlight')`)),
+    JSON.stringify(await note())
+  );
+
+  if (engine === 'rust') {
+    // The note follows the selected engine without a new preview run (Rust -> JS -> Rust)
+    const noteMatches = (re) => page.waitFor(`/${re.source}/.test(__t.page().querySelector('.match-preview .preview-note.error')?.innerText ?? '')`, 5000);
+    await page.eval(`__t.page().querySelector('.mode-toggle').click(); true`);
+    const jsNote = await noteMatches(/Invalid regular expression/);
+    const jsText = await note();
+    await page.eval(`__t.page().querySelector('.mode-toggle').click(); true`);
+    const rustNote = await noteMatches(/JavaScript/);
+    r.check(`${label}: preview note follows an engine switch (JS: engine error, Rust: not supported by JS)`, jsNote && rustNote, `js=${JSON.stringify(jsText)} rust=${JSON.stringify(await note())}`);
+  }
+
+  await setText(CATASTROPHIC.text);
+  await setInput(CATASTROPHIC.pattern);
+  const previewLatency = await maxLatency(1500);
+  const stopped = await page.waitFor(`/aufwendig|too complex/i.test(__t.page().querySelector('.match-preview .preview-note.error')?.innerText ?? '')`, 8000);
+  r.check(`${label}: preview of a catastrophic regex is stopped, UI responsive`, stopped && previewLatency < 1000, `max ${previewLatency} ms, note=${JSON.stringify(await note())}`);
+  r.check(`${label}: preview checks without exceptions`, exceptionsSince(n).length === 0, JSON.stringify(exceptionsSince(n)));
+
+  await page.eval(`${previewCheckbox}.checked && ${previewCheckbox}.click(); true`);
+  await setInput('');
+  // The source text is shared by the pages: leave a harmless one for the following checks
+  await setText('a_b');
+}

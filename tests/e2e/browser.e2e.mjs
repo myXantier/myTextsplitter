@@ -10,7 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, sleep } from './lib/cdp.mjs';
-import { SPLIT_CASES, checkProcessingErrors, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
+import { SPLIT_CASES, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
@@ -198,6 +198,9 @@ async function testApp(page, url) {
 
   // --- Error paths (Paket 4): invalid regex and empty results in Filter/Remove (Web Worker) ---
   await checkProcessingErrors(page, r, 'JS', errorsSince);
+
+  // --- Regex robustness (Paket 5): worker timeout really stops a catastrophic regex, JS dialect, preview ---
+  await checkRegexRobustness(page, r, 'JS', errorsSince, 'js');
 
   // --- Error path: an invalid regex must be reported as error, not as success ---
   await page.eval(`__t.nav('split'); true`);

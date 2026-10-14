@@ -1,7 +1,7 @@
 import { BaseWorker, type ProcessOptions } from './BaseWorker';
-import { validateRegexPattern } from '../utils/regex';
+import { compileUserRegex } from '../utils/regex';
 import { WorkerLogger } from '../other/Logger';
-import { createResult, invalidRegexError } from '../services/ProcessingError';
+import { createResult } from '../services/ProcessingError';
 
 export class FilterWorker extends BaseWorker {
   /** Errors are thrown and reported by `BaseWorker.process` (never turned into an empty result). */
@@ -11,12 +11,7 @@ export class FilterWorker extends BaseWorker {
     const { mainParam, configParams } = options.args as FilterConfig;
     const { caseSensitive, filterMode, splitMatches } = configParams;
 
-    if (!validateRegexPattern(mainParam)) {
-      throw invalidRegexError();
-    }
-
-    const flags = caseSensitive ? 'g' : 'gi';
-    const regex = new RegExp(mainParam, flags);
+    const regex = compileUserRegex(mainParam, caseSensitive ? 'g' : 'gi');
 
     const processedLines = chunk
       .map((line) => {

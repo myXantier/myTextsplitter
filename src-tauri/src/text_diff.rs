@@ -153,7 +153,7 @@ pub fn compare_texts(oldtext: &str, newtext: &str, ignorewhitespace: bool) -> Re
 }
 
 pub fn get_diff_json(oldtext: &str, newtext: &str, ignorewhitespace: bool) -> Result<ProcessedText<String>, String> {
-    let before_mem = memory_stats::memory_stats().unwrap();
+    let before_mem = memory_stats::memory_stats();
     let start_time = std::time::Instant::now();
 
     let diffs = compare_texts(oldtext, newtext, ignorewhitespace)?;

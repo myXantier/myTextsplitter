@@ -11,7 +11,7 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, listTargets, sleep } from './lib/cdp.mjs';
-import { SPLIT_CASES, checkProcessingErrors, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
+import { SPLIT_CASES, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
@@ -163,6 +163,8 @@ async function firstRun() {
 
   // Error paths (Paket 4) via Rust: invalid regex (B4) and empty results (B3) in Filter/Remove
   await checkProcessingErrors(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
+  // Paket 5: backtracking limit, Rust-only syntax not blocked by a JS pre-validation, preview engine hint
+  await checkRegexRobustness(main, r, 'Rust backend', (from) => errorsIn(main.logs, from), 'rust');
   await main.eval(`__t.nav('split'); true`);
   await sleep(200);
 
@@ -177,6 +179,7 @@ async function firstRun() {
   r.check('Split B1 in JS mode on desktop = Rust result', JSON.stringify(cols) === JSON.stringify(b1.keep), JSON.stringify(cols));
   await main.eval(`__t.set(__t.page().querySelector('.form-add-render input'), '_'); true`);
   await checkProcessingErrors(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
+  await checkRegexRobustness(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from), 'js');
   await main.eval(`__t.nav('split'); true`);
   await sleep(200);
   await main.eval(`__t.page().querySelector('.mode-toggle').click(); true`);
@@ -211,7 +214,9 @@ async function firstRun() {
   await main.eval(tauriCall('plugin:window|unminimize', { label: 'main' }));
   await sleep(600);
 
-  r.check('No errors in main window', errorsIn(main.logs).length === 0, formatLogs(errorsIn(main.logs)));
+  // The worker timeout provoked by checkRegexRobustness (JS mode) is logged as error on purpose
+  const unexpected = errorsIn(main.logs).filter((l) => !/Verarbeitung fehlgeschlagen: timeout .*worker \(filter\)/.test(l.text));
+  r.check('No errors in main window', unexpected.length === 0, formatLogs(unexpected));
 
   // Close via title bar -> Rust writes the settings file and exits
   await main.eval(`document.querySelector('#titlebar-close button').click(); true`).catch(() => {});

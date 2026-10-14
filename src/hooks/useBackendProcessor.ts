@@ -2,13 +2,16 @@ import { useState, useEffect, useCallback } from 'react';
 import { useProcessingState } from './useProcessingState';
 import { SplitService, DiffService, FilterService, RemoveService, isBackend } from '../services/Services';
 import { BaseService } from '../services/BaseService';
-import { logProcessingError, toProcessingError } from '../services/ProcessingError';
+import { isSuperseded, logProcessingError, toProcessingError } from '../services/ProcessingError';
 import { useTextBuffer } from './useTextBuffer';
 import { useRuntimeSetting, setRuntimeSetting } from '../hooks/useSettings';
+import { useProcessingStore } from './useProcessingStore';
+import { endOperation, isLatestOperation, startOperation, type OperationType } from './runningOperations';
 
 export function useBackendProcessor() {
   const [availableBackend, setAvailableBackend] = useState(false);
   const { setProcessing, setError, setMetrics } = useProcessingState();
+  const setGlobalIsProcessing = useProcessingStore((state) => state.setGlobalIsProcessing);
   const processingMode = useRuntimeSetting('processingMode');
 
   // Backend-Verfügbarkeit prüfen & globalen Mode setzen
@@ -38,8 +41,11 @@ export function useBackendProcessor() {
   /**
    * Resolves with the validated result or rejects with a `ProcessingError` (logged here once, without the input
    * text; the calling page shows the message). On failure the buffer and the metrics keep the last successful result.
+   * A `superseded` job (a newer job of the same type was started) leaves the processing state to the newer job.
+   * Other operation types keep running: their processing state is not ended by this one.
    */
-  const executeProcessing = useCallback(async (serviceInstance: BaseService, args: BaseConfig) => {
+  const executeProcessing = useCallback(async (type: OperationType, serviceInstance: BaseService, args: BaseConfig) => {
+    const token = startOperation(type);
     setProcessing(true);
     setError(null);
 
@@ -47,9 +53,11 @@ export function useBackendProcessor() {
 
     try {
       const result = await serviceInstance.invoke(args, runInBackend);
+      const othersRunning = endOperation(type, token);
       setMetrics(serviceInstance.getMetrics());
 
       setProcessing(false);
+      if (othersRunning) setGlobalIsProcessing(true);
 
       if (result.type === 'Text') {
         saveToBuffer(result.result);
@@ -65,18 +73,26 @@ export function useBackendProcessor() {
     } catch (err) {
       const error = toProcessingError(err, runInBackend ? 'backend' : 'worker');
       logProcessingError('Verarbeitung fehlgeschlagen', error);
+      if (isSuperseded(error)) {
+        // Normally a newer job of this type took over the state. Cancelled without successor (cancelPending): end it.
+        const wasLatest = isLatestOperation(type, token);
+        if (!endOperation(type, token) && wasLatest) setGlobalIsProcessing(false);
+        throw error;
+      }
+      const othersRunning = endOperation(type, token);
       // setProcessing(false) also resets the error state, so the error is set afterwards
       setProcessing(false);
       setError(error);
+      if (othersRunning) setGlobalIsProcessing(true);
       throw error;
     }
-  }, [saveToBuffer, setProcessing, setMetrics, setError, processingMode]);
+  }, [saveToBuffer, setProcessing, setMetrics, setError, setGlobalIsProcessing, processingMode]);
 
   return {
-    splitText: (args: SplitConfig) => executeProcessing(new SplitService(), args),
-    diffText: (args: DiffConfig) => executeProcessing(new DiffService(), args),
-    filterText: (args: FilterConfig) => executeProcessing(new FilterService(), args),
-    removeLines: (args: RemoveConfig) => executeProcessing(new RemoveService(), args),
+    splitText: (args: SplitConfig) => executeProcessing('split', new SplitService(), args),
+    diffText: (args: DiffConfig) => executeProcessing('diff', new DiffService(), args),
+    filterText: (args: FilterConfig) => executeProcessing('filter', new FilterService(), args),
+    removeLines: (args: RemoveConfig) => executeProcessing('remove', new RemoveService(), args),
     availableBackend,
     toggleMode,
   };

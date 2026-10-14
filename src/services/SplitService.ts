@@ -1,4 +1,4 @@
-import { BaseService } from './BaseService';
+import { BaseService, type JobOutcome, type JobRegex } from './BaseService';
 import { splitTextToColumns } from '../utils/splitColumns';
 import { assertBackendResult, createResult, invalidRegexError } from './ProcessingError';
 
@@ -9,7 +9,7 @@ export class SplitService extends BaseService {
     super('split');
   }
 
-  protected async invokeBackend(args: SplitConfig): Promise<myResult> {
+  protected async invokeBackend(args: SplitConfig): Promise<JobOutcome> {
     const { sourceText, mainParam, configParams } = args;
     const { trimParts, useRegex, keepEmptyLines } = configParams;
     const { invokeUNSAFE } = await import('./tauriInvoke'); // ✅ Lazy import
@@ -24,8 +24,11 @@ export class SplitService extends BaseService {
 
     // One '\n'-joined string per column; no columns (empty text) is a valid result
     const result = assertBackendResult(response, 'Column');
-    this.setMetrics(result.metrics);
-    return createResult('ColumnList', result.result_text.map((c) => c.split('\n')));
+    return this.backendOutcome(createResult('ColumnList', result.result_text.map((c) => c.split('\n'))), result.metrics);
+  }
+
+  protected regexOf({ mainParam, configParams }: SplitConfig): JobRegex | null {
+    return configParams.useRegex ? { pattern: mainParam, flags: 'gm' } : null;
   }
 
   protected async frontendInMainThread(args: SplitConfig): Promise<myResult> {

@@ -12,7 +12,7 @@ import { useDragAndDrop } from '../hooks/useDragAndDrop';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
 import useSnackbar from '../hooks/useSnackbar';
-import { processingErrorMessage, unwrapResult } from '../services/ProcessingError';
+import { isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import './styles/RemovePageStyle.css';
 
 interface RemovePageProps {
@@ -83,7 +83,8 @@ export default function RemovePage({ sourceText, setSourceText, visible }: Remov
         setShowResult(true);
         snackbar.success(t('removeLines.processed', { removed: removed_lines }));
       } catch (error) {
-        snackbar.error(processingErrorMessage(error, t));
+        // A superseded job was replaced by a newer click: nothing to report
+        if (!isSuperseded(error)) snackbar.error(processingErrorMessage(error, t));
       }
     },
     [sourceText, options, removeLines, t]

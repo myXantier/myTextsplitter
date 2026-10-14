@@ -93,8 +93,9 @@ type MyResultType<T> = T extends ProcessedText
 
 interface BackendMetrics {
     execution_time_ms: number,
-    memory_usage_kb: number,
-    memory_usage_str: string,
+    /** `null`: not available on this platform */
+    memory_usage_kb: number | null,
+    memory_usage_str: string | null,
 }
 
 interface ProcessedText<T> {
@@ -149,10 +150,18 @@ interface RemoveConfig extends BaseConfig {
   };
 }
 
+/** Pattern preview of the Filter page (MatchPreviewService): `mainParam` = pattern */
+interface MatchPreviewConfig extends BaseConfig {
+  configParams: {
+    caseSensitive: boolean,
+  };
+}
+
 
 interface ProcessMetrics {
   executionTime: number;
-  memoryUsage: number;
+  /** `null`: the backend could not measure it */
+  memoryUsage: number | null;
   inputSize: number;
   outputSize: number;
 }

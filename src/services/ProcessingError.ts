@@ -15,15 +15,20 @@ export type ProcessingErrorKind =
   /** The Web Worker did not answer in time. */
   | 'timeout'
   /** The processing finished, but its result does not have the expected structure. */
-  | 'invalidResult';
+  | 'invalidResult'
+  /** A newer processing of the same type was started: this one was stopped or its late result discarded. Not shown. */
+  | 'superseded';
 
-const KINDS: readonly ProcessingErrorKind[] = ['invalidInput', 'backend', 'worker', 'timeout', 'invalidResult'];
+const KINDS: readonly ProcessingErrorKind[] = ['invalidInput', 'backend', 'worker', 'timeout', 'invalidResult', 'superseded'];
 
 /** i18n keys used as `message` (the pages translate them with `processingErrorMessage`). */
 export const ERROR_KEYS = {
   invalidRegex: 'errors.invalidRegex',
   regexTooComplex: 'errors.regexTooComplex',
+  /** A regex cannot be run without Web Worker (it could block the UI thread). */
+  regexRequiresWorker: 'errors.regexRequiresWorker',
   timeout: 'errors.processingTimeout',
+  superseded: 'errors.processingSuperseded',
   general: 'errors.processingError',
 } as const;
 
@@ -52,6 +57,11 @@ export function toProcessingError(error: unknown, kind: ProcessingErrorKind): Pr
 
 export const invalidRegexError = (detail?: string) => new ProcessingError('invalidInput', ERROR_KEYS.invalidRegex, detail);
 
+export const supersededError = () => new ProcessingError('superseded', ERROR_KEYS.superseded);
+
+/** True for a processing that was replaced by a newer one of the same type (the pages show nothing for it). */
+export const isSuperseded = (error: unknown): boolean => error instanceof ProcessingError && error.kind === 'superseded';
+
 /**
  * Error of a Tauri command. The text commands reject with `{ kind, message }` (Rust `TextError`),
  * all other commands and IPC failures with a string.
@@ -64,25 +74,33 @@ export function fromBackendError(error: unknown): ProcessingError {
     if (kind === 'invalidRegex') return invalidRegexError(detail);
     // The pattern needs too much backtracking for this text (fancy-regex limit): a problem of the input, not of the app
     if (kind === 'regexRuntime') return new ProcessingError('invalidInput', ERROR_KEYS.regexTooComplex, detail);
+    // The Rust job slot replaced this request by a newer one before it ran. BaseService reports it as `superseded`
+    // when a newer job exists; for the latest job (requests arrived out of order) it stays a visible backend error.
+    if (kind === 'superseded') return new ProcessingError('backend', ERROR_KEYS.general, 'superseded by a newer backend request');
     return new ProcessingError('backend', ERROR_KEYS.general, detail ?? String(kind));
   }
   return toProcessingError(error, 'backend');
 }
 
-/** Logs an error once without input text: invalid input is a warning, everything else an error. */
+/** Logs an error once without input text: invalid input is a warning, a superseded job debug, everything else an error. */
 export function logProcessingError(context: string, error: unknown) {
   const e = error instanceof ProcessingError ? error : toProcessingError(error, 'worker');
   const text = `${context}: ${e.kind} (${e.message})${e.detail ? ` - ${e.detail}` : ''}`;
-  if (e.kind === 'invalidInput') window.logger.warn(text);
+  if (e.kind === 'superseded') window.logger.debug(text);
+  else if (e.kind === 'invalidInput') window.logger.warn(text);
   else window.logger.error(text);
 }
 
 /**
  * Page side of a failed processing: returns the translated message for the snackbar.
  * `ProcessingError`s were already logged (useBackendProcessor / `unwrapResult`); other errors are logged here.
+ * An invalid regex shows the message of the engine that rejected it (JS `SyntaxError` or fancy-regex parse error);
+ * technical details of other errors are only logged.
  */
 export function processingErrorMessage(error: unknown, t: (key: string) => string): string {
-  if (error instanceof ProcessingError) return t(error.message);
+  if (error instanceof ProcessingError) {
+    return error.message === ERROR_KEYS.invalidRegex && error.detail ? `${t(error.message)}: ${error.detail}` : t(error.message);
+  }
   logProcessingError('Unerwarteter Fehler bei der Verarbeitung', error);
   return t(ERROR_KEYS.general);
 }
@@ -106,7 +124,8 @@ const isMetrics = (value: unknown): value is BackendMetrics =>
   !!value &&
   typeof value === 'object' &&
   Number.isFinite((value as BackendMetrics).execution_time_ms) &&
-  Number.isFinite((value as BackendMetrics).memory_usage_kb);
+  // `null`: the platform does not provide the memory metric (Rust `memory_stats()` returned None)
+  ((value as BackendMetrics).memory_usage_kb === null || Number.isFinite((value as BackendMetrics).memory_usage_kb));
 
 /** Data of a `TextV2` result (Remove): text + number of removed lines; backend `metrics` are optional. */
 export interface RemoveResultData {
