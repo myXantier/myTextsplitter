@@ -1,5 +1,5 @@
-// Reproducible helpers for the sort contract tests (Paket 9, Phase B): seeded random source, test data permutations,
-// comparator laws and the chi-square statistic. Test infrastructure only; the production shuffle is not touched here.
+// Reproducible helpers for the sort contract tests (Paket 9): seeded random source (also injected into the production
+// shuffle), test data permutations, comparator laws and the chi-square statistic.
 
 /** Deterministic 32-bit generator (mulberry32): same seed, same sequence, values in [0, 1). */
 export function mulberry32(seed: number): () => number {
@@ -69,15 +69,4 @@ export function chiSquare(counts: readonly number[]): number {
   const total = counts.reduce((sum, n) => sum + n, 0);
   const expected = total / counts.length;
   return counts.reduce((sum, n) => sum + (n - expected) ** 2 / expected, 0);
-}
-
-/** Runs `fn` with `Math.random` replaced by a seeded generator (restored afterwards, also on errors). */
-export function withSeededMathRandom<T>(seed: number, fn: () => T): T {
-  const original = Math.random;
-  Math.random = mulberry32(seed);
-  try {
-    return fn();
-  } finally {
-    Math.random = original;
-  }
 }

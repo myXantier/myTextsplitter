@@ -1,6 +1,8 @@
 // Algorithm-only baseline of the current sort (Paket 9, Phase B), without React: `node tests/bench/sort-baseline.ts`
 // Measures sortText (split + filter + sort + join) for 1k/10k/100k lines; the median of several runs, each on a fresh
 // copy of the same seeded text. Not part of `npm test` (timings depend on the machine).
+// Resolve hook for the extensionless app imports (sortLines -> ProcessingError), must come first
+import '../unit/helpers/setup.ts';
 import { makeSortText } from './sort-data.mjs';
 
 const { sortText } = await import('../../src/utils/sortLines.ts');

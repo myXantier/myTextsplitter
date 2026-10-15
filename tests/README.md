@@ -69,7 +69,8 @@ Sort has no Rust implementation). The line model is implemented twice with the s
 | Trailing newline | A non-empty result keeps the trailing newline of the input; no remaining line = `""`. |
 | Regex | Patterns run per line on the line content (no terminator), so `$`, lookbehind etc. behave the same for LF/CRLF/CR. Texts are not normalized before a regex. |
 
-Per operation: Filter/Remove/Sort join their result lines with the input format (Filter `splitMatches` too). Diff compares
+Per operation: Filter/Remove/Sort join their result lines with the input format (Filter `splitMatches` too; Sort adds a
+trailing newline if an empty line ends its result, otherwise that line would be lost, Paket 9 C1). Diff compares
 line contents: CRLF vs. LF and a trailing newline on one side only are no difference. Combine joins the *columns*
 (`combineColumns` in JS, `combine_columns` in Rust; the combined text is never split again, so trailing empty values
 keep their rows) with the line format of the text that was split (stored on a successful Split); the column copy uses
@@ -122,26 +123,24 @@ JS paths per case: the real worker module; for Remove also `frontendInMainThread
 duplicates and literal search in the main thread and refuses regex jobs. Both runners reject malformed entries
 (missing options, unknown keys, inconsistent expectations).
 
-## Sort contract fixtures (`tests/fixtures/sort-cases.json`, Paket 9 B)
+## Sort contract fixtures (`tests/fixtures/sort-cases.json`, Paket 9)
 
 JS only (Sort has no Rust implementation), run by `tests/unit/sort-contract.test.ts` with the helpers in
-`tests/unit/helpers/sort-properties.ts`. Contract, open decisions and baseline: `docs/analyse/Paket9-PhaseB-Sortiervertrag.md`.
-The file keeps three kinds of expectations apart:
+`tests/unit/helpers/sort-properties.ts`. Phase B wrote the contract and the golden results by hand, Phase C1 implemented
+them (`src/utils/sortLines.ts`, `src/utils/sort/`). Contract and decisions: `docs/analyse/Paket9-PhaseB-Sortiervertrag.md`.
 
 | Field / section | Meaning |
 |---|---|
-| `rules` | The contract (R1-R9 general, N1-N5 natural), referenced by every case. |
-| `cases[].expected` | **Binding target**, written by hand. Checked for consistency: same lines as the input, line format of the input, blank lines at the end in input order (R1), and for alphabetical, `icuNumeric` and length cases the order against `Intl.Collator('de')` / code points. |
-| `cases[].current` | Output of the current `sortText` where it differs from the target. Until Phase C the tests assert `current ?? expected` against the real `sortText`; Phase C removes `current`. |
-| `basis` | `decision` (product decision) or `derived` (follows from the rules, confirmation pending). |
-| `invalidMethods` | Target `{ "error": "invalidMode" }`; `current` documents that the method is accepted silently (F9). |
-| `openDecisions` | Not binding: candidates with complete results (`losesLine` marks a candidate that loses a line), `recommended`, current output. |
-| `properties` | Corpora of equivalence classes in target order. 40 seeded permutations each: classes in order, ties in input order, no line lost, idempotent. `currentViolates` marks corpora the current code violates (the test then asserts that the violation still reproduces). |
-| `random` | No golden order. Math.random is replaced by a seeded generator; the chi-square statistic documents the bias of the current shuffle (F3). |
+| `rules` | The contract (R1-R9 general, N1-N6 natural), referenced by every case. |
+| `cases[].expected` | Golden result, asserted against the real `sortText` (also: sorting it again changes nothing). The golden data is checked for consistency too: same lines as the input, line format of the input (plus the trailing newline of R9 / OD-8 B), blank lines at the end in input order (R1), and for alphabetical, `icuNumeric` and length cases the order against `Intl.Collator('de')` / code points. |
+| `basis`, `resolved` | `decision` or `derived`; `resolved` names the open decision of Phase B the case settles. |
+| `invalidMethods` | `{ "error": "invalidMode" }`: `sortText` throws `ProcessingError` `invalidInput` / `errors.invalidMode`. |
+| `properties` | Corpora of equivalence classes in sort order. 40 seeded permutations each: classes in order, ties in input order, no line lost, idempotent. |
+| `random` | No golden order: `sortText(text, 'random', cs, { random })` with a seeded generator; chi-square over the 6 permutations of 3 lines and per position of 10 lines, blank lines at the end. |
 
-The current implementation collates with the host's default locale (F5). Its documented output is only asserted if
-the host collates the lines of a case like `de`; otherwise the test is skipped with the reason. The target checks use
-`Intl.Collator('de')` explicitly and do not depend on the host locale (only on the ICU data of the runtime).
+The comparator laws (antisymmetry, transitivity) of every order are checked directly (`lineOrder` of
+`src/utils/sort/compare.ts`) on a corpus of critical lines; antisymmetry also on every line of the golden cases.
+All orders use `Intl.Collator('de')` explicitly and do not depend on the host locale (only on the ICU data of the runtime).
 
 Timing baselines (not part of `npm test`): `node tests/bench/sort-baseline.ts` (algorithm in Node) and
 `node tests/bench/sort-ui-baseline.mjs` (algorithm and UI in headless Chrome/Edge; production preview if `dist/` exists),
