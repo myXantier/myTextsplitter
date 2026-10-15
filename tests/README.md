@@ -75,20 +75,35 @@ line contents: CRLF vs. LF and a trailing newline on one side only are no differ
 keep their rows) with the line format of the text that was split (stored on a successful Split); the column copy uses
 the same format. One empty line without trailing newline and an empty result are both `""` (text representation).
 
-## Filter/Remove fixtures (`tests/fixtures/filter-remove-cases.json`, Paket 8 Phase B)
+## Filter/Remove fixtures (`tests/fixtures/filter-remove-cases.json`, Paket 8)
 
 Golden fixtures for both engines: `npm test` (`tests/unit/filter-remove.test.ts`) and `cargo test`
-(`text_processor.rs`, module `tests::filter_remove_fixtures`). They **characterize the current behaviour**: a passing
-test means the behaviour is described correctly, not that it is wanted. Expectations are written by hand, never
-generated from an engine.
+(`text_processor.rs`, module `tests::filter_remove_fixtures`). Phase B characterized the behaviour; Phase C1 corrected
+some of it (cases turned from per-engine into shared expectations). A passing test means the behaviour is described
+correctly, not that every documented difference is wanted. Expectations are written by hand, never generated from an engine.
+
+Semantics fixed in C1:
+
+- **Whitespace** (Filter blank lines, Remove trim of the duplicate key) is the Unicode `White_Space` set of
+  `src/utils/diff/whitespace.ts` (`isBlankLine`, `trimWhitespace`), the same as Rust `str::trim`: U+0085 is
+  whitespace, U+FEFF is not. Regex `\s` is unchanged.
+- **Duplicates with trim:** trim and case only change the comparison key; the original first occurrence is output.
+- **Cut characters (JS Filter):** a RegExp without `u` works on UTF-16 code units. If a match boundary lies inside a
+  surrogate pair and the result would not put both halves next to each other again (split matches, a partly removed
+  emoji, halves of two different emoji), the worker reports `invalidInput` / `errors.regexSplitsCharacter` instead of
+  returning damaged text (`matchesWithoutCutCharacters` in `src/utils/regex.ts`). Lone surrogates already in the input
+  are not refused. The check is a generator: it keeps only the previous match end and one open cut, never a list of
+  matches. Lines without surrogates skip it; the remove mode drains it and then uses the native `replace` (memory for
+  the result only, an error never leaves a partial result). Targeted cases: `tests/unit/surrogate-guard.test.ts`
+  (time and memory are measured separately, not asserted in unit tests).
 
 | Field | Meaning |
 |---|---|
 | `options` | Always complete, no defaults. Filter: `mode`, `caseSensitive`, `splitMatches`. Remove: `removeMode`, `caseSensitive`, `useRegex`, `trimParts`. |
 | `pattern` | A string, or `{ "repeat": "a", "count": 10001 }` for long patterns. |
 | `expected` | Same result in both engines. Filter: the text or `{ "error": "invalidRegex" \| "regexRuntime" }`. Remove: `{ "text", "removedLines" }` or `{ "error" }`. |
-| `expectedRust` + `expectedJs` + `divergence` | Different current results; `divergence.kind` is `dialect` (accepted, Paket 5), `suspectedBug`, `dataIntegrityRisk`, `inconsistentDefinition` or `unvalidatedInput`, with a `reason`. |
-| `{ "utf16": ["D83D", …] }` | JS only: a result with lone UTF-16 surrogates (not storable as a JSON string). The test compares the code units and asserts that the result is not well-formed Unicode; only allowed with `dataIntegrityRisk`. |
+| `expectedRust` + `expectedJs` + `divergence` | Different current results; `divergence.kind` is `dialect` (accepted, Paket 5), `utf16Guard`, `suspectedBug`, `inconsistentDefinition` or `unvalidatedInput`, with a `reason`. |
+| `{ "error": "regexSplitsCharacter" }` | JS Filter only, always with `utf16Guard`: Rust processes valid Unicode, the JS worker refuses a result with a cut character. Every successful JS result is checked to be well-formed Unicode. |
 | `expectedJsUnreachableMainThread` | `FilterService.frontendInMainThread`, which `invoke` never reaches. Tested separately, **not a product path**. |
 | `ref`, `openQuestion` | Case id in the Phase A report; open product decision for identical behaviour. |
 

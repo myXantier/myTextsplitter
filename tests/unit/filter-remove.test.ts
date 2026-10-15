@@ -1,8 +1,8 @@
-// Filter/Remove golden fixtures (Paket 8, Phase B): `tests/fixtures/filter-remove-cases.json`, also run by the Rust
-// engine (`cargo test`, src-tauri/src/text_processor.rs). They characterize the current behaviour, including documented
-// engine differences. The JS side runs the real worker modules (in-process, `self` stand-in), the Remove main-thread
-// fallback, the service path without Web Worker (`invoke(args, false)` in Node) and, separately marked, the Filter
-// main-thread implementation that `invoke` never reaches.
+// Filter/Remove golden fixtures (Paket 8): `tests/fixtures/filter-remove-cases.json`, also run by the Rust engine
+// (`cargo test`, src-tauri/src/text_processor.rs). Phase B characterized the behaviour, Phase C1 corrected the
+// duplicate trim output, the whitespace set and cut surrogate pairs in the JS Filter. The JS side runs the real worker
+// modules (in-process, `self` stand-in), the Remove main-thread fallback, the service path without Web Worker
+// (`invoke(args, false)` in Node) and, separately marked, the Filter main-thread implementation that `invoke` never reaches.
 import { installWindow, disableWorkerCleanupInterval, rejectionOf } from './helpers/setup.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -11,14 +11,15 @@ import { readFileSync } from 'node:fs';
 const { FilterService, RemoveService } = await import('../../src/services/Services.ts');
 const { BaseService } = await import('../../src/services/BaseService.ts');
 const { ERROR_KEYS } = await import('../../src/services/ProcessingError.ts');
+const { trimWhitespace, isWhitespaceCodePoint } = await import('../../src/utils/diff/whitespace.ts');
 disableWorkerCleanupInterval(BaseService);
 installWindow();
 
 // --- Fixture format ---
 
-type ErrorKind = 'invalidRegex' | 'regexRuntime';
+type ErrorKind = 'invalidRegex' | 'regexRuntime' | 'regexSplitsCharacter';
 type FixtureError = { error: ErrorKind };
-type FilterExpected = string | FixtureError | { utf16: string[] };
+type FilterExpected = string | FixtureError;
 type RemoveExpected = { text: string; removedLines: number } | FixtureError;
 type Pattern = string | { repeat: string; count: number };
 
@@ -50,36 +51,35 @@ const OPTION_TYPES = {
   filter: { mode: 'string', caseSensitive: 'boolean', splitMatches: 'boolean' },
   remove: { removeMode: 'string', caseSensitive: 'boolean', useRegex: 'boolean', trimParts: 'boolean' },
 } as const;
-const DIVERGENCE_KINDS = ['dialect', 'suspectedBug', 'dataIntegrityRisk', 'inconsistentDefinition', 'unvalidatedInput'];
+const DIVERGENCE_KINDS = ['dialect', 'utf16Guard', 'suspectedBug', 'inconsistentDefinition', 'unvalidatedInput'];
 const ERROR_KINDS = ['invalidRegex', 'regexRuntime'];
+/** Only the JS Filter refuses results with cut surrogate pairs (Rust works on Unicode scalar values). */
+const JS_FILTER_ERROR = 'regexSplitsCharacter';
+const MESSAGE_OF_ERROR: Record<string, string> = {
+  invalidRegex: ERROR_KEYS.invalidRegex,
+  regexSplitsCharacter: ERROR_KEYS.regexSplitsCharacter,
+};
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const hasExactKeys = (value: Record<string, unknown>, keys: string[]) =>
   Object.keys(value).length === keys.length && keys.every((key) => key in value);
-
-/** UTF-16 code units of a string as 4-digit upper-case hex (the `utf16` fixture form). */
-const codeUnits = (text: string) => Array.from({ length: text.length }, (_, i) => text.charCodeAt(i).toString(16).toUpperCase().padStart(4, '0'));
-const fromCodeUnits = (units: string[]) => String.fromCharCode(...units.map((unit) => parseInt(unit, 16)));
+const isErrorOf = (value: unknown, kind: string) => isObject(value) && value.error === kind;
 const hasLoneSurrogate = (text: string) => !text.isWellFormed();
 
-/** Problems of one expectation; `engine` is where it applies ('js' allows the `utf16` form). */
+/** Problems of one expectation; `engine` is where it applies (only JS Filter expectations may use `regexSplitsCharacter`). */
 function expectationProblems(section: 'filter' | 'remove', value: unknown, engine: 'rust' | 'js' | 'shared'): string[] {
   if (isObject(value) && 'error' in value) {
-    return hasExactKeys(value, ['error']) && ERROR_KINDS.includes(value.error as string) ? [] : [`invalid error expectation ${JSON.stringify(value)}`];
+    if (!hasExactKeys(value, ['error'])) return [`invalid error expectation ${JSON.stringify(value)}`];
+    if (ERROR_KINDS.includes(value.error as string)) return [];
+    if (value.error === JS_FILTER_ERROR) return section === 'filter' && engine === 'js' ? [] : [`${JS_FILTER_ERROR} is only a JS Filter expectation`];
+    return [`unknown error kind ${JSON.stringify(value.error)}`];
   }
   if (section === 'remove') {
     return isObject(value) && hasExactKeys(value, ['text', 'removedLines']) && typeof value.text === 'string' && Number.isInteger(value.removedLines) && (value.removedLines as number) >= 0
       ? []
       : [`invalid remove expectation ${JSON.stringify(value)}`];
   }
-  if (typeof value === 'string') return [];
-  if (isObject(value) && hasExactKeys(value, ['utf16']) && Array.isArray(value.utf16)) {
-    if (engine !== 'js') return ['the utf16 form is only allowed for JS expectations (Rust strings cannot hold lone surrogates)'];
-    if (!value.utf16.every((unit) => typeof unit === 'string' && /^[0-9A-F]{4}$/.test(unit))) return ['utf16 entries must be 4-digit upper-case hex strings'];
-    if (!hasLoneSurrogate(fromCodeUnits(value.utf16 as string[]))) return ['utf16 form without a lone surrogate: use a plain string'];
-    return [];
-  }
-  return [`invalid filter expectation ${JSON.stringify(value)}`];
+  return typeof value === 'string' ? [] : [`invalid filter expectation ${JSON.stringify(value)}`];
 }
 
 /** All problems of a fixture file; an empty list means well-formed. */
@@ -124,20 +124,22 @@ function fixtureProblems(fixtures: unknown): string[] {
       if (perEngine && (c.expectedRust === undefined || c.expectedJs === undefined)) problems.push(`${where}: expectedRust and expectedJs belong together`);
       if (perEngine !== (c.divergence !== undefined)) problems.push(`${where}: per-engine expectations need a divergence (and only they)`);
       if (perEngine && JSON.stringify(c.expectedRust) === JSON.stringify(c.expectedJs)) problems.push(`${where}: expectedRust equals expectedJs, use expected`);
-      if (c.divergence !== undefined) {
-        const d = c.divergence;
-        if (!isObject(d) || !hasExactKeys(d, ['kind', 'reason']) || !DIVERGENCE_KINDS.includes(d.kind as string) || typeof d.reason !== 'string' || !d.reason) {
+      const divergence = c.divergence;
+      if (divergence !== undefined) {
+        if (!isObject(divergence) || !hasExactKeys(divergence, ['kind', 'reason']) || !DIVERGENCE_KINDS.includes(divergence.kind as string) || typeof divergence.reason !== 'string' || !divergence.reason) {
           problems.push(`${where}: divergence must be { kind: ${DIVERGENCE_KINDS.join(' | ')}, reason }`);
         }
       }
       if (shared) problems.push(...expectationProblems(section, c.expected, 'shared').map((p) => `${where}: ${p}`));
       if (c.expectedRust !== undefined) problems.push(...expectationProblems(section, c.expectedRust, 'rust').map((p) => `${where}: expectedRust: ${p}`));
       if (c.expectedJs !== undefined) problems.push(...expectationProblems(section, c.expectedJs, 'js').map((p) => `${where}: expectedJs: ${p}`));
-      const js = c.expectedJs ?? c.expected;
-      if (isObject(js) && 'utf16' in js && (c.divergence as any)?.kind !== 'dataIntegrityRisk') problems.push(`${where}: a lone-surrogate result must be a dataIntegrityRisk divergence`);
+      // A refused cut character and the utf16Guard divergence belong together
+      if (isErrorOf(c.expectedJs, JS_FILTER_ERROR) !== (isObject(divergence) && divergence.kind === 'utf16Guard')) {
+        problems.push(`${where}: expectedJs ${JS_FILTER_ERROR} requires the divergence kind utf16Guard and vice versa`);
+      }
       if (c.expectedJsUnreachableMainThread !== undefined) {
         if (section !== 'filter') problems.push(`${where}: expectedJsUnreachableMainThread is only for the Filter`);
-        else problems.push(...expectationProblems(section, c.expectedJsUnreachableMainThread, 'js').map((p) => `${where}: expectedJsUnreachableMainThread: ${p}`));
+        else if (typeof c.expectedJsUnreachableMainThread !== 'string') problems.push(`${where}: expectedJsUnreachableMainThread must be a text`);
       }
       for (const key of ['ref', 'openQuestion']) if (c[key] !== undefined && (typeof c[key] !== 'string' || !c[key])) problems.push(`${where}: ${key} must be a non-empty string`);
     }
@@ -157,6 +159,7 @@ test('filter/remove fixture check rejects malformed entries', () => {
   const check = (filter: unknown[], remove: unknown[] = [validRemove]) => fixtureProblems({ description: '', filter, remove });
   assert.deepEqual(check([valid]), []);
 
+  const guard = { kind: 'utf16Guard', reason: 'r' };
   const broken: [string, unknown][] = [
     ['implicit splitMatches', { ...valid, options: { mode: 'keep', caseSensitive: true } }],
     ['unknown key', { ...valid, expectedTs: 'x' }],
@@ -164,12 +167,14 @@ test('filter/remove fixture check rejects malformed entries', () => {
     ['per-engine without divergence', { ...valid, expected: undefined, expectedRust: 'a', expectedJs: 'b' }],
     ['divergence without per-engine', { ...valid, divergence: { kind: 'dialect', reason: 'r' } }],
     ['unknown divergence kind', { ...valid, expected: undefined, expectedRust: 'a', expectedJs: 'b', divergence: { kind: 'accepted', reason: 'r' } }],
+    ['former divergence kind', { ...valid, expected: undefined, expectedRust: 'a', expectedJs: 'b', divergence: { kind: 'dataIntegrityRisk', reason: 'r' } }],
     ['identical per-engine expectations', { ...valid, expected: undefined, expectedRust: 'a', expectedJs: 'a', divergence: { kind: 'dialect', reason: 'r' } }],
     ['unknown error kind', { ...valid, expected: { error: 'timeout' } }],
-    ['utf16 in a shared expectation', { ...valid, expected: { utf16: ['D83D'] } }],
-    ['utf16 for Rust', { ...valid, expected: undefined, expectedRust: { utf16: ['D83D'] }, expectedJs: 'a', divergence: { kind: 'dataIntegrityRisk', reason: 'r' } }],
-    ['utf16 without lone surrogate', { ...valid, expected: undefined, expectedRust: 'a', expectedJs: { utf16: ['0061', '0062'] }, divergence: { kind: 'dataIntegrityRisk', reason: 'r' } }],
-    ['lone surrogate not marked as integrity risk', { ...valid, expected: undefined, expectedRust: 'a', expectedJs: { utf16: ['D83D'] }, divergence: { kind: 'dialect', reason: 'r' } }],
+    ['utf16 form is gone', { ...valid, expected: undefined, expectedRust: 'a', expectedJs: { utf16: ['D83D'] }, divergence: guard }],
+    ['regexSplitsCharacter as shared expectation', { ...valid, expected: { error: 'regexSplitsCharacter' } }],
+    ['regexSplitsCharacter for Rust', { ...valid, expected: undefined, expectedRust: { error: 'regexSplitsCharacter' }, expectedJs: 'a', divergence: guard }],
+    ['regexSplitsCharacter without utf16Guard', { ...valid, expected: undefined, expectedRust: 'a', expectedJs: { error: 'regexSplitsCharacter' }, divergence: { kind: 'dialect', reason: 'r' } }],
+    ['utf16Guard without regexSplitsCharacter', { ...valid, expected: undefined, expectedRust: 'a', expectedJs: 'b', divergence: guard }],
     ['invalid pattern repeat', { ...valid, pattern: { repeat: 'a' } }],
   ];
   for (const [label, entry] of broken) {
@@ -179,6 +184,7 @@ test('filter/remove fixture check rejects malformed entries', () => {
   assert.notDeepEqual(check([valid, valid]), [], 'duplicate name');
   assert.notDeepEqual(check([valid], [{ ...validRemove, expected: { text: 'x' } }]), [], 'remove expectation without removedLines');
   assert.notDeepEqual(check([valid], [{ ...validRemove, options: { removeMode: 'duplicates', caseSensitive: true, useRegex: false } }]), [], 'implicit trimParts');
+  assert.notDeepEqual(check([valid], [{ ...validRemove, expected: undefined, expectedRust: { text: 'a', removedLines: 0 }, expectedJs: { error: 'regexSplitsCharacter' }, divergence: guard }]), [], 'regexSplitsCharacter for Remove');
 });
 
 test('filter/remove fixtures cover the Phase A reproductions', () => {
@@ -201,7 +207,7 @@ const workers = {
 };
 
 const patternOf = (pattern: Pattern) => (typeof pattern === 'string' ? pattern : pattern.repeat.repeat(pattern.count));
-const filterArgs = (c: FilterCase): FilterConfig => ({
+const filterArgs = (c: { input: string; pattern: Pattern; options: FilterOptions }): FilterConfig => ({
   sourceText: c.input,
   mainParam: patternOf(c.pattern),
   configParams: { caseSensitive: c.options.caseSensitive, filterMode: c.options.mode as FilterConfig['configParams']['filterMode'], splitMatches: c.options.splitMatches },
@@ -212,10 +218,10 @@ const removeArgs = (c: RemoveCase): RemoveConfig => ({
   configParams: { caseSensitive: c.options.caseSensitive, useRegex: c.options.useRegex, trimParts: c.options.trimParts, removeMode: c.options.removeMode },
 });
 
-/** The only error kind the fixtures expect from JS: an invalid pattern (`invalidInput` + `errors.invalidRegex`). */
-function assertInvalidRegex(kind: unknown, message: unknown, where: string) {
-  assert.equal(kind, 'invalidInput', where);
-  assert.equal(message, ERROR_KEYS.invalidRegex, where);
+/** The JS errors of the fixtures are invalid input (`invalidInput`) with the message key of the error kind. */
+function assertInputError(kind: unknown, message: unknown, expected: ErrorKind, where: string) {
+  assert.ok(MESSAGE_OF_ERROR[expected], `${where}: no JS error for ${expected}`);
+  assert.deepEqual({ kind, message }, { kind: 'invalidInput', message: MESSAGE_OF_ERROR[expected] }, where);
 }
 
 /** Exactly one worker message: a success with the given result type, or an error. */
@@ -226,18 +232,10 @@ function runWorker(worker: keyof typeof workers, args: BaseConfig) {
   return posted[0];
 }
 
-/** Compares a JS Filter result text with an expectation; the `utf16` form also proves the lone surrogates. */
-function assertFilterText(actual: string, expected: FilterExpected, where: string) {
-  assert.equal(typeof actual, 'string', where);
-  if (typeof expected === 'string') {
-    assert.equal(actual, expected, where);
-    assert.ok(!hasLoneSurrogate(actual), `${where}: result is well-formed Unicode`);
-  } else if ('utf16' in expected) {
-    assert.deepEqual(codeUnits(actual), expected.utf16, `${where}: UTF-16 code units`);
-    assert.ok(hasLoneSurrogate(actual), `${where}: result contains a lone surrogate (data integrity risk)`);
-  } else {
-    assert.fail(`${where}: expected an error, got ${JSON.stringify(actual)}`);
-  }
+/** A successful JS Filter result: exactly the expected text, never with a cut character. */
+function assertFilterText(actual: unknown, expected: string, where: string) {
+  assert.equal(actual, expected, where);
+  assert.ok(!hasLoneSurrogate(actual as string), `${where}: result is well-formed Unicode`);
 }
 
 // --- Filter ---
@@ -247,9 +245,9 @@ for (const c of fixtures.filter) {
 
   test(`filter worker: ${c.name}`, () => {
     const message = runWorker('filter', filterArgs(c));
-    if (typeof expected === 'object' && 'error' in expected) {
+    if (typeof expected === 'object') {
       assert.equal(message.success, false, JSON.stringify(message));
-      assertInvalidRegex(message.errorKind, message.error, c.name);
+      assertInputError(message.errorKind, message.error, expected.error, c.name);
       return;
     }
     assert.equal(message.success, true, JSON.stringify(message));
@@ -257,10 +255,10 @@ for (const c of fixtures.filter) {
     assertFilterText(message.result.result, expected, 'worker');
   });
 
-  // Without Web Worker (Node) the Filter never runs its regex in the main thread
+  // Without Web Worker (Node) the Filter never runs its regex in the main thread: only compiling can fail
   test(`filter service without Web Worker: ${c.name}`, async () => {
     const error = await rejectionOf(() => new FilterService().invoke(filterArgs(c), false));
-    if (typeof expected === 'object' && 'error' in expected) assertInvalidRegex(error.kind, error.message, c.name);
+    if (isErrorOf(expected, 'invalidRegex')) assertInputError(error.kind, error.message, 'invalidRegex', c.name);
     else assert.deepEqual({ kind: error.kind, message: error.message }, { kind: 'worker', message: ERROR_KEYS.regexRequiresWorker });
   });
 
@@ -269,18 +267,59 @@ for (const c of fixtures.filter) {
     test(`filter main thread (unreachable, not a product path): ${c.name}`, async () => {
       const result = await (new FilterService() as any).frontendInMainThread(filterArgs(c));
       assert.equal(result.type, 'Text');
-      assertFilterText(result.result, c.expectedJsUnreachableMainThread!, 'unreachable main thread');
+      assertFilterText(result.result, c.expectedJsUnreachableMainThread as string, 'unreachable main thread');
     });
   }
 }
 
-test('filter: Rust expectations of lone-surrogate cases are well-formed Unicode', () => {
-  const cases = fixtures.filter.filter((c) => c.divergence?.kind === 'dataIntegrityRisk');
-  assert.ok(cases.length >= 2);
+test('filter: Rust expectations of refused JS results are well-formed Unicode', () => {
+  const cases = fixtures.filter.filter((c) => c.divergence?.kind === 'utf16Guard');
+  assert.ok(cases.length >= 4);
   for (const c of cases) {
     assert.equal(typeof c.expectedRust, 'string', c.name);
     assert.ok(!hasLoneSurrogate(c.expectedRust as string), c.name);
   }
+});
+
+test('filter worker: lone surrogates already in the input are not refused (not newly damaged)', () => {
+  const run = (input: string, pattern: string, mode: string, splitMatches: boolean) =>
+    runWorker('filter', filterArgs({ input, pattern, options: { mode, caseSensitive: true, splitMatches } }));
+  const keep = run('\uD83Dx\n\uDE00y', '[xy]', 'keep', true);
+  assert.deepEqual([keep.success, keep.result.result], [true, 'x\ny']);
+  const remove = run('\uD83Dx', 'x', 'remove', false);
+  assert.deepEqual([remove.success, remove.result.result], [true, '\uD83D']);
+  // A valid pair next to a lone half is still protected
+  const cut = run('\uDE00😀', '.', 'keep', true);
+  assert.deepEqual([cut.success, cut.error], [false, ERROR_KEYS.regexSplitsCharacter]);
+});
+
+test('filter worker: the refused result is reported as one error, not as success', () => {
+  const message = runWorker('filter', filterArgs({ input: 'ok\n😀x', pattern: '.', options: { mode: 'keep', caseSensitive: true, splitMatches: true } }));
+  assert.deepEqual({ success: message.success, errorKind: message.errorKind, error: message.error, result: message.result }, {
+    success: false,
+    errorKind: 'invalidInput',
+    error: ERROR_KEYS.regexSplitsCharacter,
+    result: null,
+  });
+});
+
+// --- Shared whitespace set (Unicode White_Space, same as Rust `str::trim`) ---
+
+test('trimWhitespace uses Unicode White_Space: U+0085 is whitespace, U+FEFF is not', () => {
+  for (let unit = 0; unit <= 0xffff; unit++) {
+    const char = String.fromCharCode(unit);
+    assert.equal(trimWhitespace(`${char}a${char}`) === 'a', isWhitespaceCodePoint(unit), `U+${unit.toString(16).toUpperCase().padStart(4, '0')}`);
+  }
+  assert.equal(trimWhitespace('\u0085 a　'), 'a');
+  assert.equal(trimWhitespace('﻿a﻿'), '﻿a﻿');
+  assert.equal(trimWhitespace(' \t '), '');
+  // The only differences to String.prototype.trim
+  const differences = [];
+  for (let unit = 0; unit <= 0xffff; unit++) {
+    const char = String.fromCharCode(unit);
+    if ((char.trim() === '') !== (trimWhitespace(char) === '')) differences.push(unit.toString(16).toUpperCase());
+  }
+  assert.deepEqual(differences, ['85', 'FEFF']);
 });
 
 // --- Remove ---
@@ -290,7 +329,6 @@ const noMetrics = { execution_time_ms: 0, memory_usage_kb: 0, memory_usage_str: 
 
 for (const c of fixtures.remove) {
   const expected = (c.expectedJs ?? c.expected)!;
-  const isError = 'error' in expected;
 
   test(`remove worker + main thread: ${c.name}`, async () => {
     const message = runWorker('remove', removeArgs(c));
@@ -302,10 +340,10 @@ for (const c of fixtures.remove) {
       mainError = error;
     }
 
-    if (isError) {
+    if ('error' in expected) {
       assert.equal(message.success, false, JSON.stringify(message));
-      assertInvalidRegex(message.errorKind, message.error, `${c.name} (worker)`);
-      assertInvalidRegex(mainError?.kind, mainError?.message, `${c.name} (main thread)`);
+      assertInputError(message.errorKind, message.error, expected.error, `${c.name} (worker)`);
+      assertInputError(mainError?.kind, mainError?.message, expected.error, `${c.name} (main thread)`);
       return;
     }
     assert.equal(message.success, true, JSON.stringify(message));
@@ -319,16 +357,16 @@ for (const c of fixtures.remove) {
   // The real service path without Web Worker: duplicates and literal search run in the main thread, a regex never does
   test(`remove service without Web Worker: ${c.name}`, async () => {
     const run = () => new RemoveService().invoke(removeArgs(c), false);
-    if (isError) {
+    if ('error' in expected) {
       const error = await rejectionOf(run);
-      assertInvalidRegex(error.kind, error.message, c.name);
+      assertInputError(error.kind, error.message, expected.error, c.name);
     } else if (isRegexJob(c)) {
       const error = await rejectionOf(run);
       assert.deepEqual({ kind: error.kind, message: error.message }, { kind: 'worker', message: ERROR_KEYS.regexRequiresWorker });
     } else {
       const result = await run();
       assert.equal(result.type, 'TextV2');
-      assert.deepEqual(result.result, { result_text: (expected as any).text, removed_lines: (expected as any).removedLines, metrics: noMetrics });
+      assert.deepEqual(result.result, { result_text: expected.text, removed_lines: expected.removedLines, metrics: noMetrics });
     }
   });
 }

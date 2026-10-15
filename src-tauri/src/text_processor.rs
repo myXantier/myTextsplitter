@@ -239,6 +239,8 @@ impl TextProcessor {
         let TextLines { lines, format } = split_lines(text);
         let mut processed_lines: Vec<String> = Vec::new();
         for line in lines {
+            // Blank = only Unicode `White_Space` (`str::trim`, `char::is_whitespace`): U+0085 is whitespace, U+FEFF is not.
+            // Same set as the JS engine (`src/utils/diff/whitespace.ts`).
             if line.trim().is_empty() {
                 continue;
             }
@@ -290,6 +292,8 @@ impl TextProcessor {
             lines
                 .iter()
                 .filter_map(|&line| {
+                    // Trim (Unicode `White_Space`, same set as the JS engine) and case only change the comparison key:
+                    // the first occurrence is kept as it is, with its indentation
                     let processed_line = if trimparts { line.trim() } else { line };
                     let key = if casesensitive {
                         processed_line.to_string()
@@ -301,7 +305,7 @@ impl TextProcessor {
                         None
                     } else {
                         seen.insert(key);
-                        Some(processed_line.to_string())
+                        Some(line.to_string())
                     }
                 })
                 .collect()
@@ -804,7 +808,7 @@ mod tests {
         use serde_json::{json, Map, Value};
 
         const FIXTURES: &str = include_str!("../../tests/fixtures/filter-remove-cases.json");
-        const DIVERGENCE_KINDS: [&str; 5] = ["dialect", "suspectedBug", "dataIntegrityRisk", "inconsistentDefinition", "unvalidatedInput"];
+        const DIVERGENCE_KINDS: [&str; 5] = ["dialect", "utf16Guard", "suspectedBug", "inconsistentDefinition", "unvalidatedInput"];
 
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
@@ -876,7 +880,7 @@ mod tests {
             options: O,
             expected: Option<Value>,
             expected_rust: Option<Value>,
-            /// Checked in detail by the JS runner (may use the `utf16` form for lone surrogates).
+            /// Checked in detail by the JS runner (may be the JS-only error `regexSplitsCharacter`).
             expected_js: Option<Value>,
             /// JS only (unreachable Filter main-thread implementation).
             expected_js_unreachable_main_thread: Option<Value>,
@@ -909,12 +913,10 @@ mod tests {
             }
         }
 
+        /// Rust and shared expectations; `regexSplitsCharacter` is a JS-only error (Rust never cuts a character).
         fn parse_filter(value: &Value) -> Result<FilterOutcome, String> {
             match value {
                 Value::String(text) => Ok(Ok(text.clone())),
-                Value::Object(map) if map.contains_key("utf16") => {
-                    Err("the utf16 form is only allowed for JS expectations (Rust strings cannot hold lone surrogates)".into())
-                }
                 Value::Object(map) if map.contains_key("error") => expected_error(map).map(Err),
                 other => Err(format!("invalid filter expectation {other}")),
             }
@@ -955,6 +957,11 @@ mod tests {
                 if !DIVERGENCE_KINDS.contains(&d.kind.as_str()) || d.reason.is_empty() {
                     problems.push(format!("invalid divergence kind {:?} or empty reason", d.kind));
                 }
+            }
+            // A JS result refused for a cut character and the utf16Guard divergence belong together
+            let refused_by_js = case.expected_js == Some(json!({ "error": "regexSplitsCharacter" }));
+            if refused_by_js != case.divergence.as_ref().is_some_and(|d| d.kind == "utf16Guard") {
+                problems.push("expectedJs regexSplitsCharacter requires the divergence kind utf16Guard and vice versa".into());
             }
             for value in [&case.expected, &case.expected_rust].into_iter().flatten() {
                 if let Err(problem) = parse(value) {
@@ -1012,7 +1019,12 @@ mod tests {
             assert!(!problems(json!({ "expectedRust": "a", "expectedJs": "b" })).is_empty(), "per-engine without divergence");
             assert!(!problems(json!({ "expected": "a", "divergence": { "kind": "dialect", "reason": "r" } })).is_empty(), "divergence without per-engine");
             assert!(!problems(json!({ "expectedRust": "a", "expectedJs": "b", "divergence": { "kind": "accepted", "reason": "r" } })).is_empty());
-            assert!(!problems(json!({ "expectedRust": { "utf16": ["D83D"] }, "expectedJs": "a", "divergence": { "kind": "dataIntegrityRisk", "reason": "r" } })).is_empty());
+            assert!(!problems(json!({ "expectedRust": "a", "expectedJs": "b", "divergence": { "kind": "dataIntegrityRisk", "reason": "r" } })).is_empty(), "former kind");
+            assert!(!problems(json!({ "expectedRust": { "error": "regexSplitsCharacter" }, "expectedJs": "a", "divergence": { "kind": "utf16Guard", "reason": "r" } })).is_empty());
+            assert!(!problems(json!({ "expected": { "error": "regexSplitsCharacter" } })).is_empty(), "JS-only error as shared expectation");
+            assert!(!problems(json!({ "expectedRust": "a", "expectedJs": { "error": "regexSplitsCharacter" }, "divergence": { "kind": "dialect", "reason": "r" } })).is_empty());
+            assert!(!problems(json!({ "expectedRust": "a", "expectedJs": "b", "divergence": { "kind": "utf16Guard", "reason": "r" } })).is_empty());
+            assert!(!problems(json!({ "expectedRust": { "utf16": ["D83D"] }, "expectedJs": "a", "divergence": { "kind": "dialect", "reason": "r" } })).is_empty(), "utf16 form");
             assert!(!problems(json!({ "expected": { "error": "timeout" } })).is_empty(), "unknown error kind");
             assert!(parse_remove(&json!({ "text": "a" })).is_err(), "remove expectation without removedLines");
         }

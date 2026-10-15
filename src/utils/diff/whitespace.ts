@@ -1,6 +1,7 @@
-// Whitespace of the diff comparison key. Explicitly defined (the Unicode `White_Space` property, 25 code points) and
-// implemented identically in Rust (`src-tauri/src/diff/whitespace.rs`, same as `char::is_whitespace`). JS `\s` and
-// `String.trim()` are NOT used: they also treat U+FEFF as whitespace.
+// Whitespace of the diff comparison key, also used by Filter (blank lines) and Remove (trim of the duplicate key, Paket 8).
+// Explicitly defined (the Unicode `White_Space` property, 25 code points) and implemented identically in Rust
+// (`src-tauri/src/diff/whitespace.rs`, same as `char::is_whitespace` and `str::trim`). JS `\s` and `String.trim()` are
+// NOT used: they also treat U+FEFF as whitespace and `String.trim()` does not treat U+0085 as whitespace.
 //
 // U+0009–U+000D, U+0020, U+0085, U+00A0, U+1680, U+2000–U+200A, U+2028, U+2029, U+202F, U+205F, U+3000.
 // Not whitespace: U+200B (zero width space), U+2060 (word joiner), U+FEFF (BOM / zero width no-break space).
@@ -25,6 +26,15 @@ export const isWhitespaceCodePoint = (cp: number): boolean =>
 
 /** True for an empty line or a line that only consists of whitespace. */
 export const isBlankLine = (line: string): boolean => ONLY_WHITESPACE.test(line);
+
+/** Removes leading and trailing whitespace of this set, like Rust `str::trim` (all its code points are in the BMP). */
+export function trimWhitespace(text: string): string {
+  let start = 0;
+  let end = text.length;
+  while (start < end && isWhitespaceCodePoint(text.charCodeAt(start))) start++;
+  while (end > start && isWhitespaceCodePoint(text.charCodeAt(end - 1))) end--;
+  return start === 0 && end === text.length ? text : text.slice(start, end);
+}
 
 /**
  * Comparison key of a line. With `ignoreWhitespace`, leading and trailing whitespace is removed and every inner

@@ -1,5 +1,5 @@
 {
-  "description": "Golden fixtures (Paket 8, Phase B) for Filter and Remove, shared by the Rust engine (cargo test, src-tauri/src/text_processor.rs) and the JS engine (npm test, tests/unit/filter-remove.test.ts). They characterize the CURRENT behaviour: a passing test means the behaviour is described correctly, not that it is wanted. Every case states all options explicitly (no defaults). 'pattern' is a string or { repeat, count } (the string repeated count times). Filter expectations: the result text, { error: invalidRegex | regexRuntime }, or (JS only) { utf16: [hex code units] } for results that contain lone UTF-16 surrogates and therefore cannot be stored as a JSON string. Remove expectations: { text, removedLines } or { error }. A case with different engine results uses expectedRust + expectedJs and a divergence { kind, reason }; kinds: dialect (accepted regex dialect difference, Paket 5), suspectedBug, dataIntegrityRisk, inconsistentDefinition, unvalidatedInput. 'ref' points to the Phase A report (docs/analyse/Paket8-PhaseA-Filter-Remove-Analyse.md). 'openQuestion' marks identical behaviour that still needs a product decision. 'expectedJsUnreachableMainThread' characterizes FilterService.frontendInMainThread, which invoke never reaches (not a product path).",
+  "description": "Golden fixtures (Paket 8, Phase B) for Filter and Remove, shared by the Rust engine (cargo test, src-tauri/src/text_processor.rs) and the JS engine (npm test, tests/unit/filter-remove.test.ts). They characterize the CURRENT behaviour: a passing test means the behaviour is described correctly, not that it is wanted. Every case states all options explicitly (no defaults). 'pattern' is a string or { repeat, count } (the string repeated count times). Filter expectations: the result text or { error: invalidRegex | regexRuntime }; JS only: { error: regexSplitsCharacter } (Paket 8 C1: a JS match would cut a surrogate pair apart, the worker refuses instead of returning damaged text). Remove expectations: { text, removedLines } or { error }. A case with different engine results uses expectedRust + expectedJs and a divergence { kind, reason }; kinds: dialect (accepted regex dialect difference, Paket 5), utf16Guard (Rust processes valid Unicode, JS refuses a result that would contain cut characters; required for regexSplitsCharacter), suspectedBug, inconsistentDefinition, unvalidatedInput. Every successful JS result must be well-formed Unicode. 'ref' points to the Phase A report (docs/analyse/Paket8-PhaseA-Filter-Remove-Analyse.md). 'openQuestion' marks identical behaviour that still needs a product decision. 'expectedJsUnreachableMainThread' characterizes FilterService.frontendInMainThread, which invoke never reaches (not a product path).",
   "filter": [
     {
       "name": "keep: one match per line, split off",
@@ -151,10 +151,10 @@
       "pattern": ".",
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
       "expectedRust": "😀\nx",
-      "expectedJs": { "utf16": ["D83D", "000A", "DE00", "000A", "0078"] },
+      "expectedJs": { "error": "regexSplitsCharacter" },
       "divergence": {
-        "kind": "dataIntegrityRisk",
-        "reason": "JS RegExp without the 'u' flag matches UTF-16 code units: the emoji is split into a lone high and a lone low surrogate on separate lines. The result is not valid Unicode text. Rust matches Unicode scalar values. Not an accepted target behaviour."
+        "kind": "utf16Guard",
+        "reason": "JS RegExp without the 'u' flag matches UTF-16 code units: the emoji halves would end up as lone surrogates on separate lines (formerly output as damaged text). The worker now refuses the result; Rust matches Unicode scalar values."
       }
     },
     {
@@ -170,10 +170,62 @@
       "pattern": "[^a]",
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
       "expectedRust": "😀",
-      "expectedJs": { "utf16": ["D83D", "000A", "DE00"] },
+      "expectedJs": { "error": "regexSplitsCharacter" },
       "divergence": {
-        "kind": "dataIntegrityRisk",
-        "reason": "Same cause as F12: [^a] matches each surrogate half on its own in JS; the halves are separated by a line break."
+        "kind": "utf16Guard",
+        "reason": "Same cause as F12: [^a] matches each surrogate half on its own in JS; split matches would separate them with a line break."
+      }
+    },
+    {
+      "name": "keep: negated class on an emoji without split matches rejoins the halves",
+      "input": "😀",
+      "pattern": "[^a]",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "😀"
+    },
+    {
+      "name": "keep: halves of two different emoji would be recombined",
+      "input": "😀😃",
+      "pattern": "^.|.$",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expectedRust": "😀😃",
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": {
+        "kind": "utf16Guard",
+        "reason": "JS matches the high half of the first and the low half of the second emoji; joined they would form a different, well-formed character (U+1F603 alone). A well-formedness check alone would not notice; the match boundaries do."
+      }
+    },
+    {
+      "name": "keep: emoji as a whole match with split matches",
+      "input": "a😀b😃",
+      "pattern": "😀|😃",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expected": "😀\n😃"
+    },
+    {
+      "name": "keep: emoji in the line, matches elsewhere",
+      "input": "😀 a1\r\n🎉 b2\r\n",
+      "pattern": "\\d",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expected": "1\r\n2\r\n"
+    },
+    {
+      "name": "keep: dot without split keeps emoji with CRLF and trailing newline",
+      "input": "😀x\r\n😃\r\n",
+      "pattern": ".",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "😀x\r\n😃\r\n"
+    },
+    {
+      "name": "keep: empty matches inside an emoji cut nothing",
+      "input": "😀",
+      "pattern": "x*",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expectedRust": "\n",
+      "expectedJs": "\n\n",
+      "divergence": {
+        "kind": "dialect",
+        "reason": "Empty matches advance by one UTF-16 code unit in JS and by one character in Rust (Paket 5); no character is cut, so the JS guard does not refuse it."
       }
     },
     {
@@ -182,37 +234,34 @@
       "pattern": ".",
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
       "expectedRust": "😀\r\n",
-      "expectedJs": { "utf16": ["D83D", "000D", "000A", "DE00", "000D", "000A"] },
+      "expectedJs": { "error": "regexSplitsCharacter" },
       "divergence": {
-        "kind": "dataIntegrityRisk",
-        "reason": "Same cause as F12; the surrogate halves are separated by the CRLF line ending of the input."
+        "kind": "utf16Guard",
+        "reason": "Same cause as F12; the surrogate halves would be separated by the CRLF line ending of the input."
       }
     },
     {
-      "name": "keep: line consisting only of U+FEFF",
+      "name": "keep: line consisting only of U+FEFF is not blank",
       "ref": "F16",
       "input": "﻿\nb",
       "pattern": ".",
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
-      "expectedRust": "﻿\nb",
-      "expectedJs": "b",
-      "divergence": {
-        "kind": "inconsistentDefinition",
-        "reason": "The empty-line check uses trim(): JS String.prototype.trim removes U+FEFF (line is skipped), Rust str::trim does not (line is processed)."
-      }
+      "expected": "﻿\nb"
     },
     {
-      "name": "keep: line consisting only of U+0085 (NEL)",
+      "name": "keep: line consisting only of U+0085 (NEL) is blank",
       "ref": "F17",
       "input": "\u0085\nb",
       "pattern": ".",
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
-      "expectedRust": "b",
-      "expectedJs": "\u0085\nb",
-      "divergence": {
-        "kind": "inconsistentDefinition",
-        "reason": "Rust str::trim removes U+0085 (Unicode White_Space, line is skipped); JS trim does not (line is processed)."
-      }
+      "expected": "b"
+    },
+    {
+      "name": "keep: no-break space and ideographic space lines are blank",
+      "input": " \n　\nb",
+      "pattern": ".",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "b"
     },
     {
       "name": "keep: invalid regex is an error",
@@ -390,6 +439,65 @@
       "expected": "a"
     },
     {
+      "name": "remove: negated class removes whole emoji with CRLF and trailing newline",
+      "input": "😀xb\r\n🎉ab\r\n",
+      "pattern": "[^b]",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "b\r\nb\r\n"
+    },
+    {
+      "name": "remove: dot removes everything including emoji",
+      "input": "😀x\n😃",
+      "pattern": ".",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": ""
+    },
+    {
+      "name": "remove: emoji as literal pattern",
+      "input": "a😀b\r\n😃\r\n",
+      "pattern": "😀",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "ab\r\n😃\r\n"
+    },
+    {
+      "name": "remove: a match starting in the middle of an emoji",
+      "input": "x😀a",
+      "pattern": ".a",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expectedRust": "x",
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": {
+        "kind": "utf16Guard",
+        "reason": "In JS '.' matches only the low half of the emoji, removing '.a' would leave a lone high surrogate; Rust removes the whole emoji."
+      }
+    },
+    {
+      "name": "remove: negated class removes half of one emoji",
+      "input": "😀😃",
+      "pattern": "[^😀]",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expectedRust": "😀",
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": {
+        "kind": "utf16Guard",
+        "reason": "In JS the class consists of the two code units of 😀 and matches only the low half of 😃; removing it would leave a lone high surrogate. Rust removes 😃."
+      }
+    },
+    {
+      "name": "remove: line consisting only of U+FEFF is not blank",
+      "input": "﻿\nab",
+      "pattern": "b",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "﻿\na"
+    },
+    {
+      "name": "remove: line consisting only of U+0085 is blank",
+      "input": "\u0085\nab",
+      "pattern": "b",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "a"
+    },
+    {
       "name": "remove: invalid regex is an error",
       "input": "a",
       "pattern": "([a-",
@@ -439,21 +547,21 @@
       "input": "  Ab\nab",
       "pattern": "",
       "options": { "removeMode": "duplicates", "caseSensitive": false, "useRegex": false, "trimParts": true },
-      "expectedRust": { "text": "Ab", "removedLines": 1 },
-      "expectedJs": { "text": "  Ab", "removedLines": 1 },
-      "divergence": {
-        "kind": "suspectedBug",
-        "reason": "With trimParts the Rust engine outputs the trimmed first occurrence (text_processor.rs: Some(processed_line)), so the indentation is lost; the JS engine outputs the original line."
-      }
+      "expected": { "text": "  Ab", "removedLines": 1 }
     },
     {
       "name": "duplicates with trim: indented first occurrence",
       "input": " x\nx",
       "pattern": "",
       "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": true },
-      "expectedRust": { "text": "x", "removedLines": 1 },
-      "expectedJs": { "text": " x", "removedLines": 1 },
-      "divergence": { "kind": "suspectedBug", "reason": "Same cause as R05, case-sensitive." }
+      "expected": { "text": " x", "removedLines": 1 }
+    },
+    {
+      "name": "duplicates with trim: tab-indented first occurrence with CRLF and trailing newline",
+      "input": "\tx \r\nx\r\n  x\r\ny\r\n",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": true },
+      "expected": { "text": "\tx \r\ny\r\n", "removedLines": 2 }
     },
     {
       "name": "duplicates with trim: whitespace-only lines",
@@ -461,9 +569,14 @@
       "input": "  \n\t\nx",
       "pattern": "",
       "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": true },
-      "expectedRust": { "text": "\nx", "removedLines": 1 },
-      "expectedJs": { "text": "  \nx", "removedLines": 1 },
-      "divergence": { "kind": "suspectedBug", "reason": "Same cause as R05: Rust turns the kept whitespace-only line into an empty line." }
+      "expected": { "text": "  \nx", "removedLines": 1 }
+    },
+    {
+      "name": "duplicates with trim: NEL-only, space-only and empty lines are duplicates",
+      "input": "\u0085\n \n\nx",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": true },
+      "expected": { "text": "\u0085\nx", "removedLines": 2 }
     },
     {
       "name": "duplicates with trim: U+FEFF at the end of a line",
@@ -471,9 +584,7 @@
       "input": "a﻿\na",
       "pattern": "",
       "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": true },
-      "expectedRust": { "text": "a﻿\na", "removedLines": 0 },
-      "expectedJs": { "text": "a﻿", "removedLines": 1 },
-      "divergence": { "kind": "inconsistentDefinition", "reason": "JS trim removes U+FEFF (the lines are duplicates), Rust str::trim does not." }
+      "expected": { "text": "a﻿\na", "removedLines": 0 }
     },
     {
       "name": "duplicates with trim: U+0085 (NEL) at the end of a line",
@@ -481,9 +592,21 @@
       "input": "a\u0085\na",
       "pattern": "",
       "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": true },
-      "expectedRust": { "text": "a", "removedLines": 1 },
-      "expectedJs": { "text": "a\u0085\na", "removedLines": 0 },
-      "divergence": { "kind": "inconsistentDefinition", "reason": "Rust str::trim removes U+0085 (the lines are duplicates; the kept line is output trimmed, see R05), JS trim does not." }
+      "expected": { "text": "a\u0085", "removedLines": 1 }
+    },
+    {
+      "name": "duplicates with trim: no-break space is whitespace",
+      "input": " a\na　",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": true },
+      "expected": { "text": " a", "removedLines": 1 }
+    },
+    {
+      "name": "duplicates with trim and case-insensitive: Unicode first occurrence kept as it is",
+      "input": "  Grüße 😀\r\ngrüße 😀  \r\nGRÜSSE 😀\r\n",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": false, "useRegex": false, "trimParts": true },
+      "expected": { "text": "  Grüße 😀\r\nGRÜSSE 😀\r\n", "removedLines": 1 }
     },
     {
       "name": "duplicates: empty lines are compared too",

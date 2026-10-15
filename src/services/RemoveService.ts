@@ -1,6 +1,7 @@
 import { BaseService, type JobOutcome, type JobRegex } from './BaseService';
 import { compileUserRegex } from '../utils/regex';
 import { joinLines, splitLines } from '../utils/lines';
+import { trimWhitespace } from '../utils/diff/whitespace';
 import { assertBackendResult, createResult } from './ProcessingError';
 
 export class RemoveService extends BaseService {
@@ -37,7 +38,8 @@ export class RemoveService extends BaseService {
     if (removeMode === 'duplicates') {
       const seen = new Set<string>();
       processedLines = lines.filter((line) => {
-        const processedLine = trimParts ? line.trim() : line;
+        // Trim (Unicode White_Space, same as Rust) and case only change the key; the original line is kept
+        const processedLine = trimParts ? trimWhitespace(line) : line;
         const key = caseSensitive ? processedLine : processedLine.toLowerCase();
         if (seen.has(key)) return false;
         seen.add(key);

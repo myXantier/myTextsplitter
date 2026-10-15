@@ -26,6 +26,8 @@ const KINDS: readonly ProcessingErrorKind[] = ['invalidInput', 'backend', 'worke
 export const ERROR_KEYS = {
   invalidRegex: 'errors.invalidRegex',
   regexTooComplex: 'errors.regexTooComplex',
+  /** A JS regex match would cut a character (surrogate pair) apart: the result would be damaged text. */
+  regexSplitsCharacter: 'errors.regexSplitsCharacter',
   /** A regex cannot be run without Web Worker (it could block the UI thread). */
   regexRequiresWorker: 'errors.regexRequiresWorker',
   /** The diff needs more than `DIFF_WORK_LIMIT` work units (many reordered lines). */
@@ -59,6 +61,9 @@ export function toProcessingError(error: unknown, kind: ProcessingErrorKind): Pr
 }
 
 export const invalidRegexError = (detail?: string) => new ProcessingError('invalidInput', ERROR_KEYS.invalidRegex, detail);
+
+export const regexSplitsCharacterError = () =>
+  new ProcessingError('invalidInput', ERROR_KEYS.regexSplitsCharacter, 'a match boundary lies inside a UTF-16 surrogate pair');
 
 export const supersededError = () => new ProcessingError('superseded', ERROR_KEYS.superseded);
 

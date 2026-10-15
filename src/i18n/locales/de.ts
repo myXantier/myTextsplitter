@@ -118,6 +118,7 @@ export default {
       invalidPattern: 'Ungültiges Muster',
       invalidRegex: 'Ungültiger regulärer Ausdruck',
       regexTooComplex: 'Regulärer Ausdruck ist für diesen Text zu aufwendig',
+      regexSplitsCharacter: 'Das Muster trifft nur einen Teil eines Zeichens (z. B. eines Emojis). Das Ergebnis wäre beschädigt und wurde nicht übernommen.',
       diffTooComplex: 'Der Vergleich ist zu aufwendig (zu viele umgestellte Zeilen)',
       regexRequiresWorker: 'Reguläre Ausdrücke können ohne Web Worker nicht sicher ausgeführt werden',
       processingSuperseded: 'Verarbeitung wurde durch eine neuere ersetzt',
