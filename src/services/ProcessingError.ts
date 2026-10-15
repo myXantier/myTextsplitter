@@ -26,6 +26,10 @@ const KINDS: readonly ProcessingErrorKind[] = ['invalidInput', 'backend', 'worke
 export const ERROR_KEYS = {
   invalidRegex: 'errors.invalidRegex',
   regexTooComplex: 'errors.regexTooComplex',
+  /** A JS regex match would cut a character (surrogate pair) apart: the result would be damaged text. */
+  regexSplitsCharacter: 'errors.regexSplitsCharacter',
+  /** The Filter or Remove mode is not supported (unknown or empty). */
+  invalidMode: 'errors.invalidMode',
   /** A regex cannot be run without Web Worker (it could block the UI thread). */
   regexRequiresWorker: 'errors.regexRequiresWorker',
   /** The diff needs more than `DIFF_WORK_LIMIT` work units (many reordered lines). */
@@ -60,6 +64,12 @@ export function toProcessingError(error: unknown, kind: ProcessingErrorKind): Pr
 
 export const invalidRegexError = (detail?: string) => new ProcessingError('invalidInput', ERROR_KEYS.invalidRegex, detail);
 
+/** An unknown or empty Filter/Remove mode: invalid input (Rust `TextError::InvalidMode`), never a silent default. */
+export const invalidModeError = (detail?: string) => new ProcessingError('invalidInput', ERROR_KEYS.invalidMode, detail);
+
+export const regexSplitsCharacterError = () =>
+  new ProcessingError('invalidInput', ERROR_KEYS.regexSplitsCharacter, 'a match boundary lies inside a UTF-16 surrogate pair');
+
 export const supersededError = () => new ProcessingError('superseded', ERROR_KEYS.superseded);
 
 /** True for a processing that was replaced by a newer one of the same type (the pages show nothing for it). */
@@ -78,6 +88,7 @@ export function fromBackendError(error: unknown): ProcessingError {
     // The pattern needs too much backtracking for this text (fancy-regex limit): a problem of the input, not of the app
     if (kind === 'regexRuntime') return new ProcessingError('invalidInput', ERROR_KEYS.regexTooComplex, detail);
     if (kind === 'diffTooComplex') return new ProcessingError('invalidInput', ERROR_KEYS.diffTooComplex, detail);
+    if (kind === 'invalidMode') return invalidModeError(detail);
     // The Rust job slot replaced this request by a newer one before it ran. BaseService reports it as `superseded`
     // when a newer job exists; for the latest job (requests arrived out of order) it stays a visible backend error.
     if (kind === 'superseded') return new ProcessingError('backend', ERROR_KEYS.general, 'superseded by a newer backend request');

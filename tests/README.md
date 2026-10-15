@@ -75,6 +75,53 @@ line contents: CRLF vs. LF and a trailing newline on one side only are no differ
 keep their rows) with the line format of the text that was split (stored on a successful Split); the column copy uses
 the same format. One empty line without trailing newline and an empty result are both `""` (text representation).
 
+## Filter/Remove fixtures (`tests/fixtures/filter-remove-cases.json`, Paket 8)
+
+Golden fixtures for both engines: `npm test` (`tests/unit/filter-remove.test.ts`) and `cargo test`
+(`text_processor.rs`, module `tests::filter_remove_fixtures`). Phase B characterized the behaviour; Phase C1 corrected
+some of it (cases turned from per-engine into shared expectations). A passing test means the behaviour is described
+correctly, not that every documented difference is wanted. Expectations are written by hand, never generated from an engine.
+
+Semantics fixed in C1:
+
+- **Whitespace** (Filter blank lines, Remove trim of the duplicate key) is the Unicode `White_Space` set of
+  `src/utils/diff/whitespace.ts` (`isBlankLine`, `trimWhitespace`), the same as Rust `str::trim`: U+0085 is
+  whitespace, U+FEFF is not. Regex `\s` is unchanged.
+- **Duplicates with trim:** trim and case only change the comparison key; the original first occurrence is output.
+- **Filter "remove matches" (C2):** a line is dropped only if a match actually removed text from it and the rest is
+  empty or whitespace-only (same whitespace set). A line without removed text (no match, only zero-width matches) stays
+  exactly as it is, also an empty or whitespace-only line. The keep mode still skips blank lines. Changed expectations
+  carry a `resolved` note. E2E: `checkLineEndings` (browser, Tauri with Rust, Tauri with JS).
+- **Modes (C3):** only `keep`/`remove` (Filter) and `duplicates`/`containing`/`notContaining` (Remove) are accepted,
+  exactly as written. Anything else, also an empty mode, is `{ "error": "invalidMode" }`: Rust `TextError::InvalidMode`,
+  JS `invalidInput` / `errors.invalidMode` (`src/utils/textModes.ts`), checked before the regex and also for an empty
+  text. The services refuse it before any processing path runs (`checkRequest`), so no result and no metrics are applied.
+  The Remove page labels the trim option as "duplicates only" (with tooltip); E2E: `checkProcessingErrors`.
+- **Cut characters (JS Filter):** a RegExp without `u` works on UTF-16 code units. If a match boundary lies inside a
+  surrogate pair and the result would not put both halves next to each other again (split matches, a partly removed
+  emoji, halves of two different emoji), the worker reports `invalidInput` / `errors.regexSplitsCharacter` instead of
+  returning damaged text (`matchesWithoutCutCharacters` in `src/utils/regex.ts`). Lone surrogates already in the input
+  are not refused. The check is a generator: it keeps only the previous match end and one open cut, never a list of
+  matches. Lines without surrogates skip it; the remove mode drains it and then uses the native `replace` (memory for
+  the result only, an error never leaves a partial result). Targeted cases: `tests/unit/surrogate-guard.test.ts`
+  (time and memory are measured separately, not asserted in unit tests).
+
+| Field | Meaning |
+|---|---|
+| `options` | Always complete, no defaults. Filter: `mode`, `caseSensitive`, `splitMatches`. Remove: `removeMode`, `caseSensitive`, `useRegex`, `trimParts`. |
+| `pattern` | A string, or `{ "repeat": "a", "count": 10001 }` for long patterns. |
+| `expected` | Same result in both engines. Filter: the text or `{ "error": "invalidRegex" \| "regexRuntime" }`. Remove: `{ "text", "removedLines" }` or `{ "error" }`. |
+| `expectedRust` + `expectedJs` + `divergence` | Different current results; `divergence.kind` is `dialect` (accepted, Paket 5), `utf16Guard`, `suspectedBug`, `inconsistentDefinition` or `unvalidatedInput`, with a `reason`. |
+| `{ "error": "regexSplitsCharacter" }` | JS Filter only, always with `utf16Guard`: Rust processes valid Unicode, the JS worker refuses a result with a cut character. Every successful JS result is checked to be well-formed Unicode. |
+| `expectedJsUnreachableMainThread` | `FilterService.frontendInMainThread`, which `invoke` never reaches. Tested separately, **not a product path**. |
+| `ref`, `openQuestion` | Case id in the Phase A report; open product decision for identical behaviour. |
+| `resolved` | Why a correction changed the expectation (only with a shared `expected`). |
+
+JS paths per case: the real worker module; for Remove also `frontendInMainThread`; and the service without Web Worker
+(`invoke(args, false)` in Node): Filter always refuses (`regexRequiresWorker`, or `invalidRegex`), Remove runs
+duplicates and literal search in the main thread and refuses regex jobs. Both runners reject malformed entries
+(missing options, unknown keys, inconsistent expectations).
+
 ## Diff fixtures (`tests/fixtures/diff-cases.json`, Paket 7 B1)
 
 One line diff, implemented twice with the same steps: `src/utils/diff/` (JS: Web Worker and main-thread fallback) and

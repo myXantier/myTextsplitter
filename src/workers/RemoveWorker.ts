@@ -3,6 +3,8 @@ import { compileUserRegex } from '../utils/regex';
 import { WorkerLogger } from '../other/Logger';
 import { createResult } from '../services/ProcessingError';
 import { joinLines } from '../utils/lines';
+import { trimWhitespace } from '../utils/diff/whitespace';
+import { assertRemoveMode } from '../utils/textModes';
 
 export class RemoveWorker extends BaseWorker {
 
@@ -12,13 +14,15 @@ export class RemoveWorker extends BaseWorker {
 
     const { mainParam, configParams } = options.args as RemoveConfig;
     const { caseSensitive, useRegex, trimParts, removeMode } = configParams;
+    assertRemoveMode(removeMode); // before the regex, like Rust
 
     let processedLines: string[];
 
     if (removeMode === 'duplicates') {
       const seen = new Set<string>();
       processedLines = chunk.filter((line) => {
-        const processedLine = trimParts ? line.trim() : line;
+        // Trim (Unicode White_Space, same as Rust) and case only change the key; the original line is kept
+        const processedLine = trimParts ? trimWhitespace(line) : line;
         const key = caseSensitive ? processedLine : processedLine.toLowerCase();
         if (seen.has(key)) return false;
         seen.add(key);

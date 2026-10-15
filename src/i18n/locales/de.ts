@@ -118,6 +118,8 @@ export default {
       invalidPattern: 'Ungültiges Muster',
       invalidRegex: 'Ungültiger regulärer Ausdruck',
       regexTooComplex: 'Regulärer Ausdruck ist für diesen Text zu aufwendig',
+      invalidMode: 'Unbekannter Verarbeitungsmodus. Bitte eine der angebotenen Aktionen verwenden.',
+      regexSplitsCharacter: 'Das Muster trifft nur einen Teil eines Zeichens (z. B. eines Emojis). Das Ergebnis wäre beschädigt und wurde nicht übernommen.',
       diffTooComplex: 'Der Vergleich ist zu aufwendig (zu viele umgestellte Zeilen)',
       regexRequiresWorker: 'Reguläre Ausdrücke können ohne Web Worker nicht sicher ausgeführt werden',
       processingSuperseded: 'Verarbeitung wurde durch eine neuere ersetzt',
@@ -182,7 +184,8 @@ export default {
         notContaining: 'Nicht Enthaltend'
       },
       options: {
-        trim: 'Leerzeichen trimmen',
+        trim: 'Leerzeichen trimmen (nur Duplikate)',
+        trimHint: 'Wirkt nur bei „Duplikate“: Zeilen werden ohne führende und abschließende Leerzeichen verglichen, ausgegeben wird immer die Originalzeile. „Enthaltend“ und „Nicht Enthaltend“ ignorieren diese Option.',
         caseSensitive: 'Groß-/Kleinschreibung beachten',
         useRegex: 'Regex verwenden'
       },

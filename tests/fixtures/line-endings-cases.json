@@ -64,9 +64,8 @@
       "input": " a\r\na\r\n",
       "removeMode": "duplicates",
       "trimParts": true,
-      "expectedRust": { "text": "a\r\n", "removedLines": 1 },
-      "expectedJs": { "text": " a\r\n", "removedLines": 1 },
-      "divergence": "Existing behaviour (not a line-ending topic): with trimParts the Rust engine outputs the trimmed first occurrence, the JS engine the original line."
+      "expected": { "text": " a\r\n", "removedLines": 1 },
+      "resolved": "Paket 8 C1: trimParts only changes the comparison key, both engines output the original first occurrence (Rust formerly output the trimmed line)."
     }
   ],
   "combine": [

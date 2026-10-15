@@ -1,7 +1,9 @@
 import { BaseService, type JobOutcome, type JobRegex } from './BaseService';
 import { compileUserRegex } from '../utils/regex';
 import { joinLines, splitLines } from '../utils/lines';
+import { trimWhitespace } from '../utils/diff/whitespace';
 import { assertBackendResult, createResult } from './ProcessingError';
+import { assertRemoveMode } from '../utils/textModes';
 
 export class RemoveService extends BaseService {
   protected readonly resultType = 'TextV2';
@@ -22,6 +24,11 @@ export class RemoveService extends BaseService {
     return this.backendOutcome(createResult('TextV2', result), result.metrics, sourceText, result.result_text);
   }
 
+  /** An unknown or empty mode is refused before any processing path runs (Rust and the worker check it too). */
+  protected checkRequest({ configParams }: RemoveConfig): void {
+    assertRemoveMode(configParams.removeMode);
+  }
+
   protected regexOf({ mainParam, configParams }: RemoveConfig): JobRegex | null {
     const { useRegex, removeMode, caseSensitive } = configParams;
     return useRegex && removeMode !== 'duplicates' ? { pattern: mainParam, flags: caseSensitive ? '' : 'i' } : null;
@@ -30,6 +37,7 @@ export class RemoveService extends BaseService {
   protected async frontendInMainThread(args: RemoveConfig): Promise<myResult> {
     const { sourceText, mainParam, configParams } = args;
     const { caseSensitive, useRegex, trimParts, removeMode } = configParams;
+    assertRemoveMode(removeMode);
 
     const { lines, ...format } = splitLines(sourceText);
     let processedLines: string[];
@@ -37,7 +45,8 @@ export class RemoveService extends BaseService {
     if (removeMode === 'duplicates') {
       const seen = new Set<string>();
       processedLines = lines.filter((line) => {
-        const processedLine = trimParts ? line.trim() : line;
+        // Trim (Unicode White_Space, same as Rust) and case only change the key; the original line is kept
+        const processedLine = trimParts ? trimWhitespace(line) : line;
         const key = caseSensitive ? processedLine : processedLine.toLowerCase();
         if (seen.has(key)) return false;
         seen.add(key);

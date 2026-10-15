@@ -1,0 +1,1182 @@
+{
+  "description": "Golden fixtures (Paket 8, Phase B) for Filter and Remove, shared by the Rust engine (cargo test, src-tauri/src/text_processor.rs) and the JS engine (npm test, tests/unit/filter-remove.test.ts). They characterize the CURRENT behaviour: a passing test means the behaviour is described correctly, not that it is wanted. Every case states all options explicitly (no defaults). 'pattern' is a string or { repeat, count } (the string repeated count times). Filter expectations: the result text or { error: invalidRegex | regexRuntime | invalidMode } (invalidMode, Paket 8 C3: an unknown or empty mode, checked before anything else); JS only: { error: regexSplitsCharacter } (Paket 8 C1: a JS match would cut a surrogate pair apart, the worker refuses instead of returning damaged text). Remove expectations: { text, removedLines } or { error }. A case with different engine results uses expectedRust + expectedJs and a divergence { kind, reason }; kinds: dialect (accepted regex dialect difference, Paket 5), utf16Guard (Rust processes valid Unicode, JS refuses a result that would contain cut characters; required for regexSplitsCharacter), suspectedBug, inconsistentDefinition, unvalidatedInput. Every successful JS result must be well-formed Unicode. 'ref' points to the Phase A report (docs/analyse/Paket8-PhaseA-Filter-Remove-Analyse.md). 'openQuestion' marks identical behaviour that still needs a product decision. 'resolved' explains why an expectation was changed by a correction (e.g. Paket 8 C2: in remove mode only a line from which a match removed text and whose rest is blank is dropped; lines without removed text stay unchanged). 'expectedJsUnreachableMainThread' characterizes FilterService.frontendInMainThread, which invoke never reaches (not a product path).",
+  "filter": [
+    {
+      "name": "keep: one match per line, split off",
+      "input": "apple\nbanana\napricot",
+      "pattern": "ap",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "ap\nap"
+    },
+    {
+      "name": "keep: several matches in a line are joined (split off)",
+      "input": "a1b2\nc3",
+      "pattern": "\\d",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "12\n3"
+    },
+    {
+      "name": "keep: several matches in a line become lines (split on)",
+      "input": "a1b2\nc3",
+      "pattern": "\\d",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expected": "1\n2\n3"
+    },
+    {
+      "name": "keep: no match at all gives an empty result",
+      "input": "abc\ndef",
+      "pattern": "x",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "",
+      "expectedJsUnreachableMainThread": "\n"
+    },
+    {
+      "name": "keep: lines without a match are dropped",
+      "input": "a1\nb\nc2",
+      "pattern": "\\d",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "1\n2",
+      "expectedJsUnreachableMainThread": "1\n\n2"
+    },
+    {
+      "name": "keep: case-sensitive does not match another case",
+      "input": "Apple\napple",
+      "pattern": "apple",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "apple"
+    },
+    {
+      "name": "keep: case-insensitive keeps the original case of the matches",
+      "input": "ABC abc",
+      "pattern": "b",
+      "options": { "mode": "keep", "caseSensitive": false, "splitMatches": true },
+      "expected": "B\nb"
+    },
+    {
+      "name": "keep: empty input gives an empty result",
+      "input": "",
+      "pattern": "a",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": ""
+    },
+    {
+      "name": "keep: untouched empty and whitespace-only lines are dropped",
+      "input": "a1\n\n   \n\t\nb2",
+      "pattern": "\\d",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "1\n2"
+    },
+    {
+      "name": "keep: a whitespace-only result is kept",
+      "input": "a b",
+      "pattern": " ",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": " "
+    },
+    {
+      "name": "keep: matches keep their order within the line",
+      "input": "c3 a1 b2",
+      "pattern": "\\w\\d",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expected": "c3\na1\nb2"
+    },
+    {
+      "name": "keep: duplicate lines are not deduplicated",
+      "input": "a1\na1",
+      "pattern": "\\d",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "1\n1"
+    },
+    {
+      "name": "keep: LF trailing newline is kept",
+      "input": "apple\nbanana\n",
+      "pattern": "ple",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "ple\n",
+      "expectedJsUnreachableMainThread": "ple\n\n"
+    },
+    {
+      "name": "keep: CRLF and its trailing newline are kept",
+      "input": "apple\r\nbanana\r\napricot\r\n",
+      "pattern": "ap",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "ap\r\nap\r\n"
+    },
+    {
+      "name": "keep: CR and its trailing newline are kept",
+      "input": "x1\rx2\r",
+      "pattern": "\\d",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "1\r2\r"
+    },
+    {
+      "name": "keep: mixed line endings use the most frequent one",
+      "input": "a1\r\nb2\r\nc3\nd4",
+      "pattern": "\\d",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expected": "1\r\n2\r\n3\r\n4"
+    },
+    {
+      "name": "keep: split matches are joined with the line ending of the input",
+      "input": "a1b2\r\n",
+      "pattern": "\\d",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expected": "1\r\n2\r\n"
+    },
+    {
+      "name": "keep: only empty CRLF lines give an empty result",
+      "input": "\r\n\r\n",
+      "pattern": "a",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": ""
+    },
+    {
+      "name": "keep: umlauts, sharp s and emoji as literal pattern with CRLF",
+      "input": "Grüße 😀\r\nStraße 🎉",
+      "pattern": "ß|🎉",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expected": "ß\r\nß\r\n🎉"
+    },
+    {
+      "name": "keep: case-insensitive umlauts",
+      "input": "ÄRGER ärger",
+      "pattern": "ärger",
+      "options": { "mode": "keep", "caseSensitive": false, "splitMatches": true },
+      "expected": "ÄRGER\närger"
+    },
+    {
+      "name": "keep: dot on an emoji with split matches",
+      "ref": "F12",
+      "input": "😀x",
+      "pattern": ".",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expectedRust": "😀\nx",
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": {
+        "kind": "utf16Guard",
+        "reason": "JS RegExp without the 'u' flag matches UTF-16 code units: the emoji halves would end up as lone surrogates on separate lines (formerly output as damaged text). The worker now refuses the result; Rust matches Unicode scalar values."
+      }
+    },
+    {
+      "name": "keep: dot on an emoji without split matches rejoins the halves",
+      "input": "😀x",
+      "pattern": ".",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "😀x"
+    },
+    {
+      "name": "keep: negated class on an emoji with split matches",
+      "input": "😀",
+      "pattern": "[^a]",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expectedRust": "😀",
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": {
+        "kind": "utf16Guard",
+        "reason": "Same cause as F12: [^a] matches each surrogate half on its own in JS; split matches would separate them with a line break."
+      }
+    },
+    {
+      "name": "keep: negated class on an emoji without split matches rejoins the halves",
+      "input": "😀",
+      "pattern": "[^a]",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "😀"
+    },
+    {
+      "name": "keep: halves of two different emoji would be recombined",
+      "input": "😀😃",
+      "pattern": "^.|.$",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expectedRust": "😀😃",
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": {
+        "kind": "utf16Guard",
+        "reason": "JS matches the high half of the first and the low half of the second emoji; joined they would form a different, well-formed character (U+1F603 alone). A well-formedness check alone would not notice; the match boundaries do."
+      }
+    },
+    {
+      "name": "keep: emoji as a whole match with split matches",
+      "input": "a😀b😃",
+      "pattern": "😀|😃",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expected": "😀\n😃"
+    },
+    {
+      "name": "keep: emoji in the line, matches elsewhere",
+      "input": "😀 a1\r\n🎉 b2\r\n",
+      "pattern": "\\d",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expected": "1\r\n2\r\n"
+    },
+    {
+      "name": "keep: dot without split keeps emoji with CRLF and trailing newline",
+      "input": "😀x\r\n😃\r\n",
+      "pattern": ".",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "😀x\r\n😃\r\n"
+    },
+    {
+      "name": "keep: empty matches inside an emoji cut nothing",
+      "input": "😀",
+      "pattern": "x*",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expectedRust": "\n",
+      "expectedJs": "\n\n",
+      "divergence": {
+        "kind": "dialect",
+        "reason": "Empty matches advance by one UTF-16 code unit in JS and by one character in Rust (Paket 5); no character is cut, so the JS guard does not refuse it."
+      }
+    },
+    {
+      "name": "keep: dot on an emoji with split matches and CRLF",
+      "input": "😀\r\n",
+      "pattern": ".",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expectedRust": "😀\r\n",
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": {
+        "kind": "utf16Guard",
+        "reason": "Same cause as F12; the surrogate halves would be separated by the CRLF line ending of the input."
+      }
+    },
+    {
+      "name": "keep: line consisting only of U+FEFF is not blank",
+      "ref": "F16",
+      "input": "﻿\nb",
+      "pattern": ".",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expected": "﻿\nb"
+    },
+    {
+      "name": "keep: line consisting only of U+0085 (NEL) is blank",
+      "ref": "F17",
+      "input": "\u0085\nb",
+      "pattern": ".",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expected": "b"
+    },
+    {
+      "name": "keep: no-break space and ideographic space lines are blank",
+      "input": " \n　\nb",
+      "pattern": ".",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "b"
+    },
+    {
+      "name": "keep: invalid regex is an error",
+      "input": "a",
+      "pattern": "([a-",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": { "error": "invalidRegex" }
+    },
+    {
+      "name": "keep: inline flag (?i) is Rust-only syntax",
+      "input": "Apple",
+      "pattern": "(?i)ap",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expectedRust": "Ap",
+      "expectedJs": { "error": "invalidRegex" },
+      "divergence": { "kind": "dialect", "reason": "Inline flags are fancy-regex syntax; JS rejects them (Paket 5)." }
+    },
+    {
+      "name": "keep: variable-length lookbehind is JS-only syntax",
+      "input": "aab b",
+      "pattern": "(?<=a+)b",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expectedRust": { "error": "invalidRegex" },
+      "expectedJs": "b",
+      "divergence": { "kind": "dialect", "reason": "fancy-regex only allows constant-length lookbehinds (Paket 5)." }
+    },
+    {
+      "name": "keep: \\w is Unicode-aware only in Rust",
+      "input": "Grüße Welt",
+      "pattern": "\\w+",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expectedRust": "Grüße\nWelt",
+      "expectedJs": "Gr\ne\nWelt",
+      "divergence": { "kind": "dialect", "reason": "Rust \\w is Unicode, JS \\w is ASCII without the 'u' flag (Paket 5)." }
+    },
+    {
+      "name": "keep: empty match directly after a non-empty match",
+      "input": "a1b",
+      "pattern": "\\d*",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expectedRust": "\n1\n",
+      "expectedJs": "\n1\n\n",
+      "divergence": { "kind": "dialect", "reason": "Rust's match iterator skips an empty match that starts where the previous match ended; JS reports it (Paket 5)." }
+    },
+    {
+      "name": "keep: pattern of exactly 10000 characters is accepted by both engines",
+      "input": "a",
+      "pattern": { "repeat": "a", "count": 10000 },
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": ""
+    },
+    {
+      "name": "keep: pattern longer than 10000 characters",
+      "ref": "F31",
+      "input": "a",
+      "pattern": { "repeat": "a", "count": 10001 },
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expectedRust": "",
+      "expectedJs": { "error": "invalidRegex" },
+      "divergence": {
+        "kind": "unvalidatedInput",
+        "reason": "JS rejects patterns longer than MAX_PATTERN_LENGTH (10000) as invalidRegex; Rust has no length limit and runs the pattern (no match here). Reachable from the UI (no maxLength)."
+      }
+    },
+    {
+      "name": "keep: empty pattern",
+      "input": "abc",
+      "pattern": "",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expectedRust": "",
+      "expectedJs": { "error": "invalidRegex" },
+      "divergence": {
+        "kind": "unvalidatedInput",
+        "reason": "JS rejects an empty pattern; Rust runs it (only empty matches, every line is dropped). Not reachable from the UI (FilterPage requires a pattern)."
+      }
+    },
+    {
+      "name": "unknown filter mode is an error",
+      "input": "a1",
+      "pattern": "\\d",
+      "options": { "mode": "bogus", "caseSensitive": true, "splitMatches": true },
+      "expected": { "error": "invalidMode" },
+      "resolved": "Paket 8 C3: was \"1\" (both engines silently fell back to keep). Only 'keep' and 'remove' are accepted; anything else is invalid input."
+    },
+    {
+      "name": "empty filter mode is an error",
+      "input": "a1",
+      "pattern": "\\d",
+      "options": { "mode": "", "caseSensitive": true, "splitMatches": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "filter mode with different case is an error",
+      "input": "a1",
+      "pattern": "\\d",
+      "options": { "mode": "Keep", "caseSensitive": true, "splitMatches": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "filter mode with surrounding space is an error",
+      "input": "a1",
+      "pattern": "\\d",
+      "options": { "mode": " remove", "caseSensitive": true, "splitMatches": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "a Remove mode is no filter mode",
+      "input": "a1",
+      "pattern": "\\d",
+      "options": { "mode": "containing", "caseSensitive": true, "splitMatches": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "unknown filter mode on an empty text is still an error",
+      "input": "",
+      "pattern": "a",
+      "options": { "mode": "bogus", "caseSensitive": true, "splitMatches": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "unknown filter mode is reported before an invalid regex",
+      "input": "a",
+      "pattern": "([a-",
+      "options": { "mode": "bogus", "caseSensitive": true, "splitMatches": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "remove: matches are removed, other lines stay unchanged",
+      "input": "abc\nxyz",
+      "pattern": "b",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "ac\nxyz"
+    },
+    {
+      "name": "remove: untouched empty line without match is kept",
+      "ref": "F04",
+      "input": "a\n\nb",
+      "pattern": "x",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "a\n\nb",
+      "expectedJsUnreachableMainThread": "a\n\nb",
+      "resolved": "Paket 8 C2: was \"a\\nb\". A line from which no text was removed is never changed or dropped, so existing paragraphs stay."
+    },
+    {
+      "name": "remove: untouched whitespace-only line is kept",
+      "input": "a\n   \nb",
+      "pattern": "x",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "a\n   \nb",
+      "expectedJsUnreachableMainThread": "a\n   \nb",
+      "resolved": "Paket 8 C2: was \"a\\nb\". Same rule as F04 for whitespace-only lines."
+    },
+    {
+      "name": "remove: no match in the whole text keeps every line",
+      "input": "a\n\n  \n\tb\n\n",
+      "pattern": "x",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "a\n\n  \n\tb\n\n"
+    },
+    {
+      "name": "remove: a whitespace-only line is dropped when the match removes its whitespace",
+      "input": "a\n   \nb",
+      "pattern": " +",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "a\nb"
+    },
+    {
+      "name": "remove: a whitespace-only rest after removing a tab stays blank and is dropped",
+      "input": "a\n \t \nb",
+      "pattern": "\\t",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "a\nb"
+    },
+    {
+      "name": "remove: completely removed line",
+      "input": "abc\nxyz",
+      "pattern": "abc",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "xyz"
+    },
+    {
+      "name": "remove: completely removed line directly before an existing empty line",
+      "input": "abc\n\nxyz",
+      "pattern": "abc",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "\nxyz"
+    },
+    {
+      "name": "remove: partly removed line keeps its rest including the space",
+      "input": "Hallo Welt",
+      "pattern": "Welt",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "Hallo "
+    },
+    {
+      "name": "remove: zero-width matches remove nothing and keep empty and whitespace-only lines",
+      "input": "a\n\n  \nb",
+      "pattern": "x*",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "a\n\n  \nb"
+    },
+    {
+      "name": "remove: anchors and word boundaries remove nothing",
+      "input": "a b\n\nc\n",
+      "pattern": "^|\\b|$",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "a b\n\nc\n"
+    },
+    {
+      "name": "remove: CRLF, removed line before an empty line, trailing newline kept",
+      "input": "abc\r\n\r\nxyz\r\n",
+      "pattern": "abc",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "\r\nxyz\r\n"
+    },
+    {
+      "name": "remove: CR, removed line before an empty line, trailing newline kept",
+      "input": "abc\r\rxyz\r",
+      "pattern": "abc",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "\rxyz\r"
+    },
+    {
+      "name": "remove: mixed line endings, empty line kept, most frequent ending",
+      "input": "abc\r\n\r\nx1\ny",
+      "pattern": "abc|\\d",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "\r\nx\r\ny"
+    },
+    {
+      "name": "remove: trailing newline after an empty last line is kept",
+      "input": "a\n\n",
+      "pattern": "x",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "a\n\n"
+    },
+    {
+      "name": "remove: a text of one empty line stays unchanged",
+      "input": "\n",
+      "pattern": "x",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "\n"
+    },
+    {
+      "name": "remove: only empty lines stay unchanged",
+      "input": "\r\n\r\n",
+      "pattern": "a",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "\r\n\r\n"
+    },
+    {
+      "name": "remove: one remaining empty line without trailing newline is the empty text",
+      "input": "\nabc",
+      "pattern": "abc",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "",
+      "openQuestion": "The kept empty line cannot be told apart from an empty result in the text representation (line model, Paket 6)."
+    },
+    {
+      "name": "remove: every line completely removed gives the empty text",
+      "input": "abc\r\nabc\r\n",
+      "pattern": "abc",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": ""
+    },
+    {
+      "name": "remove: empty input",
+      "input": "",
+      "pattern": "a",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": ""
+    },
+    {
+      "name": "remove: a U+0085 rest after removal is blank and the line is dropped",
+      "input": "a\u0085\nc",
+      "pattern": "a",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "c"
+    },
+    {
+      "name": "remove: a U+FEFF rest after removal is not blank and the line is kept",
+      "input": "a﻿\nc",
+      "pattern": "a",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "﻿\nc"
+    },
+    {
+      "name": "remove: emoji lines around an untouched empty line",
+      "input": "😀a\n\n😃\n",
+      "pattern": "a",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "😀\n\n😃\n"
+    },
+    {
+      "name": "remove: emoji line completely removed before an empty line",
+      "input": "😀\n\nb",
+      "pattern": "[^b]",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "\nb"
+    },
+    {
+      "name": "remove: cut emoji next to an empty line is still refused",
+      "input": "x😀a\n\nb",
+      "pattern": ".a",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expectedRust": "x\n\nb",
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": {
+        "kind": "utf16Guard",
+        "reason": "C1 guard: in JS '.' matches only the low half of the emoji; the empty-line rule of C2 does not change that the job is refused."
+      }
+    },
+    {
+      "name": "remove: a line that becomes empty is dropped",
+      "input": "ab\ncd",
+      "pattern": "ab",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "cd",
+      "expectedJsUnreachableMainThread": "\ncd"
+    },
+    {
+      "name": "remove: a whitespace-only rest after removal drops the line",
+      "ref": "F06",
+      "input": "a b\nc",
+      "pattern": "[ab]",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "c",
+      "resolved": "Paket 8 C2: was \" \\nc\". Text was removed and only whitespace is left, so the line is dropped (formerly kept while untouched blank lines were dropped)."
+    },
+    {
+      "name": "remove: all lines become empty, empty result",
+      "input": "a\nb\n",
+      "pattern": ".*",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": ""
+    },
+    {
+      "name": "remove: CRLF and its trailing newline are kept",
+      "input": "a1\r\nb2\r\n",
+      "pattern": "\\d",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "a\r\nb\r\n"
+    },
+    {
+      "name": "remove: CR line endings",
+      "input": "a1\rb2",
+      "pattern": "\\d",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "a\rb"
+    },
+    {
+      "name": "remove: case-insensitive",
+      "input": "AbcABC",
+      "pattern": "b",
+      "options": { "mode": "remove", "caseSensitive": false, "splitMatches": false },
+      "expected": "AcAC"
+    },
+    {
+      "name": "remove: surrounding whitespace alone does not keep a line",
+      "input": "  a  ",
+      "pattern": "a",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "",
+      "resolved": "Paket 8 C2: was \"    \". Text was removed and only whitespace is left, so the line is dropped (same rule as F06)."
+    },
+    {
+      "name": "remove: leading and trailing whitespace of a non-blank rest is kept",
+      "input": "  a b  ",
+      "pattern": "a",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "   b  "
+    },
+    {
+      "name": "remove: escaped dollar sign (no replacement syntax)",
+      "input": "a$b",
+      "pattern": "\\$",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "ab"
+    },
+    {
+      "name": "remove: negated class removes both halves of an emoji",
+      "input": "😀a",
+      "pattern": "[^a]",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "a"
+    },
+    {
+      "name": "remove: negated class removes whole emoji with CRLF and trailing newline",
+      "input": "😀xb\r\n🎉ab\r\n",
+      "pattern": "[^b]",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "b\r\nb\r\n"
+    },
+    {
+      "name": "remove: dot removes everything including emoji",
+      "input": "😀x\n😃",
+      "pattern": ".",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": ""
+    },
+    {
+      "name": "remove: emoji as literal pattern",
+      "input": "a😀b\r\n😃\r\n",
+      "pattern": "😀",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "ab\r\n😃\r\n"
+    },
+    {
+      "name": "remove: a match starting in the middle of an emoji",
+      "input": "x😀a",
+      "pattern": ".a",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expectedRust": "x",
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": {
+        "kind": "utf16Guard",
+        "reason": "In JS '.' matches only the low half of the emoji, removing '.a' would leave a lone high surrogate; Rust removes the whole emoji."
+      }
+    },
+    {
+      "name": "remove: negated class removes half of one emoji",
+      "input": "😀😃",
+      "pattern": "[^😀]",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expectedRust": "😀",
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": {
+        "kind": "utf16Guard",
+        "reason": "In JS the class consists of the two code units of 😀 and matches only the low half of 😃; removing it would leave a lone high surrogate. Rust removes 😃."
+      }
+    },
+    {
+      "name": "remove: line consisting only of U+FEFF is not blank",
+      "input": "﻿\nab",
+      "pattern": "b",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "﻿\na"
+    },
+    {
+      "name": "remove: untouched line consisting only of U+0085 is kept",
+      "input": "\u0085\nab",
+      "pattern": "b",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "\u0085\na",
+      "resolved": "Paket 8 C2: was \"a\". U+0085 is still whitespace (C1), but no text was removed from this line, so it stays (same rule as F05)."
+    },
+    {
+      "name": "remove: invalid regex is an error",
+      "input": "a",
+      "pattern": "([a-",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": { "error": "invalidRegex" }
+    }
+  ],
+  "remove": [
+    {
+      "name": "duplicates: first occurrence and original order are kept",
+      "input": "b\na\nb\na\nc",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "b\na\nc", "removedLines": 2 }
+    },
+    {
+      "name": "duplicates: case-sensitive keeps case variants",
+      "input": "Ab\nab\nAB",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "Ab\nab\nAB", "removedLines": 0 }
+    },
+    {
+      "name": "duplicates: case-insensitive keeps the first variant",
+      "input": "Ab\nab\nAB",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": false, "useRegex": false, "trimParts": false },
+      "expected": { "text": "Ab", "removedLines": 2 }
+    },
+    {
+      "name": "duplicates without trim: whitespace variants are different lines",
+      "input": "a\n a\na ",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "a\n a\na ", "removedLines": 0 }
+    },
+    {
+      "name": "duplicates with trim: first occurrence without surrounding whitespace",
+      "input": "a\n a\na ",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": true },
+      "expected": { "text": "a", "removedLines": 2 }
+    },
+    {
+      "name": "duplicates with trim and case-insensitive: indented first occurrence",
+      "ref": "R05",
+      "input": "  Ab\nab",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": false, "useRegex": false, "trimParts": true },
+      "expected": { "text": "  Ab", "removedLines": 1 }
+    },
+    {
+      "name": "duplicates with trim: indented first occurrence",
+      "input": " x\nx",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": true },
+      "expected": { "text": " x", "removedLines": 1 }
+    },
+    {
+      "name": "duplicates with trim: tab-indented first occurrence with CRLF and trailing newline",
+      "input": "\tx \r\nx\r\n  x\r\ny\r\n",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": true },
+      "expected": { "text": "\tx \r\ny\r\n", "removedLines": 2 }
+    },
+    {
+      "name": "duplicates with trim: whitespace-only lines",
+      "ref": "R06",
+      "input": "  \n\t\nx",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": true },
+      "expected": { "text": "  \nx", "removedLines": 1 }
+    },
+    {
+      "name": "duplicates with trim: NEL-only, space-only and empty lines are duplicates",
+      "input": "\u0085\n \n\nx",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": true },
+      "expected": { "text": "\u0085\nx", "removedLines": 2 }
+    },
+    {
+      "name": "duplicates with trim: U+FEFF at the end of a line",
+      "ref": "R07",
+      "input": "a﻿\na",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": true },
+      "expected": { "text": "a﻿\na", "removedLines": 0 }
+    },
+    {
+      "name": "duplicates with trim: U+0085 (NEL) at the end of a line",
+      "ref": "R08",
+      "input": "a\u0085\na",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": true },
+      "expected": { "text": "a\u0085", "removedLines": 1 }
+    },
+    {
+      "name": "duplicates with trim: no-break space is whitespace",
+      "input": " a\na　",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": true },
+      "expected": { "text": " a", "removedLines": 1 }
+    },
+    {
+      "name": "duplicates with trim and case-insensitive: Unicode first occurrence kept as it is",
+      "input": "  Grüße 😀\r\ngrüße 😀  \r\nGRÜSSE 😀\r\n",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": false, "useRegex": false, "trimParts": true },
+      "expected": { "text": "  Grüße 😀\r\nGRÜSSE 😀\r\n", "removedLines": 1 }
+    },
+    {
+      "name": "duplicates: empty lines are compared too",
+      "input": "a\n\nb\n\n",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "a\n\nb\n", "removedLines": 1 }
+    },
+    {
+      "name": "duplicates: empty input",
+      "input": "",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "", "removedLines": 0 }
+    },
+    {
+      "name": "duplicates: CRLF and its trailing newline are kept",
+      "input": "x\r\ny\r\nx\r\nz\r\n",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "x\r\ny\r\nz\r\n", "removedLines": 1 }
+    },
+    {
+      "name": "duplicates: CR and its trailing newline are kept",
+      "input": "a\ra\rb\r",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "a\rb\r", "removedLines": 1 }
+    },
+    {
+      "name": "duplicates: same line with different line endings, tie uses the first ending",
+      "input": "x\r\nx\nx\ry",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "x\r\ny", "removedLines": 2 }
+    },
+    {
+      "name": "duplicates: case-insensitive final sigma",
+      "input": "ΣΑΣ\nσας",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": false, "useRegex": false, "trimParts": false },
+      "expected": { "text": "ΣΑΣ", "removedLines": 1 }
+    },
+    {
+      "name": "duplicates: case-insensitive dotted capital I",
+      "input": "İ\ni̇",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": false, "useRegex": false, "trimParts": false },
+      "expected": { "text": "İ", "removedLines": 1 }
+    },
+    {
+      "name": "duplicates: case-insensitive Kelvin sign",
+      "input": "K\nk",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": false, "useRegex": false, "trimParts": false },
+      "expected": { "text": "K", "removedLines": 1 }
+    },
+    {
+      "name": "duplicates: emoji lines",
+      "input": "😀\n😀\n🎉",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "😀\n🎉", "removedLines": 1 }
+    },
+    {
+      "name": "duplicates: the pattern is ignored",
+      "input": "x\nx",
+      "pattern": "x",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "x", "removedLines": 1 }
+    },
+    {
+      "name": "duplicates: an invalid regex is ignored with useRegex",
+      "input": "x\nx",
+      "pattern": "([a-",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": true, "trimParts": false },
+      "expected": { "text": "x", "removedLines": 1 }
+    },
+    {
+      "name": "containing: literal, case-sensitive",
+      "input": "apple\nApple\nbanana",
+      "pattern": "app",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "Apple\nbanana", "removedLines": 1 }
+    },
+    {
+      "name": "containing: literal, case-insensitive",
+      "input": "Apple\nbanana",
+      "pattern": "APP",
+      "options": { "removeMode": "containing", "caseSensitive": false, "useRegex": false, "trimParts": false },
+      "expected": { "text": "banana", "removedLines": 1 }
+    },
+    {
+      "name": "notContaining: literal keeps only matching lines",
+      "input": "apple\nbanana\ncherry",
+      "pattern": "an",
+      "options": { "removeMode": "notContaining", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "banana", "removedLines": 2 }
+    },
+    {
+      "name": "containing: regex special characters are literal without useRegex",
+      "input": "a.b\naxb",
+      "pattern": "a.b",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "axb", "removedLines": 1 }
+    },
+    {
+      "name": "containing: the same pattern as regex",
+      "input": "a.b\naxb",
+      "pattern": "a.b",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": true, "trimParts": false },
+      "expected": { "text": "", "removedLines": 2 }
+    },
+    {
+      "name": "notContaining: regex",
+      "input": "a1\nb\nc22",
+      "pattern": "\\d$",
+      "options": { "removeMode": "notContaining", "caseSensitive": true, "useRegex": true, "trimParts": false },
+      "expected": { "text": "a1\nc22", "removedLines": 1 }
+    },
+    {
+      "name": "containing: empty lines without match are kept",
+      "input": "a\n\nb\n",
+      "pattern": "b",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "a\n\n", "removedLines": 1 }
+    },
+    {
+      "name": "notContaining: empty lines are removed",
+      "input": "a\n\nb",
+      "pattern": "a",
+      "options": { "removeMode": "notContaining", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "a", "removedLines": 2 }
+    },
+    {
+      "name": "containing: a whitespace-only line contains a space",
+      "input": "a\n  \nb",
+      "pattern": " ",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "a\nb", "removedLines": 1 }
+    },
+    {
+      "name": "containing: trimParts is ignored (literal match relies on the leading space)",
+      "input": "  a\nb",
+      "pattern": " a",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": false, "trimParts": true },
+      "expected": { "text": "b", "removedLines": 1 },
+      "openQuestion": "The trim checkbox is shown for every mode but only affects duplicates."
+    },
+    {
+      "name": "containing: trimParts is ignored (regex sees the untrimmed line)",
+      "input": "  a\nb",
+      "pattern": "^a$",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": true, "trimParts": true },
+      "expected": { "text": "  a\nb", "removedLines": 0 }
+    },
+    {
+      "name": "containing: removing all lines gives an empty result",
+      "input": "a\r\nab\r\n",
+      "pattern": "a",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "", "removedLines": 2 }
+    },
+    {
+      "name": "containing: one remaining empty line without trailing newline is an empty text",
+      "input": "\na",
+      "pattern": "a",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "", "removedLines": 1 }
+    },
+    {
+      "name": "containing: empty input",
+      "input": "",
+      "pattern": "a",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "", "removedLines": 0 }
+    },
+    {
+      "name": "containing: CRLF and its trailing newline are kept",
+      "input": "a1\r\nb2\r\na3\r\n",
+      "pattern": "a",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "b2\r\n", "removedLines": 2 }
+    },
+    {
+      "name": "notContaining: CR line endings",
+      "input": "a\rb\rc",
+      "pattern": "b",
+      "options": { "removeMode": "notContaining", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "b", "removedLines": 2 }
+    },
+    {
+      "name": "containing: mixed line endings use the most frequent one",
+      "input": "a\r\nb\r\nc\nd",
+      "pattern": "c",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "a\r\nb\r\nd", "removedLines": 1 }
+    },
+    {
+      "name": "containing: regex $ at the end of a CRLF line",
+      "input": "a1\r\nb2\r\n",
+      "pattern": "1$",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": true, "trimParts": false },
+      "expected": { "text": "b2\r\n", "removedLines": 1 }
+    },
+    {
+      "name": "containing: literal case-insensitive sharp s is not folded to ss",
+      "input": "STRASSE\nstraße",
+      "pattern": "ß",
+      "options": { "removeMode": "containing", "caseSensitive": false, "useRegex": false, "trimParts": false },
+      "expected": { "text": "STRASSE", "removedLines": 1 }
+    },
+    {
+      "name": "containing: literal case-insensitive Kelvin sign (lowercasing)",
+      "input": "K\nx",
+      "pattern": "k",
+      "options": { "removeMode": "containing", "caseSensitive": false, "useRegex": false, "trimParts": false },
+      "expected": { "text": "x", "removedLines": 1 }
+    },
+    {
+      "name": "containing: regex case-insensitive Kelvin sign",
+      "input": "K\nx",
+      "pattern": "k",
+      "options": { "removeMode": "containing", "caseSensitive": false, "useRegex": true, "trimParts": false },
+      "expectedRust": { "text": "x", "removedLines": 1 },
+      "expectedJs": { "text": "K\nx", "removedLines": 0 },
+      "divergence": { "kind": "dialect", "reason": "Rust (?i) uses Unicode simple case folding (k ~ Kelvin sign); JS 'i' without 'u' does not (Paket 5)." }
+    },
+    {
+      "name": "containing: regex case-insensitive backreference",
+      "input": "aA\nbb",
+      "pattern": "(a)\\1",
+      "options": { "removeMode": "containing", "caseSensitive": false, "useRegex": true, "trimParts": false },
+      "expectedRust": { "text": "aA\nbb", "removedLines": 0 },
+      "expectedJs": { "text": "bb", "removedLines": 1 },
+      "divergence": { "kind": "dialect", "reason": "fancy-regex compares backreferences case-sensitively even under (?i); JS compares them case-insensitively (Paket 5)." }
+    },
+    {
+      "name": "containing: atomic group is Rust-only syntax",
+      "input": "aab\nx",
+      "pattern": "(?>a+)b",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": true, "trimParts": false },
+      "expectedRust": { "text": "x", "removedLines": 1 },
+      "expectedJs": { "error": "invalidRegex" },
+      "divergence": { "kind": "dialect", "reason": "Atomic groups are a fancy-regex feature (Paket 5)." }
+    },
+    {
+      "name": "containing: variable-length lookbehind is JS-only syntax",
+      "input": "aab\nx",
+      "pattern": "(?<=a+)b",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": true, "trimParts": false },
+      "expectedRust": { "error": "invalidRegex" },
+      "expectedJs": { "text": "x", "removedLines": 1 },
+      "divergence": { "kind": "dialect", "reason": "fancy-regex only allows constant-length lookbehinds (Paket 5)." }
+    },
+    {
+      "name": "containing: invalid regex is an error",
+      "input": "a",
+      "pattern": "([a-",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": true, "trimParts": false },
+      "expected": { "error": "invalidRegex" }
+    },
+    {
+      "name": "notContaining: invalid regex is an error",
+      "input": "a",
+      "pattern": "([a-",
+      "options": { "removeMode": "notContaining", "caseSensitive": true, "useRegex": true, "trimParts": false },
+      "expected": { "error": "invalidRegex" }
+    },
+    {
+      "name": "containing: an invalid regex is plain text without useRegex",
+      "input": "([a-\nb",
+      "pattern": "([a-",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "b", "removedLines": 1 }
+    },
+    {
+      "name": "unknown remove mode is an error",
+      "ref": "R21",
+      "input": "a\nb",
+      "pattern": "a",
+      "options": { "removeMode": "bogus", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "error": "invalidMode" },
+      "resolved": "Paket 8 C3: was Rust \"a\" (like notContaining) and JS \"b\" (like containing). Only 'duplicates', 'containing' and 'notContaining' are accepted; anything else is invalid input in both engines."
+    },
+    {
+      "name": "empty remove mode is an error",
+      "input": "a\nb",
+      "pattern": "a",
+      "options": { "removeMode": "", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "remove mode with different case is an error",
+      "input": "a\nb",
+      "pattern": "a",
+      "options": { "removeMode": "notcontaining", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "remove mode with a trailing space is an error",
+      "input": "a\na",
+      "pattern": "",
+      "options": { "removeMode": "duplicates ", "caseSensitive": true, "useRegex": false, "trimParts": true },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "a Filter mode is no remove mode",
+      "input": "a\nb",
+      "pattern": "a",
+      "options": { "removeMode": "keep", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "unknown remove mode with regex is an error, also before an invalid regex",
+      "input": "a\nb",
+      "pattern": "([a-",
+      "options": { "removeMode": "bogus", "caseSensitive": true, "useRegex": true, "trimParts": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "unknown remove mode on an empty text is still an error",
+      "input": "",
+      "pattern": "a",
+      "options": { "removeMode": "bogus", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "containing: empty literal pattern matches every line",
+      "input": "a\nb",
+      "pattern": "",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "", "removedLines": 2 },
+      "openQuestion": "Not reachable from the UI (RemovePage requires a pattern outside duplicates)."
+    },
+    {
+      "name": "containing: empty regex pattern",
+      "input": "a\nb",
+      "pattern": "",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": true, "trimParts": false },
+      "expectedRust": { "text": "", "removedLines": 2 },
+      "expectedJs": { "error": "invalidRegex" },
+      "divergence": { "kind": "unvalidatedInput", "reason": "JS rejects an empty pattern, Rust's empty regex matches every line. Not reachable from the UI." }
+    },
+    {
+      "name": "containing: regex pattern longer than 10000 characters",
+      "input": "a",
+      "pattern": { "repeat": "a", "count": 10001 },
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": true, "trimParts": false },
+      "expectedRust": { "text": "a", "removedLines": 0 },
+      "expectedJs": { "error": "invalidRegex" },
+      "divergence": { "kind": "unvalidatedInput", "reason": "JS rejects regex patterns longer than MAX_PATTERN_LENGTH (10000), Rust has no limit (see F31)." }
+    },
+    {
+      "name": "containing: literal pattern longer than 10000 characters",
+      "input": "a",
+      "pattern": { "repeat": "a", "count": 10001 },
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "text": "a", "removedLines": 0 }
+    }
+  ]
+}

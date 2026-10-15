@@ -197,6 +197,8 @@ export abstract class BaseService implements IBaseService {
     let outcome: JobOutcome;
 
     try {
+      // Invalid requests (e.g. an unknown mode) fail before any processing path; no result, no metrics
+      this.checkRequest(args);
       // Inside try/finally: a failing backend detection must not leave the job registered
       inBackend = tryBackend ?? (await this.isAvailable());
       if (!this.isLatestJob(job)) throw supersededError();
@@ -225,6 +227,9 @@ export abstract class BaseService implements IBaseService {
     if (outcome.metrics) this.applyMetrics(outcome.metrics);
     return result;
   }
+
+  /** Service-specific check of a request before it runs (throws a `ProcessingError`); no check by default. */
+  protected checkRequest(_args: BaseConfig): void {}
 
   /** Service-specific check of a result against its request (throws `invalidResult`); no check by default. */
   protected checkResult(_result: myResult, _args: BaseConfig): void {}

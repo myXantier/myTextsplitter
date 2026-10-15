@@ -118,6 +118,8 @@ export default {
       invalidPattern: 'Invalid pattern',
       invalidRegex: 'Invalid regex pattern',
       regexTooComplex: 'Regex pattern is too complex for this text',
+      invalidMode: 'Unknown processing mode. Please use one of the offered actions.',
+      regexSplitsCharacter: 'The pattern matches only part of a character (e.g. an emoji). The result would be damaged and was not applied.',
       diffTooComplex: 'The comparison is too complex (too many reordered lines)',
       regexRequiresWorker: 'Regular expressions cannot be run safely without a Web Worker',
       processingSuperseded: 'Processing was replaced by a newer one',
@@ -182,7 +184,8 @@ export default {
         notContaining: 'Not Containing',
       },
       options: {
-        trim: 'Trim whitespace',
+        trim: 'Trim whitespace (duplicates only)',
+        trimHint: 'Only used by "Duplicates": lines are compared without leading and trailing whitespace, the original line is always kept. "Containing" and "Not Containing" ignore this option.',
         caseSensitive: 'Case sensitive',
         useRegex: 'Use regex',
       },
