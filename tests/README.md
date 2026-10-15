@@ -122,6 +122,31 @@ JS paths per case: the real worker module; for Remove also `frontendInMainThread
 duplicates and literal search in the main thread and refuses regex jobs. Both runners reject malformed entries
 (missing options, unknown keys, inconsistent expectations).
 
+## Sort contract fixtures (`tests/fixtures/sort-cases.json`, Paket 9 B)
+
+JS only (Sort has no Rust implementation), run by `tests/unit/sort-contract.test.ts` with the helpers in
+`tests/unit/helpers/sort-properties.ts`. Contract, open decisions and baseline: `docs/analyse/Paket9-PhaseB-Sortiervertrag.md`.
+The file keeps three kinds of expectations apart:
+
+| Field / section | Meaning |
+|---|---|
+| `rules` | The contract (R1-R9 general, N1-N5 natural), referenced by every case. |
+| `cases[].expected` | **Binding target**, written by hand. Checked for consistency: same lines as the input, line format of the input, blank lines at the end in input order (R1), and for alphabetical, `icuNumeric` and length cases the order against `Intl.Collator('de')` / code points. |
+| `cases[].current` | Output of the current `sortText` where it differs from the target. Until Phase C the tests assert `current ?? expected` against the real `sortText`; Phase C removes `current`. |
+| `basis` | `decision` (product decision) or `derived` (follows from the rules, confirmation pending). |
+| `invalidMethods` | Target `{ "error": "invalidMode" }`; `current` documents that the method is accepted silently (F9). |
+| `openDecisions` | Not binding: candidates with complete results (`losesLine` marks a candidate that loses a line), `recommended`, current output. |
+| `properties` | Corpora of equivalence classes in target order. 40 seeded permutations each: classes in order, ties in input order, no line lost, idempotent. `currentViolates` marks corpora the current code violates (the test then asserts that the violation still reproduces). |
+| `random` | No golden order. Math.random is replaced by a seeded generator; the chi-square statistic documents the bias of the current shuffle (F3). |
+
+The current implementation collates with the host's default locale (F5). Its documented output is only asserted if
+the host collates the lines of a case like `de`; otherwise the test is skipped with the reason. The target checks use
+`Intl.Collator('de')` explicitly and do not depend on the host locale (only on the ICU data of the runtime).
+
+Timing baselines (not part of `npm test`): `node tests/bench/sort-baseline.ts` (algorithm in Node) and
+`node tests/bench/sort-ui-baseline.mjs` (algorithm and UI in headless Chrome/Edge; production preview if `dist/` exists),
+both with the seeded input of `tests/bench/sort-data.mjs`.
+
 ## Diff fixtures (`tests/fixtures/diff-cases.json`, Paket 7 B1)
 
 One line diff, implemented twice with the same steps: `src/utils/diff/` (JS: Web Worker and main-thread fallback) and
