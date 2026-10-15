@@ -1,5 +1,5 @@
 {
-  "description": "Golden fixtures (Paket 8, Phase B) for Filter and Remove, shared by the Rust engine (cargo test, src-tauri/src/text_processor.rs) and the JS engine (npm test, tests/unit/filter-remove.test.ts). They characterize the CURRENT behaviour: a passing test means the behaviour is described correctly, not that it is wanted. Every case states all options explicitly (no defaults). 'pattern' is a string or { repeat, count } (the string repeated count times). Filter expectations: the result text or { error: invalidRegex | regexRuntime }; JS only: { error: regexSplitsCharacter } (Paket 8 C1: a JS match would cut a surrogate pair apart, the worker refuses instead of returning damaged text). Remove expectations: { text, removedLines } or { error }. A case with different engine results uses expectedRust + expectedJs and a divergence { kind, reason }; kinds: dialect (accepted regex dialect difference, Paket 5), utf16Guard (Rust processes valid Unicode, JS refuses a result that would contain cut characters; required for regexSplitsCharacter), suspectedBug, inconsistentDefinition, unvalidatedInput. Every successful JS result must be well-formed Unicode. 'ref' points to the Phase A report (docs/analyse/Paket8-PhaseA-Filter-Remove-Analyse.md). 'openQuestion' marks identical behaviour that still needs a product decision. 'expectedJsUnreachableMainThread' characterizes FilterService.frontendInMainThread, which invoke never reaches (not a product path).",
+  "description": "Golden fixtures (Paket 8, Phase B) for Filter and Remove, shared by the Rust engine (cargo test, src-tauri/src/text_processor.rs) and the JS engine (npm test, tests/unit/filter-remove.test.ts). They characterize the CURRENT behaviour: a passing test means the behaviour is described correctly, not that it is wanted. Every case states all options explicitly (no defaults). 'pattern' is a string or { repeat, count } (the string repeated count times). Filter expectations: the result text or { error: invalidRegex | regexRuntime }; JS only: { error: regexSplitsCharacter } (Paket 8 C1: a JS match would cut a surrogate pair apart, the worker refuses instead of returning damaged text). Remove expectations: { text, removedLines } or { error }. A case with different engine results uses expectedRust + expectedJs and a divergence { kind, reason }; kinds: dialect (accepted regex dialect difference, Paket 5), utf16Guard (Rust processes valid Unicode, JS refuses a result that would contain cut characters; required for regexSplitsCharacter), suspectedBug, inconsistentDefinition, unvalidatedInput. Every successful JS result must be well-formed Unicode. 'ref' points to the Phase A report (docs/analyse/Paket8-PhaseA-Filter-Remove-Analyse.md). 'openQuestion' marks identical behaviour that still needs a product decision. 'resolved' explains why an expectation was changed by a correction (e.g. Paket 8 C2: in remove mode only a line from which a match removed text and whose rest is blank is dropped; lines without removed text stay unchanged). 'expectedJsUnreachableMainThread' characterizes FilterService.frontendInMainThread, which invoke never reaches (not a product path).",
   "filter": [
     {
       "name": "keep: one match per line, split off",
@@ -354,23 +354,183 @@
       "expected": "ac\nxyz"
     },
     {
-      "name": "remove: untouched empty line without match is dropped",
+      "name": "remove: untouched empty line without match is kept",
       "ref": "F04",
       "input": "a\n\nb",
       "pattern": "x",
       "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
-      "expected": "a\nb",
+      "expected": "a\n\nb",
       "expectedJsUnreachableMainThread": "a\n\nb",
-      "openQuestion": "'Remove matches' also drops empty lines that the pattern did not touch (paragraph structure is lost). Phase C decision."
+      "resolved": "Paket 8 C2: was \"a\\nb\". A line from which no text was removed is never changed or dropped, so existing paragraphs stay."
     },
     {
-      "name": "remove: untouched whitespace-only line is dropped",
+      "name": "remove: untouched whitespace-only line is kept",
       "input": "a\n   \nb",
       "pattern": "x",
       "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
-      "expected": "a\nb",
+      "expected": "a\n   \nb",
       "expectedJsUnreachableMainThread": "a\n   \nb",
-      "openQuestion": "Same decision as F04 for whitespace-only lines."
+      "resolved": "Paket 8 C2: was \"a\\nb\". Same rule as F04 for whitespace-only lines."
+    },
+    {
+      "name": "remove: no match in the whole text keeps every line",
+      "input": "a\n\n  \n\tb\n\n",
+      "pattern": "x",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "a\n\n  \n\tb\n\n"
+    },
+    {
+      "name": "remove: a whitespace-only line is dropped when the match removes its whitespace",
+      "input": "a\n   \nb",
+      "pattern": " +",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "a\nb"
+    },
+    {
+      "name": "remove: a whitespace-only rest after removing a tab stays blank and is dropped",
+      "input": "a\n \t \nb",
+      "pattern": "\\t",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "a\nb"
+    },
+    {
+      "name": "remove: completely removed line",
+      "input": "abc\nxyz",
+      "pattern": "abc",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "xyz"
+    },
+    {
+      "name": "remove: completely removed line directly before an existing empty line",
+      "input": "abc\n\nxyz",
+      "pattern": "abc",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "\nxyz"
+    },
+    {
+      "name": "remove: partly removed line keeps its rest including the space",
+      "input": "Hallo Welt",
+      "pattern": "Welt",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "Hallo "
+    },
+    {
+      "name": "remove: zero-width matches remove nothing and keep empty and whitespace-only lines",
+      "input": "a\n\n  \nb",
+      "pattern": "x*",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "a\n\n  \nb"
+    },
+    {
+      "name": "remove: anchors and word boundaries remove nothing",
+      "input": "a b\n\nc\n",
+      "pattern": "^|\\b|$",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "a b\n\nc\n"
+    },
+    {
+      "name": "remove: CRLF, removed line before an empty line, trailing newline kept",
+      "input": "abc\r\n\r\nxyz\r\n",
+      "pattern": "abc",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "\r\nxyz\r\n"
+    },
+    {
+      "name": "remove: CR, removed line before an empty line, trailing newline kept",
+      "input": "abc\r\rxyz\r",
+      "pattern": "abc",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "\rxyz\r"
+    },
+    {
+      "name": "remove: mixed line endings, empty line kept, most frequent ending",
+      "input": "abc\r\n\r\nx1\ny",
+      "pattern": "abc|\\d",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "\r\nx\r\ny"
+    },
+    {
+      "name": "remove: trailing newline after an empty last line is kept",
+      "input": "a\n\n",
+      "pattern": "x",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "a\n\n"
+    },
+    {
+      "name": "remove: a text of one empty line stays unchanged",
+      "input": "\n",
+      "pattern": "x",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "\n"
+    },
+    {
+      "name": "remove: only empty lines stay unchanged",
+      "input": "\r\n\r\n",
+      "pattern": "a",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "\r\n\r\n"
+    },
+    {
+      "name": "remove: one remaining empty line without trailing newline is the empty text",
+      "input": "\nabc",
+      "pattern": "abc",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "",
+      "openQuestion": "The kept empty line cannot be told apart from an empty result in the text representation (line model, Paket 6)."
+    },
+    {
+      "name": "remove: every line completely removed gives the empty text",
+      "input": "abc\r\nabc\r\n",
+      "pattern": "abc",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": ""
+    },
+    {
+      "name": "remove: empty input",
+      "input": "",
+      "pattern": "a",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": ""
+    },
+    {
+      "name": "remove: a U+0085 rest after removal is blank and the line is dropped",
+      "input": "a\u0085\nc",
+      "pattern": "a",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "c"
+    },
+    {
+      "name": "remove: a U+FEFF rest after removal is not blank and the line is kept",
+      "input": "a﻿\nc",
+      "pattern": "a",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "﻿\nc"
+    },
+    {
+      "name": "remove: emoji lines around an untouched empty line",
+      "input": "😀a\n\n😃\n",
+      "pattern": "a",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "😀\n\n😃\n"
+    },
+    {
+      "name": "remove: emoji line completely removed before an empty line",
+      "input": "😀\n\nb",
+      "pattern": "[^b]",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "\nb"
+    },
+    {
+      "name": "remove: cut emoji next to an empty line is still refused",
+      "input": "x😀a\n\nb",
+      "pattern": ".a",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expectedRust": "x\n\nb",
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": {
+        "kind": "utf16Guard",
+        "reason": "C1 guard: in JS '.' matches only the low half of the emoji; the empty-line rule of C2 does not change that the job is refused."
+      }
     },
     {
       "name": "remove: a line that becomes empty is dropped",
@@ -381,13 +541,13 @@
       "expectedJsUnreachableMainThread": "\ncd"
     },
     {
-      "name": "remove: a whitespace-only result is kept",
+      "name": "remove: a whitespace-only rest after removal drops the line",
       "ref": "F06",
       "input": "a b\nc",
       "pattern": "[ab]",
       "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
-      "expected": " \nc",
-      "openQuestion": "Whitespace-only input lines are dropped (F04/F05), a whitespace-only result line is kept: inconsistent."
+      "expected": "c",
+      "resolved": "Paket 8 C2: was \" \\nc\". Text was removed and only whitespace is left, so the line is dropped (formerly kept while untouched blank lines were dropped)."
     },
     {
       "name": "remove: all lines become empty, empty result",
@@ -418,11 +578,19 @@
       "expected": "AcAC"
     },
     {
-      "name": "remove: leading and trailing whitespace of a line is kept",
+      "name": "remove: surrounding whitespace alone does not keep a line",
       "input": "  a  ",
       "pattern": "a",
       "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
-      "expected": "    "
+      "expected": "",
+      "resolved": "Paket 8 C2: was \"    \". Text was removed and only whitespace is left, so the line is dropped (same rule as F06)."
+    },
+    {
+      "name": "remove: leading and trailing whitespace of a non-blank rest is kept",
+      "input": "  a b  ",
+      "pattern": "a",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "   b  "
     },
     {
       "name": "remove: escaped dollar sign (no replacement syntax)",
@@ -491,11 +659,12 @@
       "expected": "﻿\na"
     },
     {
-      "name": "remove: line consisting only of U+0085 is blank",
+      "name": "remove: untouched line consisting only of U+0085 is kept",
       "input": "\u0085\nab",
       "pattern": "b",
       "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
-      "expected": "a"
+      "expected": "\u0085\na",
+      "resolved": "Paket 8 C2: was \"a\". U+0085 is still whitespace (C1), but no text was removed from this line, so it stays (same rule as F05)."
     },
     {
       "name": "remove: invalid regex is an error",

@@ -831,6 +831,24 @@ export async function checkLineEndings(page, r, label, errorsSince) {
   await page.eval(`__t.page().querySelectorAll('.filter-actions button')[1].click(); true`);
   r.check(`${label}: Filter keeps CRLF and the trailing newline`, await waitForResult('ap\r\nap\r\n'), json(await raw('__t.textareas()[1]')));
   r.check(`${label}: Filter leaves the input unchanged`, (await raw('__t.textareas()[0]')) === filterText, json(await raw('__t.textareas()[0]')));
+
+  // --- Filter "remove matches" (Paket 8 C2): untouched empty/whitespace lines stay, only emptied lines disappear ---
+  const filterRemove = `__t.page().querySelectorAll('.filter-actions button')[0].click(); true`;
+  const paragraphs = 'abc\r\n\r\nkeep me\r\n   \r\nabc\r\n';
+  await loadFile(paragraphs);
+  await setInput('x');
+  await page.eval(filterRemove);
+  r.check(`${label}: Filter remove without match keeps every line, empty lines and the trailing newline`, await waitForResult(paragraphs), json(await raw('__t.textareas()[1]')));
+  await setInput('abc');
+  await page.eval(filterRemove);
+  r.check(
+    `${label}: Filter remove drops only the emptied lines, existing empty and whitespace lines stay`,
+    await waitForResult('\r\nkeep me\r\n   \r\n'),
+    json(await raw('__t.textareas()[1]')),
+  );
+  await setInput('me');
+  await page.eval(filterRemove);
+  r.check(`${label}: Filter remove keeps a partly removed line with its rest`, await waitForResult('abc\r\n\r\nkeep \r\n   \r\nabc\r\n'), json(await raw('__t.textareas()[1]')));
   await setInput('');
 
   // --- Remove (duplicates) ---

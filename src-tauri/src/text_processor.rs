@@ -241,19 +241,30 @@ impl TextProcessor {
         for line in lines {
             // Blank = only Unicode `White_Space` (`str::trim`, `char::is_whitespace`): U+0085 is whitespace, U+FEFF is not.
             // Same set as the JS engine (`src/utils/diff/whitespace.ts`).
-            if line.trim().is_empty() {
+            let is_blank = |text: &str| text.trim().is_empty();
+
+            if filter_mode == "remove" {
+                // Paket 8 C2: only a line from which a match actually removed text may disappear, and only if the rest
+                // is blank. A line without removed text (no match, only zero-width matches) stays unchanged, also an
+                // empty or whitespace-only line. Removing text always shortens the line, so "unchanged" = equal text.
+                let rest = regex.try_replacen(line, 0, "").map_err(regex_runtime_error)?;
+                if rest == line {
+                    processed_lines.push(line.to_string());
+                } else if !is_blank(&rest) {
+                    processed_lines.push(rest.into_owned());
+                }
                 continue;
             }
 
-            let processed = match filter_mode {
-                "remove" => regex.try_replacen(line, 0, "").map_err(regex_runtime_error)?.into_owned(),
-                _ => regex
-                    .find_iter(line)
-                    .map(|m| m.map(|m| m.as_str()))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(regex_runtime_error)?
-                    .join(if splitmatches { format.line_ending.as_str() } else { "" }),
-            };
+            if is_blank(line) {
+                continue;
+            }
+            let processed = regex
+                .find_iter(line)
+                .map(|m| m.map(|m| m.as_str()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(regex_runtime_error)?
+                .join(if splitmatches { format.line_ending.as_str() } else { "" });
 
             if !processed.is_empty() {
                 processed_lines.push(processed);
@@ -886,6 +897,8 @@ mod tests {
             expected_js_unreachable_main_thread: Option<Value>,
             divergence: Option<Divergence>,
             open_question: Option<String>,
+            /// Why a correction changed the expectation (always a shared `expected`).
+            resolved: Option<String>,
         }
 
         /// Filter outcome in fixture form: the result text or the error kind.
@@ -957,6 +970,9 @@ mod tests {
                 if !DIVERGENCE_KINDS.contains(&d.kind.as_str()) || d.reason.is_empty() {
                     problems.push(format!("invalid divergence kind {:?} or empty reason", d.kind));
                 }
+            }
+            if case.resolved.as_ref().is_some_and(|note| note.is_empty() || !shared) {
+                problems.push("a resolved case needs a non-empty note and a shared expected".into());
             }
             // A JS result refused for a cut character and the utf16Guard divergence belong together
             let refused_by_js = case.expected_js == Some(json!({ "error": "regexSplitsCharacter" }));

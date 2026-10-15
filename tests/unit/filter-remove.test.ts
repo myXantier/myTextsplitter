@@ -35,6 +35,7 @@ interface Case<O, E> {
   expectedJsUnreachableMainThread?: E;
   divergence?: { kind: string; reason: string };
   openQuestion?: string;
+  resolved?: string;
 }
 type FilterOptions = { mode: string; caseSensitive: boolean; splitMatches: boolean };
 type RemoveOptions = { removeMode: string; caseSensitive: boolean; useRegex: boolean; trimParts: boolean };
@@ -46,7 +47,7 @@ interface Fixtures {
   remove: RemoveCase[];
 }
 
-const CASE_KEYS = ['name', 'ref', 'input', 'pattern', 'options', 'expected', 'expectedRust', 'expectedJs', 'expectedJsUnreachableMainThread', 'divergence', 'openQuestion'];
+const CASE_KEYS = ['name', 'ref', 'input', 'pattern', 'options', 'expected', 'expectedRust', 'expectedJs', 'expectedJsUnreachableMainThread', 'divergence', 'openQuestion', 'resolved'];
 const OPTION_TYPES = {
   filter: { mode: 'string', caseSensitive: 'boolean', splitMatches: 'boolean' },
   remove: { removeMode: 'string', caseSensitive: 'boolean', useRegex: 'boolean', trimParts: 'boolean' },
@@ -141,7 +142,9 @@ function fixtureProblems(fixtures: unknown): string[] {
         if (section !== 'filter') problems.push(`${where}: expectedJsUnreachableMainThread is only for the Filter`);
         else if (typeof c.expectedJsUnreachableMainThread !== 'string') problems.push(`${where}: expectedJsUnreachableMainThread must be a text`);
       }
-      for (const key of ['ref', 'openQuestion']) if (c[key] !== undefined && (typeof c[key] !== 'string' || !c[key])) problems.push(`${where}: ${key} must be a non-empty string`);
+      for (const key of ['ref', 'openQuestion', 'resolved']) if (c[key] !== undefined && (typeof c[key] !== 'string' || !c[key])) problems.push(`${where}: ${key} must be a non-empty string`);
+      // A resolved (corrected) case has one shared expectation
+      if (c.resolved !== undefined && !shared) problems.push(`${where}: a resolved case uses expected`);
     }
   }
   return problems;
@@ -176,6 +179,8 @@ test('filter/remove fixture check rejects malformed entries', () => {
     ['regexSplitsCharacter without utf16Guard', { ...valid, expected: undefined, expectedRust: 'a', expectedJs: { error: 'regexSplitsCharacter' }, divergence: { kind: 'dialect', reason: 'r' } }],
     ['utf16Guard without regexSplitsCharacter', { ...valid, expected: undefined, expectedRust: 'a', expectedJs: 'b', divergence: guard }],
     ['invalid pattern repeat', { ...valid, pattern: { repeat: 'a' } }],
+    ['empty resolved note', { ...valid, resolved: '' }],
+    ['resolved with per-engine expectations', { ...valid, expected: undefined, expectedRust: 'a', expectedJs: 'b', divergence: { kind: 'dialect', reason: 'r' }, resolved: 'r' }],
   ];
   for (const [label, entry] of broken) {
     const cleaned = JSON.parse(JSON.stringify(entry)); // drops `undefined` keys like the JSON file would

@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 
 const { matchesWithoutCutCharacters } = await import('../../src/utils/regex.ts');
 const { ERROR_KEYS } = await import('../../src/services/ProcessingError.ts');
+const { isBlankLine } = await import('../../src/utils/diff/whitespace.ts');
 installWindow();
 
 const g = globalThis as any;
@@ -141,8 +142,8 @@ test('guard: inputs without surrogates give the plain replace/matchAll results',
     for (const line of lines) {
       const removed = line.replace(regex, '');
       const kept = Array.from(line.matchAll(regex), (m) => m[0]);
-      // One non-blank line: an empty remainder drops the line, which is the empty text as well
-      assert.equal(filter(line, pattern, 'remove', false), removed, `remove ${pattern} on ${line}`);
+      // One line (C2): dropped (= empty text) only if text was removed and the rest is blank
+      assert.equal(filter(line, pattern, 'remove', false), removed !== line && isBlankLine(removed) ? '' : removed, `remove ${pattern} on ${line}`);
       assert.equal(filter(line, pattern, 'keep', false), kept.join(''), `keep ${pattern} on ${line}`);
       assert.equal(filter(line, pattern, 'keep', true), kept.length ? kept.join('\n') : '', `keep split ${pattern} on ${line}`);
       assert.deepEqual(guard(line, pattern, false), Array.from(line.matchAll(regex), (m) => [m.index, m[0]]), `guard ${pattern} on ${line}`);

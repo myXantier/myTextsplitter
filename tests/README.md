@@ -88,6 +88,10 @@ Semantics fixed in C1:
   `src/utils/diff/whitespace.ts` (`isBlankLine`, `trimWhitespace`), the same as Rust `str::trim`: U+0085 is
   whitespace, U+FEFF is not. Regex `\s` is unchanged.
 - **Duplicates with trim:** trim and case only change the comparison key; the original first occurrence is output.
+- **Filter "remove matches" (C2):** a line is dropped only if a match actually removed text from it and the rest is
+  empty or whitespace-only (same whitespace set). A line without removed text (no match, only zero-width matches) stays
+  exactly as it is, also an empty or whitespace-only line. The keep mode still skips blank lines. Changed expectations
+  carry a `resolved` note. E2E: `checkLineEndings` (browser, Tauri with Rust, Tauri with JS).
 - **Cut characters (JS Filter):** a RegExp without `u` works on UTF-16 code units. If a match boundary lies inside a
   surrogate pair and the result would not put both halves next to each other again (split matches, a partly removed
   emoji, halves of two different emoji), the worker reports `invalidInput` / `errors.regexSplitsCharacter` instead of
@@ -106,6 +110,7 @@ Semantics fixed in C1:
 | `{ "error": "regexSplitsCharacter" }` | JS Filter only, always with `utf16Guard`: Rust processes valid Unicode, the JS worker refuses a result with a cut character. Every successful JS result is checked to be well-formed Unicode. |
 | `expectedJsUnreachableMainThread` | `FilterService.frontendInMainThread`, which `invoke` never reaches. Tested separately, **not a product path**. |
 | `ref`, `openQuestion` | Case id in the Phase A report; open product decision for identical behaviour. |
+| `resolved` | Why a correction changed the expectation (only with a shared `expected`). |
 
 JS paths per case: the real worker module; for Remove also `frontendInMainThread`; and the service without Web Worker
 (`invoke(args, false)` in Node): Filter always refuses (`regexRequiresWorker`, or `invalidRegex`), Remove runs
