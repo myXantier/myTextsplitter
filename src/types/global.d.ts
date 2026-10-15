@@ -149,6 +149,14 @@ interface RemoveConfig extends BaseConfig {
   };
 }
 
+/** Sort page (SortService, JS only): `mainParam` is unused; `sortMethod` is checked by `assertSortMethod` */
+interface SortConfig extends BaseConfig {
+  configParams: {
+    sortMethod: string,
+    caseSensitive: boolean,
+  };
+}
+
 /** Pattern preview of the Filter page (MatchPreviewService): `mainParam` = pattern */
 interface MatchPreviewConfig extends BaseConfig {
   configParams: {

@@ -122,6 +122,7 @@ export default {
       regexSplitsCharacter: 'Das Muster trifft nur einen Teil eines Zeichens (z. B. eines Emojis). Das Ergebnis wäre beschädigt und wurde nicht übernommen.',
       diffTooComplex: 'Der Vergleich ist zu aufwendig (zu viele umgestellte Zeilen)',
       regexRequiresWorker: 'Reguläre Ausdrücke können ohne Web Worker nicht sicher ausgeführt werden',
+      sortRequiresWorker: 'Dieser Text ist zu groß, um ohne Web Worker sortiert zu werden (die Seite würde einfrieren)',
       processingSuperseded: 'Verarbeitung wurde durch eine neuere ersetzt',
       fileTooLarge: 'Datei ist zu groß. Maximale Größe ist 10MB.',
       readError: 'Fehler beim Lesen der Datei',
@@ -197,6 +198,34 @@ export default {
       patternPlaceholder: 'Suchtext eingeben...',
       enterPattern: 'Bitte geben Sie einen Suchtext ein',
       processed: '{{removed}} Zeilen wurden entfernt'
+    },
+    sortText: {
+      methods: {
+        alphabetical: 'Alphabetisch (A bis Z)',
+        alphabeticalReverse: 'Alphabetisch (Z bis A)',
+        natural: 'Natürlich',
+        naturalReverse: 'Natürlich absteigend',
+        lengthAsc: 'Zeilenlänge (kürzeste zuerst)',
+        lengthDesc: 'Zeilenlänge (längste zuerst)',
+        random: 'Zufällig mischen',
+      },
+      options: {
+        title: 'SORTIEROPTIONEN',
+        hint: 'Legen Sie fest, wie der Text sortiert wird',
+        method: 'Sortiermethode',
+        caseSensitive: 'Groß-/Kleinschreibung beachten',
+        caseSensitiveHint: 'Gilt nur für alphabetische und natürliche Sortierung; Zeilenlänge und Zufall beachten sie nicht.',
+      },
+      process: 'Text sortieren',
+      sorting: 'Sortiere...',
+      result: 'SORTIERERGEBNIS',
+      resultPlaceholder: 'Hier erscheint der sortierte Text...',
+      resultFor: '{{method}}, {{lines}} Zeilen',
+      resultForCase: '{{method}}, {{case}}, {{lines}} Zeilen',
+      caseSensitive: 'mit Groß-/Kleinschreibung',
+      caseInsensitive: 'ohne Groß-/Kleinschreibung',
+      outdated: 'Veraltet: Text oder Optionen wurden seit diesem Ergebnis geändert. Erneut sortieren, um es zu aktualisieren.',
+      processed: '{{lines}} Zeilen sortiert',
     },
     textFilter: {
       modes: {

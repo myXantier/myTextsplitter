@@ -3,6 +3,7 @@ export { DiffService } from './DiffService';
 export { FilterService } from './FilterService';
 export { RemoveService } from './RemoveService';
 export { MatchPreviewService } from './MatchPreviewService';
+export { SortService } from './SortService';
 import { isTauri, invoke } from '@tauri-apps/api/core';
 
 export function isTauriCheck() {

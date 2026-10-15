@@ -92,11 +92,11 @@
   "sort": [
     { "name": "CRLF: format and trailing newline are kept", "input": "b\r\nc\r\na\r\n", "method": "alphabetical", "expected": "a\r\nb\r\nc\r\n" },
     { "name": "LF without trailing newline", "input": "b\nc\na", "method": "alphabetical", "expected": "a\nb\nc" },
-    { "name": "empty lines are dropped (existing behaviour), no extra line", "input": "b\n\na\n\n", "method": "alphabetical", "expected": "a\nb\n" },
+    { "name": "empty lines are kept at the end, trailing newline kept", "input": "b\n\na\n\n", "method": "alphabetical", "expected": "a\nb\n\n\n", "resolved": "Paket 9 C1 (rule R1): empty lines are data lines and stay at the end, they were dropped before" },
     { "name": "CR, natural sort", "input": "2\r10\r1", "method": "natural", "expected": "1\r2\r10" },
     { "name": "mixed line endings: most frequent one", "input": "b\r\na\nc\r\n", "method": "alphabetical", "expected": "a\r\nb\r\nc\r\n" },
     { "name": "line length: CR is not part of the line", "input": "aa\r\na\r\naaa", "method": "lengthDesc", "expected": "aaa\r\naa\r\na" },
     { "name": "reverse with unicode", "input": "Ä\r\nZ\r\n😀\r\n", "method": "alphabeticalReverse", "expected": "Z\r\nÄ\r\n😀\r\n" },
-    { "name": "only empty lines: empty result", "input": "\r\n\r\n", "method": "alphabetical", "expected": "" }
+    { "name": "only empty lines: kept with CRLF", "input": "\r\n\r\n", "method": "alphabetical", "expected": "\r\n\r\n", "resolved": "Paket 9 C1 (rule R1): empty lines are data lines, the result was empty before" }
   ]
 }

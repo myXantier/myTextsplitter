@@ -10,7 +10,7 @@ import {
 } from './ProcessingError';
 import { compileUserRegex } from '../utils/regex';
 
-export type WorkerType = 'split' | 'diff' | 'filter' | 'remove' | 'preview';
+export type WorkerType = 'split' | 'diff' | 'filter' | 'remove' | 'preview' | 'sort';
 
 interface myWorker extends Worker {
   cleanupTime: number;
@@ -25,6 +25,7 @@ const workerConstructors = {
   filter: () => new Worker(new URL('../workers/FilterWorker.ts', import.meta.url), { type: 'module' }) as myWorker,
   remove: () => new Worker(new URL('../workers/RemoveWorker.ts', import.meta.url), { type: 'module' }) as myWorker,
   preview: () => new Worker(new URL('../workers/MatchPreviewWorker.ts', import.meta.url), { type: 'module' }) as myWorker,
+  sort: () => new Worker(new URL('../workers/SortWorker.ts', import.meta.url), { type: 'module' }) as myWorker,
 };
 
 const WORKERS_SUPPORTED = typeof Worker !== 'undefined';
@@ -112,6 +113,8 @@ export abstract class BaseService implements IBaseService {
     remove: 12_000,
     // The preview runs while typing: a pattern that is too expensive is stopped early
     preview: 3_000,
+    // Sorting 100 000 lines takes well below a second (Paket 9 C1); the limit only stops a stuck worker
+    sort: 10_000,
   };
 
   /** Terminates all idle (pooled) workers; running jobs are not affected. */

@@ -10,7 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, sleep } from './lib/cdp.mjs';
-import { SPLIT_CASES, checkCombineState, checkLineEndings, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
+import { SPLIT_CASES, checkCombineState, checkLineEndings, checkSort, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
@@ -209,6 +209,8 @@ async function testApp(page, url) {
   await checkDiffCancelAndPaging(page, r, 'JS', errorsSince);
   await checkDiffDetails(page, r, 'JS', errorsSince);
   await checkCombineState(page, r, 'JS', errorsSince);
+  // Paket 9 C2: Sort in the sort worker (golden cases, outdated result, case option, latest job wins, large text)
+  await checkSort(page, r, 'JS', errorsSince);
 
   // --- Error path: an invalid regex must be reported as error, not as success ---
   await page.eval(`__t.nav('split'); true`);
