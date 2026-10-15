@@ -1,5 +1,5 @@
 {
-  "description": "Golden fixtures (Paket 8, Phase B) for Filter and Remove, shared by the Rust engine (cargo test, src-tauri/src/text_processor.rs) and the JS engine (npm test, tests/unit/filter-remove.test.ts). They characterize the CURRENT behaviour: a passing test means the behaviour is described correctly, not that it is wanted. Every case states all options explicitly (no defaults). 'pattern' is a string or { repeat, count } (the string repeated count times). Filter expectations: the result text or { error: invalidRegex | regexRuntime }; JS only: { error: regexSplitsCharacter } (Paket 8 C1: a JS match would cut a surrogate pair apart, the worker refuses instead of returning damaged text). Remove expectations: { text, removedLines } or { error }. A case with different engine results uses expectedRust + expectedJs and a divergence { kind, reason }; kinds: dialect (accepted regex dialect difference, Paket 5), utf16Guard (Rust processes valid Unicode, JS refuses a result that would contain cut characters; required for regexSplitsCharacter), suspectedBug, inconsistentDefinition, unvalidatedInput. Every successful JS result must be well-formed Unicode. 'ref' points to the Phase A report (docs/analyse/Paket8-PhaseA-Filter-Remove-Analyse.md). 'openQuestion' marks identical behaviour that still needs a product decision. 'resolved' explains why an expectation was changed by a correction (e.g. Paket 8 C2: in remove mode only a line from which a match removed text and whose rest is blank is dropped; lines without removed text stay unchanged). 'expectedJsUnreachableMainThread' characterizes FilterService.frontendInMainThread, which invoke never reaches (not a product path).",
+  "description": "Golden fixtures (Paket 8, Phase B) for Filter and Remove, shared by the Rust engine (cargo test, src-tauri/src/text_processor.rs) and the JS engine (npm test, tests/unit/filter-remove.test.ts). They characterize the CURRENT behaviour: a passing test means the behaviour is described correctly, not that it is wanted. Every case states all options explicitly (no defaults). 'pattern' is a string or { repeat, count } (the string repeated count times). Filter expectations: the result text or { error: invalidRegex | regexRuntime | invalidMode } (invalidMode, Paket 8 C3: an unknown or empty mode, checked before anything else); JS only: { error: regexSplitsCharacter } (Paket 8 C1: a JS match would cut a surrogate pair apart, the worker refuses instead of returning damaged text). Remove expectations: { text, removedLines } or { error }. A case with different engine results uses expectedRust + expectedJs and a divergence { kind, reason }; kinds: dialect (accepted regex dialect difference, Paket 5), utf16Guard (Rust processes valid Unicode, JS refuses a result that would contain cut characters; required for regexSplitsCharacter), suspectedBug, inconsistentDefinition, unvalidatedInput. Every successful JS result must be well-formed Unicode. 'ref' points to the Phase A report (docs/analyse/Paket8-PhaseA-Filter-Remove-Analyse.md). 'openQuestion' marks identical behaviour that still needs a product decision. 'resolved' explains why an expectation was changed by a correction (e.g. Paket 8 C2: in remove mode only a line from which a match removed text and whose rest is blank is dropped; lines without removed text stay unchanged). 'expectedJsUnreachableMainThread' characterizes FilterService.frontendInMainThread, which invoke never reaches (not a product path).",
   "filter": [
     {
       "name": "keep: one match per line, split off",
@@ -339,12 +339,54 @@
       }
     },
     {
-      "name": "unknown filter mode is processed like keep",
+      "name": "unknown filter mode is an error",
       "input": "a1",
       "pattern": "\\d",
       "options": { "mode": "bogus", "caseSensitive": true, "splitMatches": true },
-      "expected": "1",
-      "openQuestion": "Unknown modes are not rejected (both engines fall back to keep). Not reachable from the UI."
+      "expected": { "error": "invalidMode" },
+      "resolved": "Paket 8 C3: was \"1\" (both engines silently fell back to keep). Only 'keep' and 'remove' are accepted; anything else is invalid input."
+    },
+    {
+      "name": "empty filter mode is an error",
+      "input": "a1",
+      "pattern": "\\d",
+      "options": { "mode": "", "caseSensitive": true, "splitMatches": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "filter mode with different case is an error",
+      "input": "a1",
+      "pattern": "\\d",
+      "options": { "mode": "Keep", "caseSensitive": true, "splitMatches": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "filter mode with surrounding space is an error",
+      "input": "a1",
+      "pattern": "\\d",
+      "options": { "mode": " remove", "caseSensitive": true, "splitMatches": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "a Remove mode is no filter mode",
+      "input": "a1",
+      "pattern": "\\d",
+      "options": { "mode": "containing", "caseSensitive": true, "splitMatches": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "unknown filter mode on an empty text is still an error",
+      "input": "",
+      "pattern": "a",
+      "options": { "mode": "bogus", "caseSensitive": true, "splitMatches": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "unknown filter mode is reported before an invalid regex",
+      "input": "a",
+      "pattern": "([a-",
+      "options": { "mode": "bogus", "caseSensitive": true, "splitMatches": false },
+      "expected": { "error": "invalidMode" }
     },
     {
       "name": "remove: matches are removed, other lines stay unchanged",
@@ -1053,17 +1095,55 @@
       "expected": { "text": "b", "removedLines": 1 }
     },
     {
-      "name": "unknown remove mode",
+      "name": "unknown remove mode is an error",
       "ref": "R21",
       "input": "a\nb",
       "pattern": "a",
       "options": { "removeMode": "bogus", "caseSensitive": true, "useRegex": false, "trimParts": false },
-      "expectedRust": { "text": "a", "removedLines": 1 },
-      "expectedJs": { "text": "b", "removedLines": 1 },
-      "divergence": {
-        "kind": "unvalidatedInput",
-        "reason": "Unknown modes are not rejected: Rust treats every mode except 'containing' like notContaining, JS every mode except 'notContaining' like containing. Not reachable from the UI."
-      }
+      "expected": { "error": "invalidMode" },
+      "resolved": "Paket 8 C3: was Rust \"a\" (like notContaining) and JS \"b\" (like containing). Only 'duplicates', 'containing' and 'notContaining' are accepted; anything else is invalid input in both engines."
+    },
+    {
+      "name": "empty remove mode is an error",
+      "input": "a\nb",
+      "pattern": "a",
+      "options": { "removeMode": "", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "remove mode with different case is an error",
+      "input": "a\nb",
+      "pattern": "a",
+      "options": { "removeMode": "notcontaining", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "remove mode with a trailing space is an error",
+      "input": "a\na",
+      "pattern": "",
+      "options": { "removeMode": "duplicates ", "caseSensitive": true, "useRegex": false, "trimParts": true },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "a Filter mode is no remove mode",
+      "input": "a\nb",
+      "pattern": "a",
+      "options": { "removeMode": "keep", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "unknown remove mode with regex is an error, also before an invalid regex",
+      "input": "a\nb",
+      "pattern": "([a-",
+      "options": { "removeMode": "bogus", "caseSensitive": true, "useRegex": true, "trimParts": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "unknown remove mode on an empty text is still an error",
+      "input": "",
+      "pattern": "a",
+      "options": { "removeMode": "bogus", "caseSensitive": true, "useRegex": false, "trimParts": false },
+      "expected": { "error": "invalidMode" }
     },
     {
       "name": "containing: empty literal pattern matches every line",

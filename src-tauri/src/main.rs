@@ -326,6 +326,19 @@ mod tests {
     }
 
     #[test]
+    fn text_commands_report_unknown_modes_as_invalid_mode() {
+        let _serial = serial();
+        use tauri::async_runtime::block_on;
+        for (error, operation) in [
+            (ipc_error(block_on(filter_text("a".into(), "a".into(), "bogus".into(), true, false))), "filter"),
+            (ipc_error(block_on(remove_lines("a".into(), "a".into(), "".into(), true, false, false))), "remove"),
+        ] {
+            assert_eq!(error["kind"], "invalidMode", "{error}");
+            assert!(error["message"].as_str().is_some_and(|m| m.contains(operation)), "{error}");
+        }
+    }
+
+    #[test]
     fn text_commands_report_backtrack_limit_as_regex_runtime_error() {
         let _serial = serial();
         let text = "ab".repeat(40);

@@ -4,6 +4,7 @@ import { WorkerLogger } from '../other/Logger';
 import { createResult } from '../services/ProcessingError';
 import { joinLines } from '../utils/lines';
 import { isBlankLine } from '../utils/diff/whitespace';
+import { assertFilterMode } from '../utils/textModes';
 
 export class FilterWorker extends BaseWorker {
   /** Errors are thrown and reported by `BaseWorker.process` (never turned into an empty result). */
@@ -13,6 +14,7 @@ export class FilterWorker extends BaseWorker {
     const { mainParam, configParams } = options.args as FilterConfig;
     const { caseSensitive, filterMode, splitMatches } = configParams;
 
+    assertFilterMode(filterMode); // before the regex, like Rust
     const regex = compileUserRegex(mainParam, caseSensitive ? 'g' : 'gi');
 
     // `null` = the line is dropped; an empty string is a kept empty line

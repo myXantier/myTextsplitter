@@ -128,8 +128,10 @@ export default function RemovePage({ sourceText, setSourceText, visible }: Remov
           <div className="content flex-column">
             <div className="input-options-container">
               <div className="input-box">
+                {/* Only the duplicates action uses it (comparison key); the state is kept for every action */}
                 <Checkbox
                   label={t('removeLines.options.trim')}
+                  title={t('removeLines.options.trimHint')}
                   checked={options.trim}
                   onChange={(val) => setOptions((prev) => ({ ...prev, trim: val }))}
                 />

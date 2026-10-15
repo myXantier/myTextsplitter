@@ -17,7 +17,7 @@ installWindow();
 
 // --- Fixture format ---
 
-type ErrorKind = 'invalidRegex' | 'regexRuntime' | 'regexSplitsCharacter';
+type ErrorKind = 'invalidRegex' | 'regexRuntime' | 'invalidMode' | 'regexSplitsCharacter';
 type FixtureError = { error: ErrorKind };
 type FilterExpected = string | FixtureError;
 type RemoveExpected = { text: string; removedLines: number } | FixtureError;
@@ -53,11 +53,12 @@ const OPTION_TYPES = {
   remove: { removeMode: 'string', caseSensitive: 'boolean', useRegex: 'boolean', trimParts: 'boolean' },
 } as const;
 const DIVERGENCE_KINDS = ['dialect', 'utf16Guard', 'suspectedBug', 'inconsistentDefinition', 'unvalidatedInput'];
-const ERROR_KINDS = ['invalidRegex', 'regexRuntime'];
+const ERROR_KINDS = ['invalidRegex', 'regexRuntime', 'invalidMode'];
 /** Only the JS Filter refuses results with cut surrogate pairs (Rust works on Unicode scalar values). */
 const JS_FILTER_ERROR = 'regexSplitsCharacter';
 const MESSAGE_OF_ERROR: Record<string, string> = {
   invalidRegex: ERROR_KEYS.invalidRegex,
+  invalidMode: ERROR_KEYS.invalidMode,
   regexSplitsCharacter: ERROR_KEYS.regexSplitsCharacter,
 };
 
@@ -260,10 +261,12 @@ for (const c of fixtures.filter) {
     assertFilterText(message.result.result, expected, 'worker');
   });
 
-  // Without Web Worker (Node) the Filter never runs its regex in the main thread: only compiling can fail
+  // Without Web Worker (Node) the Filter never runs its regex in the main thread: only the mode check (service) and
+  // compiling can fail
   test(`filter service without Web Worker: ${c.name}`, async () => {
     const error = await rejectionOf(() => new FilterService().invoke(filterArgs(c), false));
-    if (isErrorOf(expected, 'invalidRegex')) assertInputError(error.kind, error.message, 'invalidRegex', c.name);
+    if (isErrorOf(expected, 'invalidMode')) assertInputError(error.kind, error.message, 'invalidMode', c.name);
+    else if (isErrorOf(expected, 'invalidRegex')) assertInputError(error.kind, error.message, 'invalidRegex', c.name);
     else assert.deepEqual({ kind: error.kind, message: error.message }, { kind: 'worker', message: ERROR_KEYS.regexRequiresWorker });
   });
 

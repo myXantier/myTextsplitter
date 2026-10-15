@@ -202,6 +202,33 @@ export async function checkProcessingErrors(page, r, label, errorsSince) {
   );
   await page.eval(`${regexCheckbox}.checked && ${regexCheckbox}.click(); true`);
   await setPattern('');
+
+  // --- Remove: the trim option (Paket 8 C3) is labelled for duplicates only, keeps its state across the actions ---
+  const trimBox = `[...__t.page().querySelectorAll('.input-box')].find(e => /trim/i.test(e.innerText))`;
+  const trimInfo = await page.eval(`JSON.stringify({ text: ${trimBox}.innerText.trim(), title: ${trimBox}.querySelector('label').title, checked: ${trimBox}.querySelector('input').checked })`);
+  const trim = JSON.parse(trimInfo);
+  r.check(
+    `${label}: Remove trim option says it only applies to duplicates (label and tooltip)`,
+    /(duplicates only|nur Duplikate)/i.test(trim.text) && /(Duplicates|Duplikate)/.test(trim.title) && /(Containing|Enthaltend)/.test(trim.title),
+    trimInfo,
+  );
+  await page.eval(`${trimBox}.querySelector('input').checked || ${trimBox}.querySelector('input').click(); true`);
+  await sleepMs(150);
+  await page.eval(`__t.set(__t.textareas()[0], ' a\\na\\n  b\\nb'); true`);
+  await sleepMs(150);
+  await setPattern(' a');
+  n = page.logs.length;
+  snacks = await run(removeContaining);
+  const containing = await result();
+  const stillChecked = await page.eval(`${trimBox}.querySelector('input').checked`);
+  snacks = await run(`__t.page().querySelector('.remove-action-button.duplicates').click()`);
+  const duplicates = await result();
+  r.check(
+    `${label}: Remove trim stays checked across actions, is ignored by Containing and only compares duplicates (original lines kept)`,
+    containing === 'a\n  b\nb' && stillChecked && duplicates === ' a\n  b' && snacks.length === 1 && snacks[0].startsWith('success') && errorsSince(n).length === 0,
+    `containing=${JSON.stringify(containing)} checked=${stillChecked} duplicates=${JSON.stringify(duplicates)} ${JSON.stringify(snacks)}`,
+  );
+  await setPattern('');
 }
 
 /** Pattern + text with catastrophic backtracking: about two minutes in V8, fancy-regex stops at its backtrack limit. */

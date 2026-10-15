@@ -512,3 +512,51 @@ test('TextV2: empty but valid Remove results are accepted', () => {
   assert.equal(isTextV2({ result_text: '', removed_lines: 3, metrics: backendMetrics }), true);
   assert.deepEqual(changeResultType(result('TextV2', { result_text: '', removed_lines: 3 }), 'TextV2'), { status: 'ok', data: { result_text: '', removed_lines: 3 } });
 });
+
+// --- Paket 8 C3: unknown or empty Filter/Remove modes are invalid input, never a silent default ---
+
+for (const [name, run] of [
+  ['filter (unknown)', () => new FilterService().invoke(filterArgs('a1', 'a', 'bogus'), true)],
+  ['filter (empty)', () => new FilterService().invoke(filterArgs('a1', 'a', ''), true)],
+  ['remove (unknown)', () => new RemoveService().invoke(removeArgs('a\nb', 'a', 'bogus'), true)],
+  ['remove (empty)', () => new RemoveService().invoke(removeArgs('a\nb', 'a', ''), true)],
+] as const) {
+  test(`C3: ${name} mode is refused before the Rust command runs`, async () => {
+    const calls = backend(() => processed('should not be used'));
+    const error = await rejectionOf(run);
+    assert.deepEqual({ kind: error.kind, message: error.message }, { kind: 'invalidInput', message: 'errors.invalidMode' });
+    assert.deepEqual(calls, [], 'no IPC call for an invalid request');
+  });
+}
+
+test('C3: invalidMode from the Rust command is an invalid-input error (not a backend error)', async () => {
+  backend(() => {
+    throw { kind: 'invalidMode', message: 'unknown filter mode "x"' };
+  });
+  const error = await rejectionOf(() => new FilterService().invoke(filterArgs('a', 'a'), true));
+  assert.deepEqual({ kind: error.kind, message: error.message, detail: error.detail }, { kind: 'invalidInput', message: 'errors.invalidMode', detail: 'unknown filter mode "x"' });
+});
+
+test('C3: an invalid mode keeps the metrics of the last valid result (backend and main thread)', async () => {
+  backend(() => processed('b', 1));
+  const service = new RemoveService();
+  await service.invoke(removeArgs('a\nb', 'a'), true);
+  const before = service.getMetrics();
+  assert.equal(before?.executionTime, backendMetrics.execution_time_ms);
+
+  assert.equal((await rejectionOf(() => service.invoke(removeArgs('a\nb', 'a', 'bogus'), true))).message, 'errors.invalidMode');
+  assert.equal(service.getMetrics(), before, 'backend path: metrics unchanged');
+  assert.equal((await rejectionOf(() => service.invoke(removeArgs('a\nb', 'a', 'Containing'), false))).message, 'errors.invalidMode');
+  assert.equal(service.getMetrics(), before, 'main-thread path: metrics unchanged');
+});
+
+test('C3: every supported mode still runs (main-thread Remove, Filter refused only for its regex)', async () => {
+  for (const mode of ['duplicates', 'containing', 'notContaining']) {
+    const result = await new RemoveService().invoke(removeArgs('a\nb\na', 'a', mode), false);
+    assert.equal(result.type, 'TextV2', mode);
+  }
+  for (const mode of ['keep', 'remove']) {
+    const error = await rejectionOf(() => new FilterService().invoke(filterArgs('a', 'a', mode), false));
+    assert.equal(error.message, 'errors.regexRequiresWorker', mode);
+  }
+});

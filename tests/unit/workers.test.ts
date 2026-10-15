@@ -625,3 +625,37 @@ test('Paket 7 B3: a failed valid comparison in the worker (too complex) keeps th
   const shown = await service.invoke(wordDiffArgs('Die Katze schläft', 'Die Katze träumt', true), false);
   assert.equal((shown.result as any).intraline.pairs[0].old.find((s: any) => s.op === 'delete').text, 'schläft');
 });
+
+// --- Paket 8 C3: invalid modes in the worker path ---
+
+test('C3: an invalid mode is refused before a worker is started', async () => {
+  for (const run of [
+    () => new FilterService().invoke(filterArgs('a1', '[0-9]', 'bogus'), false),
+    () => new RemoveService().invoke({ ...removeArgs('a\nb', 'a'), configParams: { ...removeArgs('a\nb', 'a').configParams, removeMode: '' } }, false),
+  ]) {
+    const error = await rejectionOf(run);
+    assert.deepEqual({ kind: error.kind, message: error.message }, { kind: 'invalidInput', message: 'errors.invalidMode' });
+  }
+  assert.equal(instances.length, 0, 'no worker created');
+});
+
+test('C3: an invalidMode answer of the worker keeps its kind and message, the metrics stay', async () => {
+  const service = new FilterService();
+  await service.invoke(filterArgs('a1\nb2', '[0-9]'), false);
+  const before = service.getMetrics();
+  assert.ok(before);
+
+  behaviour = { reply: { success: false, type: 'error', error: 'errors.invalidMode', errorKind: 'invalidInput', errorDetail: 'unknown filter mode "x"', result: null } };
+  const error = await rejectionOf(() => service.invoke(filterArgs('a1', '[0-9]'), false));
+  assert.deepEqual({ kind: error.kind, message: error.message }, { kind: 'invalidInput', message: 'errors.invalidMode' });
+  assert.equal(service.getMetrics(), before, 'metrics of the failed job are not applied');
+});
+
+test('C3: the real worker modules answer an invalid mode with invalidMode (one error message, no result)', () => {
+  const filter = runWorker('FilterWorker', filterArgs('a1', '[0-9]', 'Keep'));
+  const remove = runWorker('RemoveWorker', { ...removeArgs('a', 'a'), configParams: { ...removeArgs('a', 'a').configParams, removeMode: 'keep' } });
+  for (const messages of [filter, remove]) {
+    assert.equal(messages.length, 1);
+    assert.deepEqual([messages[0].success, messages[0].errorKind, messages[0].error, messages[0].result], [false, 'invalidInput', 'errors.invalidMode', null]);
+  }
+});

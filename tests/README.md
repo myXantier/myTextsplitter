@@ -92,6 +92,11 @@ Semantics fixed in C1:
   empty or whitespace-only (same whitespace set). A line without removed text (no match, only zero-width matches) stays
   exactly as it is, also an empty or whitespace-only line. The keep mode still skips blank lines. Changed expectations
   carry a `resolved` note. E2E: `checkLineEndings` (browser, Tauri with Rust, Tauri with JS).
+- **Modes (C3):** only `keep`/`remove` (Filter) and `duplicates`/`containing`/`notContaining` (Remove) are accepted,
+  exactly as written. Anything else, also an empty mode, is `{ "error": "invalidMode" }`: Rust `TextError::InvalidMode`,
+  JS `invalidInput` / `errors.invalidMode` (`src/utils/textModes.ts`), checked before the regex and also for an empty
+  text. The services refuse it before any processing path runs (`checkRequest`), so no result and no metrics are applied.
+  The Remove page labels the trim option as "duplicates only" (with tooltip); E2E: `checkProcessingErrors`.
 - **Cut characters (JS Filter):** a RegExp without `u` works on UTF-16 code units. If a match boundary lies inside a
   surrogate pair and the result would not put both halves next to each other again (split matches, a partly removed
   emoji, halves of two different emoji), the worker reports `invalidInput` / `errors.regexSplitsCharacter` instead of

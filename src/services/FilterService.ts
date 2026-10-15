@@ -2,6 +2,7 @@ import { BaseService, type JobOutcome, type JobRegex } from './BaseService';
 import { compileUserRegex } from '../utils/regex';
 import { joinLines, splitLines } from '../utils/lines';
 import { assertBackendResult, createResult } from './ProcessingError';
+import { assertFilterMode } from '../utils/textModes';
 
 export class FilterService extends BaseService {
   protected readonly resultType = 'Text';
@@ -26,6 +27,11 @@ export class FilterService extends BaseService {
     // An empty `result_text` is a valid result (all lines filtered out)
     const result = assertBackendResult(response, 'Text');
     return this.backendOutcome(createResult('Text', result.result_text), result.metrics, sourceText, result.result_text);
+  }
+
+  /** An unknown or empty mode is refused before any processing path runs (Rust and the worker check it too). */
+  protected checkRequest({ configParams }: FilterConfig): void {
+    assertFilterMode(configParams.filterMode);
   }
 
   protected regexOf({ mainParam, configParams }: FilterConfig): JobRegex {

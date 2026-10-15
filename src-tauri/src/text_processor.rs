@@ -44,6 +44,8 @@ pub enum TextError {
     RegexRuntime(String),
     /// The diff alignment needs more work than `diff::DIFF_WORK_LIMIT` (too many reordered lines). No partial result.
     DiffTooComplex(String),
+    /// The Filter or Remove mode is not supported (unknown or empty): invalid user input, never a silent default.
+    InvalidMode(String),
     /// The processing task itself failed (panic or cancelled task), not the user input.
     Internal(String),
     /// A newer request of the same operation replaced this one before it started (it never ran).
@@ -56,6 +58,7 @@ impl std::fmt::Display for TextError {
             TextError::InvalidRegex(message) => write!(f, "invalid regex: {message}"),
             TextError::RegexRuntime(message) => write!(f, "regex runtime error: {message}"),
             TextError::DiffTooComplex(message) => write!(f, "diff too complex: {message}"),
+            TextError::InvalidMode(message) => write!(f, "invalid mode: {message}"),
             TextError::Internal(message) => write!(f, "internal error: {message}"),
             TextError::Superseded => write!(f, "superseded by a newer request"),
         }
@@ -88,6 +91,19 @@ fn compile_regex(pattern: &str, case_insensitive: bool) -> Result<Regex, TextErr
 
 fn regex_runtime_error(e: fancy_regex::Error) -> TextError {
     TextError::RegexRuntime(e.to_string())
+}
+
+/// Supported Filter and Remove modes, the same lists as the JS engine (`src/utils/textModes.ts`).
+const FILTER_MODES: [&str; 2] = ["keep", "remove"];
+const REMOVE_MODES: [&str; 3] = ["duplicates", "containing", "notContaining"];
+
+/// An unknown or empty mode is `TextError::InvalidMode` (checked before anything else, also for an empty text).
+fn check_mode(operation: &str, mode: &str, supported: &[&str]) -> Result<(), TextError> {
+    if supported.contains(&mode) {
+        Ok(())
+    } else {
+        Err(TextError::InvalidMode(format!("unknown {operation} mode {mode:?}")))
+    }
 }
 
 /// Metrics of a finished command. `memory_stats()` returns `None` where the platform does not provide the
@@ -228,6 +244,7 @@ impl TextProcessor {
         casesensitive: bool,
         splitmatches: bool,
     ) -> Result<ProcessedText<String>, TextError> {
+        check_mode("filter", filter_mode, &FILTER_MODES)?;
         let before_mem = memory_stats::memory_stats();
         let start_time = std::time::Instant::now();
 
@@ -291,6 +308,7 @@ impl TextProcessor {
         useregex: bool,
         trimparts: bool,
     ) -> Result<ProcessedText<String>, TextError> {
+        check_mode("remove", removemode, &REMOVE_MODES)?;
         // Shared line model: a trailing newline is no line; the result keeps the line ending and the trailing newline
         let TextLines { lines, format } = split_lines(text);
         let total_lines = lines.len(); // 🏆 Anzahl der Originalzeilen
@@ -345,6 +363,7 @@ impl TextProcessor {
             let mut kept = Vec::new();
             for &line in &lines {
                 let matched = matcher(line)?;
+                // The mode was checked: anything but "containing" is "notContaining"
                 if (removemode == "containing" && !matched) || (removemode != "containing" && matched) {
                     kept.push(line.to_string());
                 }
@@ -463,7 +482,7 @@ mod tests {
                 Ok(result) => Expected::Text(result.result_text),
                 Err(TextError::InvalidRegex(_)) => Expected::Error { error: "invalidRegex".into() },
                 Err(TextError::RegexRuntime(_)) => Expected::Error { error: "regexRuntime".into() },
-                Err(e @ (TextError::Internal(_) | TextError::DiffTooComplex(_) | TextError::Superseded)) => panic!("{}: {e}", c.name),
+                Err(e @ (TextError::Internal(_) | TextError::DiffTooComplex(_) | TextError::InvalidMode(_) | TextError::Superseded)) => panic!("{}: {e}", c.name),
             };
             if &actual != expected {
                 failures.push(format!("{}\n    expected: {:?}\n    actual:   {:?}", c.name, expected, actual));
@@ -809,6 +828,30 @@ mod tests {
         assert_eq!(invalid, serde_json::json!({ "kind": "invalidRegex", "message": "bad" }));
         let runtime = serde_json::to_value(TextError::RegexRuntime("limit".into())).unwrap();
         assert_eq!(runtime, serde_json::json!({ "kind": "regexRuntime", "message": "limit" }));
+        let mode = serde_json::to_value(TextError::InvalidMode("unknown filter mode \"x\"".into())).unwrap();
+        assert_eq!(mode, serde_json::json!({ "kind": "invalidMode", "message": "unknown filter mode \"x\"" }));
+    }
+
+    #[test]
+    fn unknown_and_empty_modes_are_invalid_mode_errors() {
+        for mode in ["", "bogus", "Keep", " keep", "keep ", "duplicates"] {
+            let error = TextProcessor::filter_text_internal("a", "a", mode, true, false).unwrap_err();
+            assert!(matches!(error, TextError::InvalidMode(_)), "filter {mode:?}: {error:?}");
+        }
+        for mode in ["", "bogus", "Containing", "notcontaining", "keep", "duplicates "] {
+            let error = TextProcessor::remove_lines_internal("a", "a", mode, true, false, false).unwrap_err();
+            assert!(matches!(error, TextError::InvalidMode(_)), "remove {mode:?}: {error:?}");
+        }
+        // The mode is checked first: also for an empty text and before an invalid regex
+        assert!(matches!(TextProcessor::filter_text_internal("", "([a-", "bogus", true, false), Err(TextError::InvalidMode(_))));
+        assert!(matches!(TextProcessor::remove_lines_internal("", "([a-", "bogus", true, true, false), Err(TextError::InvalidMode(_))));
+        // Every supported mode is accepted
+        for mode in FILTER_MODES {
+            assert!(TextProcessor::filter_text_internal("a1", r"\d", mode, true, false).is_ok(), "{mode}");
+        }
+        for mode in REMOVE_MODES {
+            assert!(TextProcessor::remove_lines_internal("a1\nb", "a", mode, true, false, false).is_ok(), "{mode}");
+        }
     }
 
     // --- Paket 8 Phase B: Filter/Remove golden fixtures, also run by the JS engine (`tests/unit/filter-remove.test.ts`) ---
@@ -915,13 +958,14 @@ mod tests {
             match error {
                 TextError::InvalidRegex(_) => "invalidRegex".into(),
                 TextError::RegexRuntime(_) => "regexRuntime".into(),
+                TextError::InvalidMode(_) => "invalidMode".into(),
                 other => format!("unexpected error {other:?}"),
             }
         }
 
         fn expected_error(map: &Map<String, Value>) -> Result<String, String> {
             match map.get("error").and_then(Value::as_str) {
-                Some(kind @ ("invalidRegex" | "regexRuntime")) if map.len() == 1 => Ok(kind.into()),
+                Some(kind @ ("invalidRegex" | "regexRuntime" | "invalidMode")) if map.len() == 1 => Ok(kind.into()),
                 _ => Err(format!("invalid error expectation {}", Value::Object(map.clone()))),
             }
         }
