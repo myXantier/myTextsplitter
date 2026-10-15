@@ -795,4 +795,266 @@ mod tests {
         let runtime = serde_json::to_value(TextError::RegexRuntime("limit".into())).unwrap();
         assert_eq!(runtime, serde_json::json!({ "kind": "regexRuntime", "message": "limit" }));
     }
+
+    // --- Paket 8 Phase B: Filter/Remove golden fixtures, also run by the JS engine (`tests/unit/filter-remove.test.ts`) ---
+    // They characterize the current behaviour: per-engine expectations document known differences (see the file's description).
+
+    mod filter_remove_fixtures {
+        use super::*;
+        use serde_json::{json, Map, Value};
+
+        const FIXTURES: &str = include_str!("../../tests/fixtures/filter-remove-cases.json");
+        const DIVERGENCE_KINDS: [&str; 5] = ["dialect", "suspectedBug", "dataIntegrityRisk", "inconsistentDefinition", "unvalidatedInput"];
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Fixtures {
+            #[allow(dead_code)]
+            description: String,
+            filter: Vec<Case<FilterOptions>>,
+            remove: Vec<Case<RemoveOptions>>,
+        }
+
+        /// A pattern string, or `{ repeat, count }` for long patterns.
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Pattern {
+            Text(String),
+            Repeat(PatternRepeat),
+        }
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct PatternRepeat {
+            repeat: String,
+            count: usize,
+        }
+
+        impl Pattern {
+            fn text(&self) -> String {
+                match self {
+                    Pattern::Text(text) => text.clone(),
+                    Pattern::Repeat(r) => r.repeat.repeat(r.count),
+                }
+            }
+        }
+
+        /// All options are required (no defaults).
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct FilterOptions {
+            mode: String,
+            case_sensitive: bool,
+            split_matches: bool,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        struct RemoveOptions {
+            remove_mode: String,
+            case_sensitive: bool,
+            use_regex: bool,
+            trim_parts: bool,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Divergence {
+            kind: String,
+            reason: String,
+        }
+
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase", deny_unknown_fields)]
+        #[allow(dead_code)]
+        struct Case<O> {
+            name: String,
+            #[serde(rename = "ref")]
+            reference: Option<String>,
+            input: String,
+            pattern: Pattern,
+            options: O,
+            expected: Option<Value>,
+            expected_rust: Option<Value>,
+            /// Checked in detail by the JS runner (may use the `utf16` form for lone surrogates).
+            expected_js: Option<Value>,
+            /// JS only (unreachable Filter main-thread implementation).
+            expected_js_unreachable_main_thread: Option<Value>,
+            divergence: Option<Divergence>,
+            open_question: Option<String>,
+        }
+
+        /// Filter outcome in fixture form: the result text or the error kind.
+        type FilterOutcome = Result<String, String>;
+
+        #[derive(Debug, PartialEq)]
+        struct RemoveResult {
+            text: String,
+            removed_lines: usize,
+        }
+        type RemoveOutcome = Result<RemoveResult, String>;
+
+        fn error_kind(error: TextError) -> String {
+            match error {
+                TextError::InvalidRegex(_) => "invalidRegex".into(),
+                TextError::RegexRuntime(_) => "regexRuntime".into(),
+                other => format!("unexpected error {other:?}"),
+            }
+        }
+
+        fn expected_error(map: &Map<String, Value>) -> Result<String, String> {
+            match map.get("error").and_then(Value::as_str) {
+                Some(kind @ ("invalidRegex" | "regexRuntime")) if map.len() == 1 => Ok(kind.into()),
+                _ => Err(format!("invalid error expectation {}", Value::Object(map.clone()))),
+            }
+        }
+
+        fn parse_filter(value: &Value) -> Result<FilterOutcome, String> {
+            match value {
+                Value::String(text) => Ok(Ok(text.clone())),
+                Value::Object(map) if map.contains_key("utf16") => {
+                    Err("the utf16 form is only allowed for JS expectations (Rust strings cannot hold lone surrogates)".into())
+                }
+                Value::Object(map) if map.contains_key("error") => expected_error(map).map(Err),
+                other => Err(format!("invalid filter expectation {other}")),
+            }
+        }
+
+        fn parse_remove(value: &Value) -> Result<RemoveOutcome, String> {
+            match value {
+                Value::Object(map) if map.contains_key("error") => expected_error(map).map(Err),
+                Value::Object(map) if map.len() == 2 => match (map.get("text").and_then(Value::as_str), map.get("removedLines").and_then(Value::as_u64)) {
+                    (Some(text), Some(removed)) => Ok(Ok(RemoveResult { text: text.into(), removed_lines: removed as usize })),
+                    _ => Err(format!("invalid remove expectation {value}")),
+                },
+                other => Err(format!("invalid remove expectation {other}")),
+            }
+        }
+
+        /// Structural problems of one case (the JS runner checks the same rules plus the JS-only forms).
+        fn case_problems<O, T>(case: &Case<O>, parse: fn(&Value) -> Result<T, String>) -> Vec<String> {
+            let mut problems = Vec::new();
+            if case.name.is_empty() {
+                problems.push("empty name".to_string());
+            }
+            let shared = case.expected.is_some();
+            let per_engine = case.expected_rust.is_some() || case.expected_js.is_some();
+            if shared == per_engine {
+                problems.push("needs either expected or expectedRust + expectedJs".into());
+            }
+            if per_engine && (case.expected_rust.is_none() || case.expected_js.is_none()) {
+                problems.push("expectedRust and expectedJs belong together".into());
+            }
+            if per_engine != case.divergence.is_some() {
+                problems.push("per-engine expectations need a divergence (and only they)".into());
+            }
+            if per_engine && case.expected_rust == case.expected_js {
+                problems.push("expectedRust equals expectedJs, use expected".into());
+            }
+            if let Some(d) = &case.divergence {
+                if !DIVERGENCE_KINDS.contains(&d.kind.as_str()) || d.reason.is_empty() {
+                    problems.push(format!("invalid divergence kind {:?} or empty reason", d.kind));
+                }
+            }
+            for value in [&case.expected, &case.expected_rust].into_iter().flatten() {
+                if let Err(problem) = parse(value) {
+                    problems.push(problem);
+                }
+            }
+            if let Pattern::Repeat(r) = &case.pattern {
+                if r.repeat.is_empty() || r.count == 0 {
+                    problems.push("pattern repeat must be non-empty with count > 0".into());
+                }
+            }
+            problems.into_iter().map(|p| format!("{}: {p}", case.name)).collect()
+        }
+
+        fn fixtures() -> Fixtures {
+            serde_json::from_str(FIXTURES).expect("invalid filter/remove fixtures")
+        }
+
+        fn rust_expectation<O>(case: &Case<O>) -> &Value {
+            case.expected_rust.as_ref().or(case.expected.as_ref()).unwrap_or_else(|| panic!("{}: no Rust expectation", case.name))
+        }
+
+        #[test]
+        fn filter_remove_fixtures_are_well_formed() {
+            let fixtures = fixtures();
+            assert!(!fixtures.filter.is_empty() && !fixtures.remove.is_empty());
+            let mut problems: Vec<String> = fixtures.filter.iter().flat_map(|c| case_problems(c, parse_filter)).collect();
+            problems.extend(fixtures.remove.iter().flat_map(|c| case_problems(c, parse_remove)));
+            for names in [fixtures.filter.iter().map(|c| &c.name).collect::<Vec<_>>(), fixtures.remove.iter().map(|c| &c.name).collect()] {
+                let unique: std::collections::HashSet<_> = names.iter().collect();
+                if unique.len() != names.len() {
+                    problems.push("duplicate case names".into());
+                }
+            }
+            assert!(problems.is_empty(), "malformed fixtures:\n  {}", problems.join("\n  "));
+        }
+
+        #[test]
+        fn filter_remove_fixture_check_rejects_malformed_entries() {
+            let case = |extra: Value| {
+                let mut value = json!({ "name": "x", "input": "a", "pattern": "a", "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false } });
+                value.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+                serde_json::from_value::<Case<FilterOptions>>(value)
+            };
+            let problems = |extra: Value| case_problems(&case(extra).expect("parses"), parse_filter);
+
+            assert!(problems(json!({ "expected": "a" })).is_empty());
+            // Rejected by the parser: implicit option, unknown key, incomplete pattern repeat
+            let implicit = json!({ "name": "x", "input": "a", "pattern": "a", "options": { "mode": "keep", "caseSensitive": true }, "expected": "" });
+            assert!(serde_json::from_value::<Case<FilterOptions>>(implicit).is_err(), "implicit splitMatches");
+            assert!(case(json!({ "expected": "a", "expectedTs": "a" })).is_err(), "unknown key");
+            assert!(case(json!({ "expected": "a", "pattern": { "repeat": "a" } })).is_err(), "pattern repeat without count");
+            // Rejected by the check
+            assert!(!problems(json!({ "expected": "a", "expectedRust": "a", "expectedJs": "b", "divergence": { "kind": "dialect", "reason": "r" } })).is_empty());
+            assert!(!problems(json!({ "expectedRust": "a", "expectedJs": "b" })).is_empty(), "per-engine without divergence");
+            assert!(!problems(json!({ "expected": "a", "divergence": { "kind": "dialect", "reason": "r" } })).is_empty(), "divergence without per-engine");
+            assert!(!problems(json!({ "expectedRust": "a", "expectedJs": "b", "divergence": { "kind": "accepted", "reason": "r" } })).is_empty());
+            assert!(!problems(json!({ "expectedRust": { "utf16": ["D83D"] }, "expectedJs": "a", "divergence": { "kind": "dataIntegrityRisk", "reason": "r" } })).is_empty());
+            assert!(!problems(json!({ "expected": { "error": "timeout" } })).is_empty(), "unknown error kind");
+            assert!(parse_remove(&json!({ "text": "a" })).is_err(), "remove expectation without removedLines");
+        }
+
+        #[test]
+        fn filter_fixtures() {
+            let cases = fixtures().filter;
+            let failures: Vec<String> = cases
+                .iter()
+                .filter_map(|c| {
+                    let expected = parse_filter(rust_expectation(c)).unwrap_or_else(|p| panic!("{}: {p}", c.name));
+                    let o = &c.options;
+                    let result = TextProcessor::filter_text_internal(&c.input, &c.pattern.text(), &o.mode, o.case_sensitive, o.split_matches);
+                    // The Filter has no line statistics: `removed_lines` is always 0
+                    if let Ok(r) = &result {
+                        if r.removed_lines != 0 {
+                            return Some(format!("{}: removed_lines {} (expected 0)", c.name, r.removed_lines));
+                        }
+                    }
+                    let actual: FilterOutcome = result.map(|r| r.result_text).map_err(error_kind);
+                    (actual != expected).then(|| format!("{}\n    expected: {:?}\n    actual:   {:?}", c.name, expected, actual))
+                })
+                .collect();
+            assert!(failures.is_empty(), "{} of {} filter fixtures failed:\n  {}", failures.len(), cases.len(), failures.join("\n  "));
+        }
+
+        #[test]
+        fn remove_fixtures() {
+            let cases = fixtures().remove;
+            let failures: Vec<String> = cases
+                .iter()
+                .filter_map(|c| {
+                    let expected = parse_remove(rust_expectation(c)).unwrap_or_else(|p| panic!("{}: {p}", c.name));
+                    let o = &c.options;
+                    let actual: RemoveOutcome =
+                        TextProcessor::remove_lines_internal(&c.input, &c.pattern.text(), &o.remove_mode, o.case_sensitive, o.use_regex, o.trim_parts)
+                            .map(|r| RemoveResult { text: r.result_text, removed_lines: r.removed_lines })
+                            .map_err(error_kind);
+                    (actual != expected).then(|| format!("{}\n    expected: {:?}\n    actual:   {:?}", c.name, expected, actual))
+                })
+                .collect();
+            assert!(failures.is_empty(), "{} of {} remove fixtures failed:\n  {}", failures.len(), cases.len(), failures.join("\n  "));
+        }
+    }
 }

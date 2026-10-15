@@ -75,6 +75,28 @@ line contents: CRLF vs. LF and a trailing newline on one side only are no differ
 keep their rows) with the line format of the text that was split (stored on a successful Split); the column copy uses
 the same format. One empty line without trailing newline and an empty result are both `""` (text representation).
 
+## Filter/Remove fixtures (`tests/fixtures/filter-remove-cases.json`, Paket 8 Phase B)
+
+Golden fixtures for both engines: `npm test` (`tests/unit/filter-remove.test.ts`) and `cargo test`
+(`text_processor.rs`, module `tests::filter_remove_fixtures`). They **characterize the current behaviour**: a passing
+test means the behaviour is described correctly, not that it is wanted. Expectations are written by hand, never
+generated from an engine.
+
+| Field | Meaning |
+|---|---|
+| `options` | Always complete, no defaults. Filter: `mode`, `caseSensitive`, `splitMatches`. Remove: `removeMode`, `caseSensitive`, `useRegex`, `trimParts`. |
+| `pattern` | A string, or `{ "repeat": "a", "count": 10001 }` for long patterns. |
+| `expected` | Same result in both engines. Filter: the text or `{ "error": "invalidRegex" \| "regexRuntime" }`. Remove: `{ "text", "removedLines" }` or `{ "error" }`. |
+| `expectedRust` + `expectedJs` + `divergence` | Different current results; `divergence.kind` is `dialect` (accepted, Paket 5), `suspectedBug`, `dataIntegrityRisk`, `inconsistentDefinition` or `unvalidatedInput`, with a `reason`. |
+| `{ "utf16": ["D83D", …] }` | JS only: a result with lone UTF-16 surrogates (not storable as a JSON string). The test compares the code units and asserts that the result is not well-formed Unicode; only allowed with `dataIntegrityRisk`. |
+| `expectedJsUnreachableMainThread` | `FilterService.frontendInMainThread`, which `invoke` never reaches. Tested separately, **not a product path**. |
+| `ref`, `openQuestion` | Case id in the Phase A report; open product decision for identical behaviour. |
+
+JS paths per case: the real worker module; for Remove also `frontendInMainThread`; and the service without Web Worker
+(`invoke(args, false)` in Node): Filter always refuses (`regexRequiresWorker`, or `invalidRegex`), Remove runs
+duplicates and literal search in the main thread and refuses regex jobs. Both runners reject malformed entries
+(missing options, unknown keys, inconsistent expectations).
+
 ## Diff fixtures (`tests/fixtures/diff-cases.json`, Paket 7 B1)
 
 One line diff, implemented twice with the same steps: `src/utils/diff/` (JS: Web Worker and main-thread fallback) and
