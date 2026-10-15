@@ -32,6 +32,8 @@ export const ERROR_KEYS = {
   invalidMode: 'errors.invalidMode',
   /** A regex cannot be run without Web Worker (it could block the UI thread). */
   regexRequiresWorker: 'errors.regexRequiresWorker',
+  /** A large sort cannot be run without Web Worker (it would block the UI thread, `SORT_MAIN_THREAD_LIMITS`). */
+  sortRequiresWorker: 'errors.sortRequiresWorker',
   /** The diff needs more than `DIFF_WORK_LIMIT` work units (many reordered lines). */
   diffTooComplex: 'errors.diffTooComplex',
   timeout: 'errors.processingTimeout',

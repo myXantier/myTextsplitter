@@ -1,4 +1,4 @@
-export type OperationType = 'split' | 'diff' | 'filter' | 'remove';
+export type OperationType = 'split' | 'diff' | 'filter' | 'remove' | 'sort';
 
 /**
  * Latest started processing per operation type (shared by all pages: the processing status is global). A finished

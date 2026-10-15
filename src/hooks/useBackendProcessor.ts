@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useProcessingState } from './useProcessingState';
-import { SplitService, DiffService, FilterService, RemoveService, isBackend } from '../services/Services';
+import { SplitService, DiffService, FilterService, RemoveService, SortService, isBackend } from '../services/Services';
 import { BaseService } from '../services/BaseService';
 import { isSuperseded, logProcessingError, toProcessingError } from '../services/ProcessingError';
 import { useTextBuffer } from './useTextBuffer';
@@ -93,6 +93,8 @@ export function useBackendProcessor() {
     diffText: (args: DiffConfig) => executeProcessing('diff', new DiffService(), args),
     filterText: (args: FilterConfig) => executeProcessing('filter', new FilterService(), args),
     removeLines: (args: RemoveConfig) => executeProcessing('remove', new RemoveService(), args),
+    // Always the TypeScript sort (worker), also in Rust mode: SortService ignores the backend flag
+    sortText: (args: SortConfig) => executeProcessing('sort', new SortService(), args),
     availableBackend,
     toggleMode,
   };

@@ -142,6 +142,15 @@ The comparator laws (antisymmetry, transitivity) of every order are checked dire
 `src/utils/sort/compare.ts`) on a corpus of critical lines; antisymmetry also on every line of the golden cases.
 All orders use `Intl.Collator('de')` explicitly and do not depend on the host locale (only on the ICU data of the runtime).
 
+Processing path (Paket 9 C2): the Sort page runs `SortService` (`src/services/SortService.ts`, `BaseService`: latest job
+wins, timeout, error contract) with `SortWorker`, in the browser and in Tauri (also in Rust mode: there is no sort
+command). `tests/unit/sort-service.test.ts` runs the real worker module behind a fake `Worker` with every golden case
+(worker = `sortText`, no Tauri command), supersede/timeout/crash/malformed answers and the line-count check of the result
+(`countLines`); `tests/unit/sort-main-thread.test.ts` covers the path without Web Worker (main thread up to
+`SORT_MAIN_THREAD_LIMITS`, larger texts `errors.sortRequiresWorker`). E2E: `checkSort` in `tests/e2e/lib/app.mjs`
+(browser; Tauri in Rust and JS mode): golden cases through file import, worker used, exact copy, outdated marker, case
+option, empty and whitespace-only input, rapid clicks, 100 000 lines.
+
 Timing baselines (not part of `npm test`): `node tests/bench/sort-baseline.ts` (algorithm in Node) and
 `node tests/bench/sort-ui-baseline.mjs` (algorithm and UI in headless Chrome/Edge; production preview if `dist/` exists),
 both with the seeded input of `tests/bench/sort-data.mjs`.

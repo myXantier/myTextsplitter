@@ -11,7 +11,7 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, listTargets, sleep } from './lib/cdp.mjs';
-import { SPLIT_CASES, checkCombineState, checkLineEndings, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
+import { SPLIT_CASES, checkCombineState, checkLineEndings, checkSort, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
@@ -171,6 +171,8 @@ async function firstRun() {
   await checkDiffCancelAndPaging(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
   await checkDiffDetails(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
   await checkCombineState(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
+  // Paket 9 C2: Sort has no Rust command, it runs the TypeScript sort in the sort worker also in Rust mode
+  await checkSort(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
   await main.eval(`__t.nav('split'); true`);
   await sleep(200);
 
@@ -191,6 +193,7 @@ async function firstRun() {
   await checkDiffCancelAndPaging(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
   await checkDiffDetails(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
   await checkCombineState(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
+  await checkSort(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
   await main.eval(`__t.nav('split'); true`);
   await sleep(200);
   await main.eval(`__t.page().querySelector('.mode-toggle').click(); true`);

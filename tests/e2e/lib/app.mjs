@@ -1,4 +1,5 @@
 // DOM helpers for driving the myTextsplitter UI through CDP (installed as `window.__t` in the page).
+import { readFileSync } from 'node:fs';
 
 export const APP_HELPERS = `window.__t = {
   /** Currently visible page container */
@@ -932,4 +933,308 @@ export async function checkLineEndings(page, r, label, errorsSince) {
   await page.eval(`__t.set(__t.textareas()[0], 'a_b'); true`);
   await sleepMs(150);
   await setInput('_');
+}
+
+/**
+ * Holds worker answers while `__t.sortGate.on` (installed on `Worker.prototype.onmessage`, so also pooled workers of
+ * BaseService are covered): a test starts a sort, changes the input while the answer is held and then delivers it late,
+ * unchanged or replaced by other data. Deterministic: the answer arrives exactly when the test releases it.
+ */
+const SORT_GATE_INSTALL = `(() => {
+  if (__t.sortGate) return true;
+  const desc = Object.getOwnPropertyDescriptor(Worker.prototype, 'onmessage');
+  __t.sortGate = { on: false, held: [], desc };
+  Object.defineProperty(Worker.prototype, 'onmessage', {
+    configurable: true,
+    enumerable: desc.enumerable,
+    get() { return desc.get.call(this); },
+    set(fn) {
+      const worker = this;
+      desc.set.call(this, typeof fn === 'function'
+        ? (event) => (__t.sortGate?.on ? __t.sortGate.held.push({ fn, worker, event }) : fn.call(worker, event))
+        : fn);
+    },
+  });
+  return true;
+})()`;
+const SORT_GATE_UNINSTALL = `(() => { Object.defineProperty(Worker.prototype, 'onmessage', __t.sortGate.desc); __t.sortGate = null; return true; })()`;
+/** Delivers the held answers (or `data` instead of them), then lets promises, React and one frame run. */
+const SORT_GATE_RELEASE = `async (data) => {
+  const held = __t.sortGate.held.splice(0);
+  __t.sortGate.on = false;
+  held.forEach((h) => h.fn.call(h.worker, data === undefined ? h.event : { data }));
+  for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+  return held.length;
+}`;
+
+/**
+ * Paket 9 C2 review: text, method or a used case option changed while a sort runs (no new sort started). The old job
+ * must neither replace the shown result nor show a success or error message, the loading state must end, and a later
+ * valid sort must work and not be affected by the late answer. A case change the running method ignores (line
+ * length) keeps the job valid.
+ */
+async function checkSortInputChangedWhileRunning(page, r, label, ui) {
+  const { loadFile, selectMethod, setCase, sort, result, waitForResult, outdated, snacks } = ui;
+  const json = (value) => JSON.stringify(value);
+  const busy = () => page.eval(`__t.page().querySelector('.sort-button').getAttribute('aria-busy')`);
+  /** Starts a sort whose worker answer is held; true once it is held. */
+  const startHeld = async () => {
+    await snacks();
+    await page.eval(`__t.sortGate.on = true; __t.page().querySelector('.sort-button').click(); true`);
+    return page.waitFor(`__t.sortGate.held.length === 1`, 8000);
+  };
+  const release = (data) => page.eval(`(${SORT_GATE_RELEASE})(${data === undefined ? 'undefined' : json(data)})`);
+  /** The page state after a late answer of an outdated job: nothing changed, nothing reported, not loading. */
+  const unchanged = async (shownBefore) => {
+    const state = { result: await result(), outdated: await outdated(), busy: await busy(), snacks: await snacks() };
+    return { ok: state.result === shownBefore && state.outdated && state.busy === 'false' && state.snacks.length === 0, state };
+  };
+
+  await page.eval(SORT_GATE_INSTALL);
+  await selectMethod('alphabetical');
+  await setCase(true);
+  await loadFile('b\na');
+  await sort();
+  await waitForResult('a\nb');
+
+  // 1. Text changed while running, late result
+  await loadFile('d\nc');
+  let held = await startHeld();
+  await loadFile('f\ne');
+  let released = await release();
+  let after = await unchanged('a\nb');
+  r.check(`${label}: Sort text changed while running: late result not applied, no message, not loading`, held && released === 1 && after.ok, json(after.state));
+  await snacks();
+  await sort();
+  const nextDone = await waitForResult('e\nf');
+  r.check(`${label}: Sort after the text change works`, nextDone && (await snacks()).filter((s) => s.startsWith('success')).length === 1, json(await result()));
+
+  // 2. Method changed while running, late result
+  await loadFile('bb\na\nccc');
+  held = await startHeld();
+  await selectMethod('lengthDesc');
+  released = await release();
+  after = await unchanged('e\nf');
+  r.check(`${label}: Sort method changed while running: late result not applied, no message, not loading`, held && released === 1 && after.ok, json(after.state));
+  await sort();
+  r.check(`${label}: Sort with the new method after the change works`, await waitForResult('ccc\nbb\na'), json(await result()));
+
+  // 3. Used case option changed while running, late result
+  await selectMethod('alphabetical');
+  await loadFile('B\nb\nA\na');
+  held = await startHeld();
+  await setCase(false);
+  released = await release();
+  after = await unchanged('ccc\nbb\na');
+  r.check(`${label}: Sort case option changed while running: late result not applied, no message, not loading`, held && released === 1 && after.ok, json(after.state));
+  await sort();
+  r.check(`${label}: Sort with the changed case option works`, await waitForResult('A\na\nB\nb'), json(await result()));
+
+  // 4. Text changed while running, late error
+  await loadFile('y\nx');
+  held = await startHeld();
+  await loadFile('w\nz');
+  released = await release({ success: false, type: 'error', errorKind: 'worker', error: 'errors.processingError', result: null });
+  after = await unchanged('A\na\nB\nb');
+  r.check(`${label}: Sort text changed while running: late error not reported`, held && released === 1 && after.ok, json(after.state));
+
+  // 5. A newer valid sort runs first, the outdated answer arrives afterwards
+  await loadFile('q\np');
+  held = await startHeld();
+  await loadFile('s\nr');
+  await snacks();
+  await sort(); // gate is still on: this answer is held too
+  await page.waitFor(`__t.sortGate.held.length === 2`, 8000);
+  // Deliver the newer answer first, then the outdated one
+  await page.eval(`(() => { const [older, newer] = __t.sortGate.held.splice(0); __t.sortGate.on = false; newer.fn.call(newer.worker, newer.event); older.fn.call(older.worker, older.event); return true; })()`);
+  const newerDone = await waitForResult('r\ns');
+  await page.eval(`(${SORT_GATE_RELEASE})()`);
+  const newerSnacks = await snacks();
+  r.check(
+    `${label}: Sort outdated answer after a newer valid sort changes nothing`,
+    held && newerDone && (await result()) === 'r\ns' && !(await outdated()) && newerSnacks.length === 1 && newerSnacks[0].startsWith('success'),
+    json(newerSnacks)
+  );
+
+  // 6. Case change the running method ignores (line length): the job stays valid and is applied
+  await selectMethod('lengthAsc');
+  await loadFile('ccc\na\nbb');
+  held = await startHeld();
+  // The checkbox is disabled for line length; it is switched programmatically to change the (ignored) option
+  const toggled = await page.eval(`(() => { const i = __t.page().querySelector('.input-box input[type=checkbox]'); i.disabled = false; i.click(); i.disabled = true; return i.checked; })()`);
+  const busyWhileHeld = await busy();
+  released = await release();
+  const applied = { result: await result(), outdated: await outdated(), busy: await busy(), snacks: await snacks() };
+  r.check(
+    `${label}: Sort ignored case change while running (line length): result applied`,
+    held && toggled === true && busyWhileHeld === 'true' && released === 1 && applied.result === 'a\nbb\nccc' && !applied.outdated &&
+      applied.busy === 'false' && applied.snacks.length === 1 && applied.snacks[0].startsWith('success'),
+    json(applied)
+  );
+
+  await page.eval(SORT_GATE_UNINSTALL);
+}
+
+// Golden sort results of Paket 9 C1, checked in the real UI (Paket 9 C2). `methods` is the order of the dropdown.
+const SORT_FIXTURES = JSON.parse(readFileSync(new URL('../../fixtures/sort-cases.json', import.meta.url), 'utf8'));
+const SORT_UI_CASES = [
+  'natural: decimals after whitespace (prices)',
+  'natural: negative and positive integers',
+  'natural: numerically equal spellings in one list',
+  'natural: multi-part identifiers stay digit runs',
+  'natural CS: same collation as alphabetical, independent of input order',
+  'alphabetical: emoji and other scripts (CLDR root order)',
+  'alphabetical CI: case variants are equal keys and keep input order',
+  'alphabetical: no implicit trim, leading and trailing spaces are kept',
+  'length: code points, not UTF-16 units',
+  'line endings: mixed, the most frequent one wins',
+  'blank lines: Paket 8 whitespace set (U+0085, U+00A0 blank; U+FEFF, U+200B not)',
+  'blank lines: an empty line moved to the end gets a trailing newline (CRLF)',
+];
+
+/**
+ * Sort page (Paket 9 C2) in the current processing mode: Sort always runs the TypeScript sort in the sort worker (also
+ * in Rust mode). Golden cases, exact display and copy, outdated results, the case option, empty and whitespace-only
+ * input, rapid clicks (latest job wins, one message) and a large text.
+ */
+export async function checkSort(page, r, label, errorsSince) {
+  const n = page.logs.length;
+  const json = (value) => JSON.stringify(value);
+  const result = () => page.eval(`__t.raw(__t.textareas()[1])`);
+  const waitForResult = (expected) => page.waitFor(`__t.raw(__t.textareas()[1]) === ${json(expected)}`, 8000);
+  const loadFile = async (text) => {
+    await page.eval(`__t.loadFile(0, ${json(text)}); true`);
+    return page.waitFor(`__t.raw(__t.textareas()[0]) === ${json(text)}`, 3000);
+  };
+  const selectMethod = async (method) => {
+    const index = SORT_FIXTURES.methods.indexOf(method);
+    await page.eval(`__t.page().querySelector('.custom-select').click(); true`);
+    await sleepMs(200);
+    await page.eval(`document.querySelectorAll('.select-dropdown li')[${index}].click(); true`);
+    await sleepMs(150);
+  };
+  const caseBox = () => page.eval(`(() => { const i = __t.page().querySelector('.input-box input[type=checkbox]'); return { checked: i.checked, disabled: i.disabled }; })()`);
+  const setCase = async (value) => {
+    await page.eval(`(() => { const i = __t.page().querySelector('.input-box input[type=checkbox]'); if (i.checked !== ${value}) i.click(); })(); true`);
+    await sleepMs(100);
+  };
+  const sort = () => page.eval(`__t.page().querySelector('.sort-button').click(); true`);
+  const outdated = () => page.eval(`!!__t.page().querySelector('.sort-result-outdated')`);
+  const snacks = () => page.eval('__t.takeSnacks()');
+
+  await page.eval(`__t.nav('sort'); __t.watchSnacks(); true`);
+  await sleepMs(250);
+
+  // --- Golden cases (sort-cases.json) through file import (keeps CR/CRLF), exactly as sortText computes them ---
+  for (const name of SORT_UI_CASES) {
+    const c = SORT_FIXTURES.cases.find((fixture) => fixture.name === name);
+    await loadFile(c.input);
+    await selectMethod(c.options.method);
+    if (!(await caseBox()).disabled) await setCase(c.options.caseSensitive);
+    await snacks();
+    await sort();
+    const done = await waitForResult(c.expected);
+    r.check(`${label}: Sort ${name}`, done && !(await outdated()), json(await result()));
+  }
+  r.check(
+    `${label}: Sort runs in the sort worker`,
+    await page.eval(`performance.getEntriesByType('resource').some((e) => /SortWorker/.test(e.name))`)
+  );
+
+  // --- Copy: the exact result (CRLF, empty last line + trailing newline of OD-8) ---
+  const last = SORT_FIXTURES.cases.find((fixture) => fixture.name === SORT_UI_CASES[SORT_UI_CASES.length - 1]);
+  await page.eval(`__t.captureCopy(); __t.page().querySelector('.result-header .copy-button').click(); true`);
+  await page.waitFor(`__t.copied !== null`, 3000);
+  const copied = await page.eval('__t.copied');
+  r.check(`${label}: Sort copy is the exact result`, copied === last.expected, json(copied));
+  await page.eval(`__t.releaseCopy(); true`);
+
+  // --- Outdated result: marked when text or options change, the shown result stays until a new sort succeeds ---
+  // File import keeps CRLF (typing into a textarea would turn it into LF, which is a different text)
+  await loadFile(last.input + '\r\nc');
+  r.check(`${label}: Sort result is marked outdated after a text change`, (await outdated()) && (await result()) === last.expected);
+  await loadFile(last.input);
+  r.check(`${label}: Sort result is current again for the same text and options`, !(await outdated()));
+  await selectMethod('alphabeticalReverse');
+  r.check(`${label}: Sort result is marked outdated after a method change`, await outdated());
+  await sort();
+  r.check(`${label}: Sort with the new method replaces the result`, (await waitForResult('b\r\na\r\n\r\n')) && !(await outdated()), json(await result()));
+
+  // --- Case option: disabled for length and random, its value is kept for alphabetical and natural ---
+  await selectMethod('natural');
+  await setCase(false);
+  await selectMethod('lengthAsc');
+  const forLength = await caseBox();
+  await selectMethod('random');
+  const forRandom = await caseBox();
+  await selectMethod('alphabetical');
+  const back = await caseBox();
+  r.check(
+    `${label}: Sort case option disabled for length/random, value kept`,
+    forLength.disabled && !forLength.checked && forRandom.disabled && !forRandom.checked && !back.disabled && !back.checked,
+    json({ forLength, forRandom, back })
+  );
+  // Case-insensitive keeps the input order of B/b and A/a; case-sensitive would give a, A, b, B
+  await loadFile('B\nb\nA\na');
+  await snacks();
+  await sort();
+  r.check(`${label}: Sort uses the kept case option (case-insensitive: ties in input order)`, await waitForResult('A\na\nB\nb'), json(await result()));
+  await setCase(true);
+
+  // --- Empty input: refused with a warning, no success, the previous result stays ---
+  await page.eval(`__t.set(__t.textareas()[0], ''); true`);
+  await sleepMs(150);
+  await snacks();
+  await sort();
+  await sleepMs(500);
+  const emptySnacks = await snacks();
+  r.check(
+    `${label}: Sort of an empty text is refused (warning, no success), result kept`,
+    emptySnacks.length === 1 && emptySnacks[0].startsWith('warning') && (await result()) === 'A\na\nB\nb' && (await outdated()),
+    json(emptySnacks)
+  );
+
+  // --- Whitespace-only input: valid data lines ---
+  await loadFile('  \n\t');
+  await snacks();
+  await sort();
+  const whitespaceDone = await waitForResult('  \n\t');
+  await sleepMs(300);
+  const whitespaceSnacks = await snacks();
+  r.check(`${label}: Sort of whitespace-only lines succeeds`, whitespaceDone && whitespaceSnacks.length === 1 && whitespaceSnacks[0].startsWith('success'), json(whitespaceSnacks));
+
+  // --- Rapid clicks: the first job is superseded, one result, one message ---
+  await loadFile('b\nc\na');
+  await snacks();
+  await page.eval(`(() => { const b = __t.page().querySelector('.sort-button'); b.click(); b.click(); b.click(); })(); true`);
+  const rapidDone = await waitForResult('a\nb\nc');
+  await sleepMs(500);
+  const rapidSnacks = await snacks();
+  r.check(`${label}: Sort rapid clicks: latest job wins, exactly one success message`, rapidDone && rapidSnacks.length === 1 && rapidSnacks[0].startsWith('success'), json(rapidSnacks));
+
+  // --- Large text: 100 000 shuffled lines, natural, through the worker ---
+  await selectMethod('natural');
+  await page.eval(`(() => {
+    const lines = Array.from({ length: 100000 }, (_, i) => 'item ' + i);
+    for (let i = lines.length - 1, s = 7; i > 0; i--) { s = (s * 1103515245 + 12345) % 2147483648; const j = s % (i + 1); [lines[i], lines[j]] = [lines[j], lines[i]]; }
+    __t.set(__t.textareas()[0], lines.join('\\n'));
+  })(); true`);
+  await sleepMs(500);
+  await snacks();
+  await sort();
+  const bigDone = await page.waitFor(
+    `(() => { const v = __t.raw(__t.textareas()[1]); return !!v && v.startsWith('item 0\\nitem 1\\nitem 2\\n') && v.endsWith('\\nitem 99998\\nitem 99999'); })()`,
+    20000
+  );
+  const bigLines = await page.eval(`__t.raw(__t.textareas()[1]).split('\\n').length`);
+  r.check(`${label}: Sort 100 000 lines (natural) in the worker`, bigDone && bigLines === 100000, `lines=${bigLines}`);
+
+  await checkSortInputChangedWhileRunning(page, r, label, { loadFile, selectMethod, setCase, sort, result, waitForResult, outdated, snacks });
+
+  r.check(`${label}: Sort checks without errors`, errorsSince(n).length === 0, json(errorsSince(n)));
+
+  // The source text is shared by the pages: leave the usual one for the following checks
+  await page.eval(`__t.set(__t.textareas()[0], 'a_b'); true`);
+  await sleepMs(300);
 }
