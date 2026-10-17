@@ -59,8 +59,15 @@ Paket 10 Phase B (contract: `docs/analyse/Paket10-PhaseB-Regexvertrag.md`) exten
 | `delimiter` | A string or `{ "repeat", "count" }` (long patterns). |
 | `expected*` | Current behaviour; may also be `{ "error": "invalidRegex" \| "emptyDelimiter" \| "patternEmpty" \| "patternTooLong" }` (and, JS only, `regexSplitsCharacter`). |
 | `divergence` | A string (accepted dialect difference) or `{ kind, reason }`: `dialect`, `utf16Guard` (the JS worker refuses the split with `regexSplitsCharacter`, Rust never cuts a character; required for that error), `utf16Damage` (the JS split still damages a character; only with a pending JS target, none left after C1), `unvalidatedInput`. An independent test oracle (native `matchAll` with match indices and native `split`) checks that exactly the cases whose native JS split would cut a pair are refused or marked. |
-| `target` or `targetRust` + `targetJs`, `pending` | Target of a not yet implemented decision (only E9 flags `gm` → `g` is left; E3/E4/E5 are implemented): columns or `{ error: invalidRegex \| emptyDelimiter \| patternEmpty \| patternTooLong \| regexSplitsCharacter }` (the last JS only). `pending { decisions, phase, engines, reason }`: exactly the listed engines still differ from their target; both runners check it against the real engines, so the suite stays green and a reached target is noticed. |
+| `target` or `targetRust` + `targetJs`, `pending` | Target of a not yet implemented decision (none left: E3, E4, E5 and E9 are implemented): columns or `{ error: invalidRegex \| emptyDelimiter \| patternEmpty \| patternTooLong \| regexSplitsCharacter }` (the last JS only). `pending { decisions, phase, engines, reason }`: exactly the listed engines still differ from their target; both runners check it against the real engines, so the suite stays green and a reached target is noticed. |
 | `ref` | Finding of `docs/analyse/Paket10-PhaseA-Regex-Analyse.md`. |
+
+**Paket 10 C4 (E9):** the JS regex split uses the flag `g` (formerly `gm`) in the native split and in the checked
+reproduction for lines with surrogates (`gd` with match indices): `^` and `$` match only at the start and end of the data
+line, not next to U+2028/U+2029 inside it, like Rust. Real line breaks (LF, CRLF, CR) are rows of the line model.
+Remaining differences are dialect (empty part after/before an empty match at the line end/start in Rust, captures).
+Tests: the E9 fixtures, `split (JS, E9)` in `split.test.ts` (native `g` split comparison with U+2028/U+2029, before/after
+with `gm`), E2E `checkSplitFlags` (browser; Tauri in Rust and JS mode).
 
 **Paket 10 C1 (implemented, `resolved` in the fixtures):**
 
@@ -279,8 +286,8 @@ Catastrophic backtracking is not in the fixtures: see `worker-termination.test.t
 
 Paket 10 (R7) added more silent differences: `\h` (Rust: hex digit, JS: `h`), `\u{1F600}` (JS: literal text), `\0`
 (Rust accepts it but does not match NUL), `.` at U+2028/U+2029 and `\s` at U+0085 (`different`), `\Z` and `\1` without a
-group (`jsOnly`: JS literal/octal, Rust error), and `a$` before U+2028 (`same` in the Filter, flag `g`; the JS Split uses
-`gm` and differs, see the E9 cases in `split-cases.json`). A surrogate escape such as `\uD83D` is an error in Rust (no
+group (`jsOnly`: JS literal/octal, Rust error), and `a$` before U+2028 (`same` in the Filter, flag `g`; since Paket 10 C4
+(E9) the JS Split uses `g` too, formerly `gm`: see the resolved E9 cases in `split-cases.json`). A surrogate escape such as `\uD83D` is an error in Rust (no
 Unicode scalar value) and cuts characters in JS (Filter: `regexSplitsCharacter`). `jsRuntimeDependent { reason,
 otherJsResults }` marks syntax whose JS result depends on the engine version, e.g. the modifier group `(?i:a)` (V8 12.5+,
 Chrome/WebView2 125+, Node 23+; older runtimes: `invalidRegex`): the JS result must be the expectation or one of

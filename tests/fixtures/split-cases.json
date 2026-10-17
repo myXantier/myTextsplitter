@@ -972,54 +972,136 @@
       "expected": { "error": "invalidRegex" }
     },
     {
-      "name": "R7/E9: $ before U+2028 inside a line (JS flag m)",
-      "input": "a b",
+      "name": "R7/E9: $ before U+2028 inside a line",
+      "input": "a\u2028b",
       "delimiter": "$",
       "useRegex": true,
-      "expectedRust": [["a b"], [""]],
-      "expectedJs": [["a"], [" b"]],
-      "divergence": "JS split uses the flags gm: with m, $ also matches before U+2028/U+2029 inside a line. fancy-regex $ only matches at the end of the line (and yields an empty part there).",
+      "expectedRust": [["a\u2028b"], [""]],
+      "expectedJs": [["a\u2028b"]],
+      "divergence": "Dialect, not the m flag: fancy-regex split yields an empty part after the empty match at the end of the line, JS split skips an empty match there.",
       "ref": "R7",
-      "targetRust": [["a b"], [""]],
-      "targetJs": [["a b"]],
-      "pending": { "decisions": ["E9"], "phase": "C2", "engines": ["js"], "reason": "With the flag g only, $ matches only at the end of the line; the remaining difference is the empty part after an empty match at the end (dialect)." }
+      "resolved": "Paket 10 C4 (E9): the JS split uses the flag g only (formerly gm), like Rust: ^ and $ match only at the start and end of the data line, not next to U+2028/U+2029 inside it."
     },
     {
-      "name": "R7/E9: ^ after U+2028 inside a line (JS flag m)",
-      "input": "a b",
+      "name": "R7/E9: ^ after U+2028 inside a line",
+      "input": "a\u2028b",
       "delimiter": "^",
       "useRegex": true,
-      "expectedRust": [[""], ["a b"]],
-      "expectedJs": [["a "], ["b"]],
-      "divergence": "JS split uses the flags gm: with m, ^ also matches after U+2028/U+2029. fancy-regex ^ only matches at the start of the line (and yields an empty part before it).",
+      "expectedRust": [[""], ["a\u2028b"]],
+      "expectedJs": [["a\u2028b"]],
+      "divergence": "Dialect, not the m flag: fancy-regex split yields an empty part before the empty match at the start of the line, JS split skips an empty match there.",
       "ref": "R7",
-      "targetRust": [[""], ["a b"]],
-      "targetJs": [["a b"]],
-      "pending": { "decisions": ["E9"], "phase": "C2", "engines": ["js"], "reason": "With the flag g only, ^ matches only at the start of the line; the remaining difference is the empty part before an empty match at the start (dialect)." }
+      "resolved": "Paket 10 C4 (E9): the JS split uses the flag g only (formerly gm), like Rust: ^ and $ match only at the start and end of the data line, not next to U+2028/U+2029 inside it."
     },
     {
-      "name": "R7/E9: ^b after U+2029 inside a line (JS flag m)",
-      "input": "a b",
+      "name": "R7/E9: ^b after U+2029 inside a line",
+      "input": "a\u2029b",
       "delimiter": "^b",
       "useRegex": true,
-      "expectedRust": [["a b"]],
-      "expectedJs": [["a "], [""]],
-      "divergence": "JS split uses the flags gm: with m, U+2029 starts a new line for ^. fancy-regex does not match.",
+      "expected": [["a\u2029b"]],
       "ref": "R7",
-      "target": [["a b"]],
-      "pending": { "decisions": ["E9"], "phase": "C2", "engines": ["js"], "reason": "With the flag g only, both engines agree." }
+      "resolved": "Paket 10 C4 (E9): the JS split uses the flag g only (formerly gm), like Rust: ^ and $ match only at the start and end of the data line, not next to U+2028/U+2029 inside it."
     },
     {
-      "name": "R7/E9: a$ before U+2028 inside a line (JS flag m)",
-      "input": "a b",
+      "name": "R7/E9: a$ before U+2028 inside a line",
+      "input": "a\u2028b",
       "delimiter": "a$",
       "useRegex": true,
-      "expectedRust": [["a b"]],
-      "expectedJs": [[""], [" b"]],
-      "divergence": "JS split uses the flags gm: with m, a$ matches before U+2028. fancy-regex does not match (the JS Filter, flag g, does not match either).",
+      "expected": [["a\u2028b"]],
       "ref": "R7",
-      "target": [["a b"]],
-      "pending": { "decisions": ["E9"], "phase": "C2", "engines": ["js"], "reason": "With the flag g only, both engines agree." }
+      "resolved": "Paket 10 C4 (E9): the JS split uses the flag g only (formerly gm), like Rust: ^ and $ match only at the start and end of the data line, not next to U+2028/U+2029 inside it."
+    },
+    {
+      "name": "E9: $ before U+2029 inside a line",
+      "input": "a\u2029b",
+      "delimiter": "$",
+      "useRegex": true,
+      "expectedRust": [["a\u2029b"], [""]],
+      "expectedJs": [["a\u2029b"]],
+      "divergence": "Dialect, not the m flag: fancy-regex split yields an empty part after the empty match at the end of the line, JS split skips an empty match there."
+    },
+    {
+      "name": "E9: ^b after U+2028 inside a line",
+      "input": "a\u2028b",
+      "delimiter": "^b",
+      "useRegex": true,
+      "expected": [["a\u2028b"]]
+    },
+    {
+      "name": "E9: a$|^b match only at the real end and start of the line, not around U+2028 and U+2029",
+      "input": "a\u2028b\u2029a",
+      "delimiter": "a$|^b",
+      "useRegex": true,
+      "expected": [["a\u2028b\u2029"], [""]]
+    },
+    {
+      "name": "E9: ^ and $ at the start and end of the data line still match",
+      "input": "ab\nba",
+      "delimiter": "^a|a$",
+      "useRegex": true,
+      "expected": [["", "b"], ["b", ""]]
+    },
+    {
+      "name": "E9: real line breaks are rows, U+2028 is not (^b on CRLF and U+2028)",
+      "input": "a\r\nb\u2028b",
+      "delimiter": "^b",
+      "useRegex": true,
+      "expected": [["a", ""], ["", "\u2028b"]]
+    },
+    {
+      "name": "E9: zero-width lookahead before U+2028 is not affected by the flags",
+      "input": "a\u2028b",
+      "delimiter": "(?=\u2028)",
+      "useRegex": true,
+      "expected": [["a"], ["\u2028b"]]
+    },
+    {
+      "name": "E9: capture of the character before U+2028 with $",
+      "input": "xa\u2028b",
+      "delimiter": "(a)$",
+      "useRegex": true,
+      "expected": [["xa\u2028b"]]
+    },
+    {
+      "name": "E9: emoji capture with $ before U+2028",
+      "input": "a😀\u2028😀b",
+      "delimiter": "(😀)$",
+      "useRegex": true,
+      "expected": [["a😀\u2028😀b"]]
+    },
+    {
+      "name": "E9: ^ emoji after U+2028 inside a line",
+      "input": "😀\u2028😁",
+      "delimiter": "^😁",
+      "useRegex": true,
+      "expected": [["😀\u2028😁"]]
+    },
+    {
+      "name": "E9: emoji capture at the end of the data line",
+      "input": "a😀",
+      "delimiter": "(😀)$",
+      "useRegex": true,
+      "expectedRust": [["a"], [""]],
+      "expectedJs": [["a"], ["😀"], [""]],
+      "divergence": "Capture groups: JS split inserts them as parts, fancy-regex split does not."
+    },
+    {
+      "name": "E9: surrogate half before U+2028 is no match any more",
+      "input": "😀\u2028x",
+      "delimiter": "\\uDE00$",
+      "useRegex": true,
+      "expectedRust": { "error": "invalidRegex" },
+      "expectedJs": [["😀\u2028x"]],
+      "divergence": "fancy-regex rejects the surrogate escape \\uDE00; without the m flag the JS split finds no match (formerly $ before U+2028 matched after the half and the split was refused)."
+    },
+    {
+      "name": "E9: surrogate half at the end of the data line is still refused",
+      "input": "x😀",
+      "delimiter": "\\uDE00$",
+      "useRegex": true,
+      "expectedRust": { "error": "invalidRegex" },
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS RegExp without the u flag matches the low half of the emoji before the end of the line: the split position lies inside the pair, so the JS worker refuses it. fancy-regex rejects the surrogate escape (dialect)." }
     },
     {
       "name": "R7/E9: $ at the end of CRLF lines is not affected by the flag m",

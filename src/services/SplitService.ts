@@ -28,7 +28,7 @@ export class SplitService extends BaseService {
   }
 
   protected regexOf({ mainParam, configParams }: SplitConfig): JobRegex | null {
-    return configParams.useRegex ? { pattern: mainParam, flags: 'gm' } : null;
+    return configParams.useRegex ? { pattern: mainParam, flags: 'g' } : null;
   }
 
   protected async frontendInMainThread(args: SplitConfig): Promise<myResult> {

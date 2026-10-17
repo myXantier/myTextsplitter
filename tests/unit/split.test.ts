@@ -160,7 +160,7 @@ const insidePair = (line: string, index: number) => index > 0 && index < line.le
  */
 function jsSplitCutsCharacter(line: string, delimiter: string, useRegex: boolean): boolean {
   // Only for a well-formed line: lone surrogates already in the input are not newly damaged
-  const splitOutputIllFormed = () => line.isWellFormed() && line.split(useRegex ? new RegExp(delimiter, 'gm') : delimiter).some((part) => part !== undefined && !part.isWellFormed());
+  const splitOutputIllFormed = () => line.isWellFormed() && line.split(useRegex ? new RegExp(delimiter, 'g') : delimiter).some((part) => part !== undefined && !part.isWellFormed());
   if (!useRegex) {
     if (delimiter === '') return Array.from({ length: line.length }, (_, index) => index).some((index) => insidePair(line, index));
     for (let index = line.indexOf(delimiter); index >= 0; index = line.indexOf(delimiter, index + 1)) {
@@ -168,8 +168,8 @@ function jsSplitCutsCharacter(line: string, delimiter: string, useRegex: boolean
     }
     return splitOutputIllFormed();
   }
-  // Flag `d` (match indices) gives the position of every capture; same other flags as the JS split (`gm`)
-  for (const match of line.matchAll(new RegExp(delimiter, 'gmd'))) {
+  // Flag `d` (match indices) gives the position of every capture; same other flags as the JS split (`g`, Paket 10 E9)
+  for (const match of line.matchAll(new RegExp(delimiter, 'gd'))) {
     if (insidePair(line, match.index) || insidePair(line, match.index + match[0].length)) return true;
     for (const span of match.indices!.slice(1)) {
       if (span && span[0] !== span[1] && (insidePair(line, span[0]) || insidePair(line, span[1]))) return true;
@@ -199,9 +199,9 @@ test('split oracle: zero-width splits and columns between the halves stay damage
   assert.equal(jsSplitCutsCharacter('a😀b', '(?=\\uDE00)', true), true);
   assert.equal(jsSplitCutsCharacter('😀', '(?:)', true), true);
   // Two adjacent matches create a column between the halves; every output value is well-formed
-  assert.ok('a😀b'.split(/[😀]/gm).every((part) => part.isWellFormed()));
+  assert.ok('a😀b'.split(/[😀]/g).every((part) => part.isWellFormed()));
   assert.equal(jsSplitCutsCharacter('a😀b', '[😀]', true), true);
-  assert.ok('😀x'.split(/./gm).every((part) => part.isWellFormed()));
+  assert.ok('😀x'.split(/./g).every((part) => part.isWellFormed()));
   assert.equal(jsSplitCutsCharacter('😀x', '.', true), true);
   // Empty plain delimiter
   assert.equal(jsSplitCutsCharacter('a😀b', '', false), true);
@@ -262,8 +262,11 @@ test('split fixtures cover the Paket 10 Phase A reproductions and decisions', ()
   const refs = new Set(fixtures.cases.map((c) => c.ref).filter(Boolean));
   for (const ref of ['R2', 'R5', 'R7']) assert.ok(refs.has(ref), `missing ${ref}`);
   const decisions = new Set(fixtures.cases.flatMap((c) => c.pending?.decisions ?? []));
-  // Still open: E9 (split flags); E4 and E5 are implemented (Paket 10 C1), E3 (pattern rule) in Paket 10 C3
-  assert.deepEqual([...decisions].sort(), ['E9']);
+  // No open decision left: E4 and E5 are implemented in Paket 10 C1, E3 (pattern rule) in C3, E9 (split flag g) in C4
+  assert.deepEqual([...decisions], []);
+  const e9 = fixtures.cases.filter((c) => c.resolved?.startsWith('Paket 10 C4 (E9)'));
+  assert.equal(e9.length, 4, 'resolved E9 cases');
+  assert.ok(fixtures.cases.filter((c) => c.name.startsWith('E9: ')).length >= 12, 'E9 boundary cases');
   const resolved = fixtures.cases.filter((c) => c.resolved?.startsWith('Paket 10 C1'));
   assert.ok(resolved.filter((c) => isError(c.expected) && c.expected.error === 'emptyDelimiter').length >= 6, 'E4 cases');
   assert.ok(resolved.filter((c) => isError(c.expectedJs) && c.expectedJs.error === 'regexSplitsCharacter').length >= 14, 'E5 cases');
@@ -341,12 +344,61 @@ test('split (JS): checked regex split equals the native split or is refused exac
         assert.equal(actual, 'regexSplitsCharacter', `${JSON.stringify(line)} ${pattern}`);
         refused++;
       } else {
-        assert.deepEqual(actual, line.split(new RegExp(pattern, 'gm')).map((part) => part ?? ''), `${JSON.stringify(line)} ${pattern}`);
+        assert.deepEqual(actual, line.split(new RegExp(pattern, 'g')).map((part) => part ?? ''), `${JSON.stringify(line)} ${pattern}`);
       }
       checked++;
     }
   }
   assert.ok(refused > 1000 && checked - refused > 10000, `${refused} refused of ${checked}`);
+});
+
+test('split (JS, E9): ^ and $ next to U+2028/U+2029 - the checked split equals the native split with the flag g', () => {
+  // Lines with and without surrogates (native split vs. the checked reproduction), anchors and captures
+  const PATTERNS = ['^', '$', '^a', 'a$', '^.', '.$', '(^.)', '(.$)', '^😀', '😀$', '(😀)$', '^(😀)', '\\uDE00$', '^\\uD83D', '$|,', '^|\\u2028', '(?=\\u2028)', '(?<=\\u2029)', '\\u2028$', '^\\u2029'];
+  const ALPHABET = ['a', ',', '😀', ' ', ' ', '\uDE00'];
+  let seed = 0x1e9c4;
+  const random = () => ((seed ^= seed << 13), (seed ^= seed >>> 17), (seed ^= seed << 5), (seed >>> 0) / 2 ** 32);
+  let refused = 0;
+  let differsFromMultiline = 0;
+  for (let n = 0; n < 800; n++) {
+    const line = Array.from({ length: 1 + Math.floor(random() * 7) }, () => ALPHABET[Math.floor(random() * ALPHABET.length)]).join('');
+    for (const pattern of PATTERNS) {
+      const actual = partsOf(line, pattern, regexSplit);
+      if (jsSplitCutsCharacter(line, pattern, true)) {
+        assert.equal(actual, 'regexSplitsCharacter', `${JSON.stringify(line)} ${pattern}`);
+        refused++;
+        continue;
+      }
+      const native = line.split(new RegExp(pattern, 'g')).map((part) => part ?? '');
+      assert.deepEqual(actual, native, `${JSON.stringify(line)} ${pattern}`);
+      if (JSON.stringify(native) !== JSON.stringify(line.split(new RegExp(pattern, 'gm')).map((part) => part ?? ''))) differsFromMultiline++;
+    }
+  }
+  // The sample really contains cases that the former flag m split differently, and cut characters
+  assert.ok(differsFromMultiline > 500 && refused > 100, `${differsFromMultiline} differ from gm, ${refused} refused`);
+});
+
+test('split (JS, E9): no multiline - before (gm) and after (g) on the reproductions', () => {
+  const cases: [string, string, string[], string[] | string][] = [
+    // [line, pattern, former result with gm, result now]
+    ['a b', '$', ['a', ' b'], ['a b']],
+    ['a b', '^', ['a ', 'b'], ['a b']],
+    ['a b', '^b', ['a ', ''], ['a b']],
+    ['a b', 'a$', ['', ' b'], ['a b']],
+    ['a😀 😀b', '(😀)$', ['a', '😀', ' 😀b'], ['a😀 😀b']],
+    // Formerly refused (the half before U+2028 matched), now no match at all
+    ['😀 x', '\\uDE00$', ['\uD83D', ' x'], ['😀 x']],
+    // Unchanged: the real end of the data line, safe emoji captures, a cut half
+    ['ab', 'b$', ['a', ''], ['a', '']],
+    ['a😀', '(😀)$', ['a', '😀', ''], ['a', '😀', '']],
+    ['x😀', '\\uDE00$', ['x\uD83D', ''], 'regexSplitsCharacter'],
+  ];
+  for (const [line, pattern, before, after] of cases) {
+    assert.deepEqual(line.split(new RegExp(pattern, 'gm')), before, `gm: ${JSON.stringify(line)} ${pattern}`);
+    assert.deepEqual(partsOf(line, pattern, regexSplit), after, `${JSON.stringify(line)} ${pattern}`);
+  }
+  // The service compiles the split pattern with the same flags (main-thread check, no regex runs there)
+  assert.deepEqual((new SplitService() as any).regexOf({ mainParam: '^', configParams: { useRegex: true } }), { pattern: '^', flags: 'g' });
 });
 
 test('split (JS): empty captures are no cut, non-empty captures and effective split positions inside a pair are', () => {

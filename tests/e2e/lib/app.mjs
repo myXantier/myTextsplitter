@@ -731,6 +731,74 @@ export async function checkPatternRule(page, r, label, errorsSince, engine) {
 }
 
 /**
+ * Split regex flags (Paket 10 C4, E9) on the real Split page in the current engine (`engine`): the JS split uses the flag g
+ * only, so ^ and $ do not match next to U+2028/U+2029 inside a line (the former flag m did); Rust is unchanged. Safe emoji
+ * splits keep working and a valid split works after a regex error.
+ */
+export async function checkSplitFlags(page, r, label, errorsSince, engine) {
+  const exceptionsSince = (n) => errorsSince(n).filter((l) => l.kind === 'exception');
+  const regexCheckbox = `[...__t.page().querySelectorAll('.input-box')].find(e => /regex/i.test(e.innerText)).querySelector('input')`;
+  const setText = async (value) => {
+    await page.eval(`__t.set(__t.textareas()[0], ${JSON.stringify(value)}); true`);
+    await sleepMs(150);
+  };
+  const setSeparator = async (value) => {
+    await page.eval(`__t.set(__t.page().querySelector('.form-add-render input'), ${JSON.stringify(value)}); true`);
+    await sleepMs(150);
+  };
+  const columns = () => page.eval('JSON.stringify(__t.columns())');
+  /** Splits and waits for the first snackbar (all snackbars shown meanwhile) */
+  const split = async () => {
+    await page.eval(`__t.watchSnacks(); __t.page().querySelector('button[title="Split text"]').click(); true`);
+    await page.waitFor(`__t.snackLog.length > 0`, 8000);
+    await sleepMs(300);
+    return page.eval('__t.takeSnacks()');
+  };
+  const js = engine === 'js';
+  const n = page.logs.length;
+  await page.eval(`__t.nav('split'); true`);
+  await sleepMs(250);
+  await page.eval(`${regexCheckbox}.checked || ${regexCheckbox}.click(); true`);
+  await sleepMs(100);
+
+  // [text, pattern, JS result (flag g), Rust result, former JS result with gm]
+  const cases = [
+    ['a b', '$', [['a b']], [['a b'], ['']], [['a'], [' b']]],
+    ['a b', 'a$', [['a b']], [['a b']], [[''], [' b']]],
+    ['a b', '^b', [['a b']], [['a b']], [['a '], ['']]],
+    // Safe emoji splits next to U+2028 (Rust split inserts no captures)
+    ['a😀 😀b', '(😀)', [['a'], ['😀'], [' '], ['😀'], ['b']], [['a'], [' '], ['b']], null],
+    ['a😀 😀b', '(😀)$', [['a😀 😀b']], [['a😀 😀b']], [['a'], ['😀'], [' 😀b']]],
+  ];
+  for (const [text, pattern, jsResult, rustResult, formerJs] of cases) {
+    await setText(text);
+    await setSeparator(pattern);
+    const snacks = await split();
+    const expected = JSON.stringify(js ? jsResult : rustResult);
+    r.check(
+      `${label}: Split ${JSON.stringify(pattern)} on ${JSON.stringify(text)} -> ${js ? 'flag g' : 'Rust'} result${formerJs && js ? ' (not the former gm result)' : ''}`,
+      (await columns()) === expected && snacks.every((s) => !s.startsWith('error')),
+      `${await columns()} ${JSON.stringify(snacks)} expected ${expected}${formerJs ? `, former gm ${JSON.stringify(formerJs)}` : ''}`
+    );
+  }
+
+  // A controlled regex error keeps the columns; a valid split works afterwards
+  const before = await columns();
+  await setSeparator('(');
+  let snacks = await split();
+  r.check(`${label}: Split regex error after the E9 cases -> one error, columns kept`, snacks.length === 1 && snacks[0].startsWith('error') && (await columns()) === before, `${JSON.stringify(snacks)} ${await columns()}`);
+  await setText('ab\nba');
+  await setSeparator('^a|a$');
+  snacks = await split();
+  r.check(`${label}: Split ^a|a$ at the real start and end of the data lines works after the error`, (await columns()) === JSON.stringify([['', 'b'], ['b', '']]) && snacks.every((s) => !s.startsWith('error')), `${await columns()} ${JSON.stringify(snacks)}`);
+  r.check(`${label}: Split flag checks without exceptions`, exceptionsSince(n).length === 0, JSON.stringify(exceptionsSince(n)));
+
+  await page.eval(`${regexCheckbox}.checked && ${regexCheckbox}.click(); true`);
+  await setSeparator('_');
+  await setText('a_b');
+}
+
+/**
  * Split data integrity (Paket 10 C1) on the real Split page in the current engine (`engine`: 'js' worker or 'rust'):
  * an empty plain delimiter is refused (E4), a regex split that would cut an emoji is refused in JS (E5; Rust never cuts a
  * character and rejects surrogate escapes), no damaged or partial result is applied, the previous result and metrics stay,

@@ -131,7 +131,8 @@ export function splitLinesToColumns(lines: string[], delimiter: string, options:
   if (!useRegex && delimiter === '') throw new SplitInputError('emptyDelimiter');
   const problem = useRegex ? patternProblem(delimiter) : null;
   if (problem) throw new SplitInputError(problem);
-  const regex = useRegex ? new RegExp(delimiter, 'gm') : null;
+  // Paket 10 E9: flag g only, like Rust (no multiline: ^ and $ only at the start and end of the data line, not at U+2028/U+2029)
+  const regex = useRegex ? new RegExp(delimiter, 'g') : null;
   /** The same regex with match indices, only built for lines with surrogates */
   let checkedRegex: RegExp | null = null;
   const plainNeedsCheck = !useRegex && hasLoneSurrogate(delimiter);
@@ -145,7 +146,7 @@ export function splitLinesToColumns(lines: string[], delimiter: string, options:
     if (regex && SURROGATE.test(line)) {
       // Match indices (flag `d`) allocate per match: only for a pattern with capture groups (`<pattern>|` matches '' and
       // yields one entry per group)
-      checkedRegex ??= new RegExp(delimiter, HAS_MATCH_INDICES && new RegExp(`${delimiter}|`).exec('')!.length > 1 ? 'gmd' : 'gm');
+      checkedRegex ??= new RegExp(delimiter, HAS_MATCH_INDICES && new RegExp(`${delimiter}|`).exec('')!.length > 1 ? 'gd' : 'g');
       rawParts = splitCheckingSurrogates(line, checkedRegex);
     } else {
       if (plainNeedsCheck && SURROGATE.test(line)) assertPlainSplitKeepsCharacters(line, delimiter);
