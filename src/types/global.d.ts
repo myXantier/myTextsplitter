@@ -49,7 +49,7 @@ type Result<T, E> =
 	| { status: "ok"; data: T }
 	| { status: "error"; error: E };
 
-type myResultDataType = null | 'Text' | 'Column' | 'ColumnList' | 'TextV2' | 'Diff';
+type myResultDataType = null | 'Text' | 'Column' | 'ColumnList' | 'TextV2' | 'Diff' | 'MatchPreview';
 type myResultBrand = { __brand: 'myResult' };
 
 interface myResultBase<T> extends myResultBrand {
@@ -67,7 +67,10 @@ type myResultTextV2 = myResultBase<ProcessedText> & { readonly type: 'TextV2' };
 /** Line diff + optional word diff (`src/utils/diff/result.ts`, Paket 7) */
 type myResultDiff = myResultBase<import('../utils/diff/result').DiffData> & { readonly type: 'Diff' };
 
-type myResult = myResultText | myResultColumn | myResultColumnList | myResultTextV2 | myResultDiff;
+/** Filter pattern preview (`src/utils/matchPreview.ts`, Paket 10 C2) */
+type myResultMatchPreview = myResultBase<import('../utils/matchPreview').MatchPreviewData> & { readonly type: 'MatchPreview' };
+
+type myResult = myResultText | myResultColumn | myResultColumnList | myResultTextV2 | myResultDiff | myResultMatchPreview;
 
 type AllowedResultTypes = string | ProcessedText | string[] | string[][];
 
@@ -161,6 +164,8 @@ interface SortConfig extends BaseConfig {
 interface MatchPreviewConfig extends BaseConfig {
   configParams: {
     caseSensitive: boolean,
+    /** Filter option: decides whether joined halves of a character are only shown or reported (Paket 10 E1) */
+    splitMatches: boolean,
   };
 }
 

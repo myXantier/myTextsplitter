@@ -439,6 +439,144 @@ export async function checkRegexRobustness(page, r, label, errorsSince, engine) 
 }
 
 /**
+ * Filter pattern preview (Paket 10 C2) on the real Filter page; the preview always runs the JS RegExp in its worker
+ * (`engine` = engine of the Filter itself): a partial match of an emoji is a note, not a highlight; whole emoji are
+ * highlighted; switching "split matches" updates the preview; a limited preview is marked and renders a bounded number of
+ * highlights; a valid preview works after an error; in Rust mode a note names the JS engine of the preview, and the
+ * surrogate notes speak about the JS preview only (the real Rust Filter succeeds where the JS Filter refuses).
+ */
+export async function checkMatchPreview(page, r, label, errorsSince, engine) {
+  const exceptionsSince = (n) => errorsSince(n).filter((l) => l.kind === 'exception');
+  const checkbox = (re) => `[...__t.page().querySelectorAll('.input-box')].find(e => ${re}.test(e.innerText)).querySelector('input')`;
+  const setChecked = (re, on) => page.eval(`${checkbox(re)}.checked !== ${on} && ${checkbox(re)}.click(); true`);
+  const setText = async (value) => {
+    await page.eval(`__t.set(__t.textareas()[0], ${value}); true`);
+    await sleepMs(150);
+  };
+  const setPattern = async (value) => {
+    await page.eval(`__t.set(__t.page().querySelector('.form-add-render input'), ${JSON.stringify(value)}); true`);
+    await sleepMs(150);
+  };
+  const view = () =>
+    page.eval(`(() => { const p = __t.page().querySelector('.match-preview'); return p && {
+      notes: [...p.querySelectorAll('.preview-note')].map(n => n.className.replace('preview-note', '').trim() + ': ' + n.innerText),
+      highlights: [...p.querySelectorAll('.match-highlight')].map(h => h.innerText),
+      spans: p.querySelector('.preview-content')?.querySelectorAll('span').length ?? 0,
+      elisions: [...p.querySelectorAll('.preview-elision')].map(e => e.innerText),
+      count: p.querySelector('.match-count')?.innerText ?? null } })()`);
+  const waitView = async (condition) => {
+    await page.waitFor(`(() => { const p = __t.page().querySelector('.match-preview'); return !!p && (${condition}); })()`, 8000);
+    return view();
+  };
+  const PREVIEW = /pattern matches/i;
+  const SPLIT = /separate/i;
+  const CUT = /Teil eines Zeichens|part of a character/i;
+  const JS_ENGINE = /JavaScript-RegExp|JavaScript RegExp/;
+  // Statements about the JS Filter (JS mode only) and the qualification of the Rust mode notes
+  const JS_REFUSES = /würde diesen Text ablehnen|would refuse this text/;
+  const KEEP_REFUSED = /wird abgelehnt|is refused/;
+  const OWN_ENGINE = /eigenen Engine|its own engine/;
+  const REMOVE = 0;
+  const KEEP = 1;
+  /** Runs the real Filter (`.filter-actions` button) on an empty result: the result and the snackbars it shows */
+  const result = `(__t.textareas()[1] ? __t.raw(__t.textareas()[1]) : '')`;
+  const runFilter = async (button) => {
+    // The result field exists only after a first result
+    await page.eval(`__t.textareas()[1] && __t.set(__t.textareas()[1], ''); __t.watchSnacks(); true`);
+    await sleepMs(100);
+    await page.eval(`__t.page().querySelectorAll('.filter-actions button')[${button}].click(); true`);
+    await page.waitFor(`__t.snackLog.length > 0 || ${result} !== ''`, 8000);
+    await sleepMs(300);
+    return { result: await page.eval(result), snacks: await page.eval('__t.takeSnacks()') };
+  };
+
+  const n = page.logs.length;
+  await page.eval(`__t.nav('filter'); true`);
+  await sleepMs(200);
+  await setChecked(SPLIT, false);
+  await setChecked(PREVIEW, true);
+  await setText(`'a😀b\\nc😁d'`);
+
+  // 1. A pattern that matches only one half of the emoji: note instead of a misleading highlight
+  await setPattern('\\uD83D');
+  let v = await waitView(`p.querySelector('.preview-note.error')`);
+  r.check(`${label}: preview of a surrogate half -> note, no highlight`, v.highlights.length === 0 && v.notes.some((note) => note.startsWith('error') && CUT.test(note)), JSON.stringify(v));
+  r.check(`${label}: preview engine note ${engine === 'rust' ? 'names JavaScript in Rust mode' : 'only in Rust mode'}`, v.notes.some((note) => JS_ENGINE.test(note)) === (engine === 'rust'), JSON.stringify(v.notes));
+
+  // 2. A whole emoji is highlighted; the counter names lines and matches
+  await setPattern('😀');
+  v = await waitView(`p.querySelector('.match-highlight')?.innerText === '😀'`);
+  r.check(`${label}: preview highlights a whole emoji`, JSON.stringify(v.highlights) === '["😀"]' && /1 (Treffer|matches) in 1/.test(v.count ?? ''), JSON.stringify(v));
+
+  // 3. "split matches" changes the preview: halves joined into one highlight are reported only with it
+  await setText(`'😀x'`);
+  await setPattern('.');
+  // Two highlights: the joined emoji and x (the previous preview showed one)
+  v = await waitView(`p.querySelectorAll('.match-highlight').length === 2 && !p.querySelector('.preview-note.warning')`);
+  r.check(`${label}: preview joins adjacent halves into one highlight`, v.highlights[0] === '😀' && v.highlights.length === 2, JSON.stringify(v));
+  await setChecked(SPLIT, true);
+  v = await waitView(`!!p.querySelector('.preview-note.warning')`);
+  r.check(`${label}: switching "split matches" on updates the preview (keep would cut the emoji)`, v.highlights[0] === '😀' && v.notes.some((note) => note.startsWith('warning')), JSON.stringify(v.notes));
+  const warning = v.notes.find((note) => note.startsWith('warning')) ?? '';
+  r.check(
+    `${label}: joined-halves note ${engine === 'rust' ? 'names the JS preview, promises no refusal by the Rust Filter' : 'names the refusal of keep with split matches'}`,
+    engine === 'rust' ? !KEEP_REFUSED.test(warning) && OWN_ENGINE.test(warning) : KEEP_REFUSED.test(warning),
+    warning
+  );
+  // The real Filter, keep with split matches: JS refuses the cut emoji, Rust (fancy-regex) matches whole characters
+  let outcome = await runFilter(KEEP);
+  r.check(
+    `${label}: Filter keep with split matches on '😀x' with '.' ${engine === 'rust' ? 'succeeds in Rust (😀 / x)' : 'is refused by the JS Filter'}`,
+    engine === 'rust' ? outcome.result === '😀\nx' && !outcome.snacks.some((s) => s.startsWith('error')) : outcome.result === '' && outcome.snacks.some((s) => s.startsWith('error') && CUT.test(s)),
+    JSON.stringify(outcome)
+  );
+  await setChecked(SPLIT, false);
+  v = await waitView(`!p.querySelector('.preview-note.warning')`);
+  r.check(`${label}: switching "split matches" off removes the note`, !v.notes.some((note) => note.startsWith('warning')), JSON.stringify(v.notes));
+
+  // 3b. [😀] on 😁: JS RegExp matches the shared high half (preview note); Rust treats the class as Unicode, no match
+  await setText(`'😁'`);
+  await setPattern('[😀]');
+  v = await waitView(`!!p.querySelector('.preview-note.error')`);
+  const cutNote = v.notes.find((note) => note.startsWith('error')) ?? '';
+  r.check(
+    `${label}: preview of [😀] on 😁 ${engine === 'rust' ? 'is limited to the JS preview, promises no refusal by the Rust Filter' : 'names the refusal of the JS Filter'}`,
+    v.highlights.length === 0 && CUT.test(cutNote) && (engine === 'rust' ? !JS_REFUSES.test(cutNote) && OWN_ENGINE.test(cutNote) : JS_REFUSES.test(cutNote)),
+    cutNote
+  );
+  outcome = await runFilter(REMOVE);
+  r.check(
+    `${label}: Filter remove of [😀] on 😁 ${engine === 'rust' ? 'succeeds in Rust (text unchanged)' : 'is refused by the JS Filter'}`,
+    engine === 'rust' ? outcome.result === '😁' && !outcome.snacks.some((s) => s.startsWith('error')) : outcome.result === '' && outcome.snacks.some((s) => s.startsWith('error') && CUT.test(s)),
+    JSON.stringify(outcome)
+  );
+
+  // 4. Many matches: limited, marked, a bounded number of spans (no fixed timing)
+  await setText(`'ab'.repeat(100000)`);
+  await setPattern('a');
+  v = await waitView(`!!p.querySelector('.preview-note.incomplete')`);
+  r.check(
+    `${label}: preview of 100,000 matches is limited and marked as incomplete`,
+    v.highlights.length === 1000 && v.spans <= 2002 && v.elisions.length === 1 && /mindestens|at least/i.test(v.count ?? ''),
+    JSON.stringify({ highlights: v.highlights.length, spans: v.spans, elisions: v.elisions, count: v.count, notes: v.notes })
+  );
+
+  // 5. After a preview error a valid preview works
+  await setText(`'apple'`);
+  await setPattern('(');
+  v = await waitView(`!!p.querySelector('.preview-note.error')`);
+  await setPattern('pl');
+  v = await waitView(`p.querySelector('.match-highlight')?.innerText === 'pl'`);
+  r.check(`${label}: valid preview after an error`, JSON.stringify(v.highlights) === '["pl"]' && !v.notes.some((note) => note.startsWith('error')), JSON.stringify(v));
+  r.check(`${label}: preview checks without exceptions`, exceptionsSince(n).length === 0, JSON.stringify(exceptionsSince(n)));
+
+  await setChecked(PREVIEW, false);
+  await setPattern('');
+  // The source text is shared by the pages: leave a harmless one
+  await setText(`'a_b'`);
+}
+
+/**
  * Split data integrity (Paket 10 C1) on the real Split page in the current engine (`engine`: 'js' worker or 'rust'):
  * an empty plain delimiter is refused (E4), a regex split that would cut an emoji is refused in JS (E5; Rust never cuts a
  * character and rejects surrogate escapes), no damaged or partial result is applied, the previous result and metrics stay,

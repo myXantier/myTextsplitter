@@ -11,7 +11,7 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, listTargets, sleep } from './lib/cdp.mjs';
-import { SPLIT_CASES, checkCombineState, checkSplitIntegrity, checkLineEndings, checkSort, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
+import { SPLIT_CASES, checkCombineState, checkSplitIntegrity, checkMatchPreview, checkLineEndings, checkSort, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
@@ -167,6 +167,8 @@ async function firstRun() {
   await checkRegexRobustness(main, r, 'Rust backend', (from) => errorsIn(main.logs, from), 'rust');
   // Paket 10 C1: empty plain delimiter (Rust EmptyDelimiter / page check), emoji splits in Rust
   await checkSplitIntegrity(main, r, 'Rust backend', (from) => errorsIn(main.logs, from), 'rust');
+  // Paket 10 C2: the preview stays JS in Rust mode and says so
+  await checkMatchPreview(main, r, 'Rust backend', (from) => errorsIn(main.logs, from), 'rust');
   // Paket 6: CRLF file with trailing newline through every operation (Rust; Sort and the column copy are JS)
   await checkLineEndings(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
   await checkWordDiff(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
@@ -191,6 +193,7 @@ async function firstRun() {
   await checkProcessingErrors(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
   await checkRegexRobustness(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from), 'js');
   await checkSplitIntegrity(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from), 'js');
+  await checkMatchPreview(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from), 'js');
   await checkLineEndings(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
   await checkWordDiff(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
   await checkDiffCancelAndPaging(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));

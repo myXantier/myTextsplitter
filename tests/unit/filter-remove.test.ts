@@ -29,9 +29,12 @@ type Pattern = string | { repeat: string; count: number };
 type PreviewRows = string[][];
 interface Preview {
   segments: PreviewRows | { error: string };
+  /** Paket 10 C2: with splitMatches, "keep" would refuse a highlight joined from two halves of a character */
+  keepSplitCutsCharacter?: true;
   target?: PreviewRows | { error: string };
   pending?: { decisions: string[]; phase: string; reason: string };
   note?: string;
+  resolved?: string;
 }
 
 interface Case<O, E> {
@@ -66,7 +69,8 @@ interface Fixtures {
 const CASE_KEYS = ['name', 'ref', 'input', 'pattern', 'options', 'expected', 'expectedRust', 'expectedJs', 'expectedJsUnreachableMainThread', 'divergence', 'openQuestion', 'resolved', 'target', 'pending', 'preview'];
 /** Errors that only a target may use (Paket 10 E3): own errors for an empty or too long regex pattern. */
 const TARGET_ERROR_KINDS = ['invalidRegex', 'regexRuntime', 'invalidMode', 'emptyPattern', 'patternTooLong'];
-const PREVIEW_ERROR_KINDS = ['invalidRegex'];
+/** Paket 10 C2: a match that cuts a character in every Filter mode is a preview error */
+const PREVIEW_ERROR_KINDS = ['invalidRegex', 'regexSplitsCharacter'];
 const PREVIEW_TARGET_ERROR_KINDS = ['invalidRegex', 'emptyPattern', 'patternTooLong', 'regexSplitsCharacter'];
 const DECISIONS = ['E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E7', 'E8', 'E9', 'E10', 'E11'];
 const OPTION_TYPES = {
@@ -139,15 +143,18 @@ function previewRowProblems(rows: unknown, input: string, wellFormed: boolean): 
 /** Problems of the preview of a Filter case, also against the Filter verdict of the JS worker. */
 function previewProblems(c: Record<string, any>): string[] {
   const preview = c.preview;
-  if (!isObject(preview) || !('segments' in preview) || Object.keys(preview).some((key) => !['segments', 'target', 'pending', 'note'].includes(key))) {
-    return ['preview must be { segments, target?, pending?, note? }'];
+  if (!isObject(preview) || !('segments' in preview) || Object.keys(preview).some((key) => !['segments', 'keepSplitCutsCharacter', 'target', 'pending', 'note', 'resolved'].includes(key))) {
+    return ['preview must be { segments, keepSplitCutsCharacter?, target?, pending?, note?, resolved? }'];
   }
   const problems: string[] = [];
   const outcome = (value: unknown, errors: string[], wellFormed: boolean) =>
     isObject(value) && 'error' in value
       ? hasExactKeys(value, ['error']) && errors.includes(value.error as string) ? [] : [`invalid preview error ${JSON.stringify(value)}`]
       : previewRowProblems(value, c.input, wellFormed);
-  problems.push(...outcome(preview.segments, PREVIEW_ERROR_KINDS, false));
+  // Paket 10 C2: the current preview never shows a lone surrogate
+  problems.push(...outcome(preview.segments, PREVIEW_ERROR_KINDS, true));
+  if (preview.keepSplitCutsCharacter !== undefined && preview.keepSplitCutsCharacter !== true) problems.push('keepSplitCutsCharacter is true or absent');
+  if (preview.resolved !== undefined && (typeof preview.resolved !== 'string' || !preview.resolved || preview.target !== undefined)) problems.push('preview resolved must be a non-empty note without a target');
   if (preview.target !== undefined) {
     problems.push(...outcome(preview.target, PREVIEW_TARGET_ERROR_KINDS, true));
     if (JSON.stringify(preview.target) === JSON.stringify(preview.segments)) problems.push('preview target equals the current segments');
@@ -158,11 +165,22 @@ function previewProblems(c: Record<string, any>): string[] {
   // Without a target the current segments are already the wanted ones: no lone surrogate
   const final = preview.target ?? preview.segments;
   if (!(isObject(final) && 'error' in final)) problems.push(...previewRowProblems(final, c.input, true).map((p) => `final preview: ${p}`));
-  // E1/E3: the final preview reports the same input error as the final JS Filter (cut character, pattern errors)
   const filterFinal = c.target ?? c.expectedJs ?? c.expected;
   const errorOf = (value: unknown) => (isObject(value) && 'error' in value ? (value.error as string) : null);
-  if (errorOf(filterFinal) === 'invalidMode') problems.push('no preview for an invalid mode (the preview has no mode)');
-  else if (errorOf(final) !== errorOf(filterFinal)) problems.push(`final preview error ${errorOf(final)} differs from the final JS Filter error ${errorOf(filterFinal)}`);
+  if (errorOf(filterFinal) === 'invalidMode') return [...problems, 'no preview for an invalid mode (the preview has no mode)'];
+  // E1 (Paket 10 C2): the preview has no mode. A cut in every mode is its error regexSplitsCharacter; a highlight joined
+  // from two halves is refused only by "keep" with split matches (keepSplitCutsCharacter). Together with the mode of the
+  // case this gives exactly the verdict of the JS Filter.
+  const cutEverywhere = errorOf(final) === 'regexSplitsCharacter';
+  const keepSplitCut = preview.keepSplitCutsCharacter === true;
+  if (keepSplitCut && (!c.options.splitMatches || cutEverywhere)) problems.push('keepSplitCutsCharacter needs splitMatches and highlights');
+  const filterRefuses = errorOf(filterFinal) === 'regexSplitsCharacter';
+  const keepWithSplit = c.options.mode === 'keep' && c.options.splitMatches;
+  if (filterRefuses !== (cutEverywhere || (keepWithSplit && keepSplitCut))) {
+    problems.push(`preview judgement (cut: ${cutEverywhere}, keepSplit: ${keepSplitCut}) contradicts the JS Filter verdict ${JSON.stringify(filterFinal)}`);
+  }
+  // Other input errors (invalid regex, E3 pattern errors) are the same in the final preview and the final Filter
+  if (!cutEverywhere && !filterRefuses && errorOf(final) !== errorOf(filterFinal)) problems.push(`final preview error ${errorOf(final)} differs from the final JS Filter error ${errorOf(filterFinal)}`);
   return problems;
 }
 
@@ -313,7 +331,11 @@ test('filter/remove fixture check rejects malformed entries', () => {
     ['lone surrogate in the target', { ...plain, input: '😀', pattern: '[^a]', expected: '😀', preview: { segments: [['', '\uD83D', '', '\uDE00', '']], target: [['', '\uD83D', '\uDE00']], pending: previewPending } }],
     ['preview error differs from the Filter', { ...plain, preview: { segments: { error: 'invalidRegex' } } }],
     ['preview success although the Filter refuses', { ...plain, expected: undefined, expectedRust: 'b', expectedJs: { error: 'regexSplitsCharacter' }, divergence: guard, preview: { segments: [['a', 'b', '']] } }],
-    ['preview for an invalid mode', { ...plain, options: { mode: 'x', caseSensitive: true, splitMatches: false }, expected: { error: 'invalidMode' }, preview: { segments: [['a', 'b', '']] } }],
+    ['keepSplitCutsCharacter without splitMatches', { ...plain, preview: { segments: [['a', 'b', '']], keepSplitCutsCharacter: true } }],
+    ['keepSplitCutsCharacter although keep with split matches succeeds', { ...plain, options: { mode: 'keep', caseSensitive: true, splitMatches: true }, preview: { segments: [['a', 'b', '']], keepSplitCutsCharacter: true } }],
+    ['keepSplitCutsCharacter false', { ...plain, options: { mode: 'remove', caseSensitive: true, splitMatches: true }, preview: { segments: [['a', 'b', '']], keepSplitCutsCharacter: false } }],
+    ['resolved preview with a target', { ...plain, preview: { segments: [['a', 'b', '']], target: [['', 'ab', '']], pending: previewPending, resolved: 'r' } }],
+    ['preview for an invalid mode',{ ...plain, options: { mode: 'x', caseSensitive: true, splitMatches: false }, expected: { error: 'invalidMode' }, preview: { segments: [['a', 'b', '']] } }],
   ];
   for (const [label, entry] of previewBroken) assert.notDeepEqual(check([JSON.parse(JSON.stringify(entry))]), [], label);
   assert.notDeepEqual(check([valid], [{ ...validRemove, preview: { segments: [] } }]), [], 'preview for Remove');
@@ -325,7 +347,10 @@ test('filter/remove fixtures cover the Phase A reproductions', () => {
   // Paket 10 Phase A (docs/analyse/Paket10-PhaseA-Regex-Analyse.md): preview R1/R6, pattern rules R5
   for (const ref of ['R1', 'R5', 'R6']) assert.ok(refs.has(ref), `missing ${ref}`);
   const decisions = new Set([...fixtures.filter, ...fixtures.remove].flatMap((c) => [...(c.pending?.decisions ?? []), ...(c.preview?.pending?.decisions ?? [])]));
-  for (const decision of ['E1', 'E3']) assert.ok(decisions.has(decision), `missing ${decision}`);
+  // E1 is implemented (Paket 10 C2: resolved previews), E3 is still open
+  assert.deepEqual([...decisions].filter((d) => d !== 'E11').sort(), ['E3']);
+  const previews = fixtures.filter.filter((c) => c.preview?.resolved);
+  assert.ok(previews.length >= 18 && previews.filter((c) => c.preview!.keepSplitCutsCharacter).length >= 4, `${previews.length} resolved previews`);
 });
 
 // --- Engines ---
@@ -406,18 +431,30 @@ for (const c of fixtures.filter) {
   // The pattern preview (MatchPreviewWorker) of the same text and pattern: it has no mode and no splitMatches
   if (!isErrorOf(expected, 'invalidMode')) {
     test(`filter preview worker: ${c.name}`, () => {
-      const message = runWorker('preview', { sourceText: c.input, mainParam: patternOf(c.pattern), configParams: { caseSensitive: c.options.caseSensitive } } as MatchPreviewConfig);
+      const configParams = { caseSensitive: c.options.caseSensitive, splitMatches: c.options.splitMatches };
+      const message = runWorker('preview', { sourceText: c.input, mainParam: patternOf(c.pattern), configParams } as MatchPreviewConfig);
       let segments: unknown;
+      let keepSplitCutsCharacter: true | undefined;
       if (message.success) {
-        assert.equal(message.result.type, 'ColumnList');
-        segments = message.result.result;
-        // Every row rebuilds the original line exactly (also for cases without a preview expectation)
-        assert.deepEqual(previewRowProblems(segments, c.input, false), []);
+        assert.equal(message.result.type, 'MatchPreview');
+        const data = message.result.result;
+        // The small fixture texts are below every limit: a complete preview without omissions
+        const omissions = { complete: data.complete, elided: data.rows.flatMap((r: any) => r.elided), rest: data.rows.map((r: any) => r.restOmitted).filter(Boolean) };
+        assert.deepEqual(omissions, { complete: true, elided: [], rest: [] });
+        segments = data.rows.map((r: any) => r.segments);
+        // Every row rebuilds its original line exactly, without lone surrogates (also for cases without a preview expectation)
+        assert.deepEqual(previewRowProblems(segments, c.input, true), []);
+        const lines = splitLines(c.input).lines;
+        for (const row of data.rows) assert.equal(lines[row.line - 1], row.segments.join(''), 'line number');
+        assert.equal(data.matches, (segments as string[][]).reduce((n, row) => n + (row.length - 1) / 2, 0));
+        if (data.keepSplitCutsCharacter) keepSplitCutsCharacter = true;
       } else {
         assert.equal(message.errorKind, 'invalidInput', JSON.stringify(message));
         segments = { error: Object.entries(ERROR_KEYS).find(([, key]) => key === message.error)?.[0] };
       }
-      if (c.preview) assert.deepEqual(segments, c.preview.segments);
+      if (c.preview) {
+        assert.deepEqual({ segments, keepSplitCutsCharacter }, { segments: c.preview.segments, keepSplitCutsCharacter: c.preview.keepSplitCutsCharacter });
+      }
     });
   }
 

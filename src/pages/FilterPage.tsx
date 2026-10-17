@@ -168,6 +168,7 @@ export default function FilterPage({
                 sourceText={sourceText}
                 pattern={options.pattern}
                 caseSensitive={options.caseSensitive}
+                splitMatches={options.splitMatches}
                 engine={processingMode === 'backend' ? 'rust' : 'js'}
               />
             )}

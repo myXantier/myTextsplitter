@@ -71,6 +71,18 @@
   color: var(--app-color-red);
 }
 
+/* Paket 10 C2: limited preview, joined character halves, omitted text */
+.match-preview .preview-note.incomplete,
+.match-preview .preview-note.warning {
+  color: var(--app-color-orange, var(--color-1));
+}
+
+.match-preview .preview-elision {
+  color: var(--color-2);
+  font-style: italic;
+  font-weight: normal;
+}
+
 /* Match highlighting styles */
 .match-preview .match-highlight {
   background-color: var(--background-4);

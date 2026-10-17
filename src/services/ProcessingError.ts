@@ -5,6 +5,7 @@
 // Failure: the services reject with a `ProcessingError`; nothing is replaced by `{}`, `[]` or `''`.
 // Kept free of app imports so the workers and `npm test` can load it directly.
 import { isDiffData, type DiffData } from '../utils/diff/result';
+import type { MatchPreviewData } from '../utils/matchPreview';
 
 export type ProcessingErrorKind =
   /** The user input cannot be processed, e.g. an invalid regex. */
@@ -165,6 +166,25 @@ export const isTextV2 = (value: unknown): value is RemoveResultData =>
   // optional, but if present it must be valid
   ((value as RemoveResultData).metrics === undefined || isMetrics((value as RemoveResultData).metrics));
 
+const isCount = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0;
+
+/** Structure of a pattern preview: rows of odd length with non-empty matches, valid omissions (`src/utils/matchPreview.ts`). */
+export function isMatchPreviewData(value: unknown): value is MatchPreviewData {
+  if (!value || typeof value !== 'object') return false;
+  const data = value as MatchPreviewData;
+  if (!Array.isArray(data.rows) || !isCount(data.matches) || typeof data.complete !== 'boolean' || typeof data.keepSplitCutsCharacter !== 'boolean') return false;
+  return data.rows.every(
+    (row) =>
+      !!row &&
+      isCount(row.line) && row.line > 0 &&
+      isStringArray(row.segments) && row.segments.length % 2 === 1 && row.segments.length >= 3 &&
+      row.segments.every((segment, index) => index % 2 === 0 || segment !== '') &&
+      isCount(row.restOmitted) &&
+      Array.isArray(row.elided) &&
+      row.elided.every((e) => !!e && isCount(e.segment) && e.segment < row.segments.length && isCount(e.at) && e.at <= row.segments[e.segment].length && isCount(e.omitted) && e.omitted > 0)
+  );
+}
+
 const VALIDATORS: Record<NonNullable<myResultDataType>, (value: unknown) => boolean> = {
   Text: isString,
   Column: isStringArray,
@@ -172,6 +192,7 @@ const VALIDATORS: Record<NonNullable<myResultDataType>, (value: unknown) => bool
   TextV2: isTextV2,
   // Structure and every invariant of the line diff (`src/utils/diff/validate.ts`)
   Diff: isDiffData,
+  MatchPreview: isMatchPreviewData,
 };
 
 /** Data type of a `myResult` type. */
@@ -181,6 +202,7 @@ export interface ResultData {
   ColumnList: string[][];
   TextV2: RemoveResultData;
   Diff: DiffData;
+  MatchPreview: MatchPreviewData;
 }
 export type ResultType = keyof ResultData;
 

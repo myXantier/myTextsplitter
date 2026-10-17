@@ -146,7 +146,7 @@ Semantics fixed in C1:
 | `ref`, `openQuestion` | Case id in the Phase A report; open product decision for identical behaviour. |
 | `resolved` | Why a correction changed the expectation (only with a shared `expected`). |
 | `target` + `pending` | Paket 10: result of a not yet implemented decision in both engines, may use `{ "error": "emptyPattern" \| "patternTooLong" }` (E3). `pending { decisions, phase, engines, reason }`: exactly the listed engines still differ from the target (checked against the real engines in both runners). |
-| `preview` | Paket 10, Filter only, JS only: the pattern preview (`MatchPreviewWorker`, no mode, no `splitMatches`). `segments` = current rows `[text, match, …, text]` per line with a non-empty match, or `{ "error": "invalidRegex" }`; `target` + `pending { decisions, phase, reason }` = wanted preview (E1: no segment with a lone surrogate, adjacent halves as one highlight, `{ "error": "regexSplitsCharacter" }` where the JS Filter refuses); `note` = intended difference to the Filter result (E2). Every row must rebuild its input line; the final preview reports the same input error as the final JS Filter. The preview worker also runs for every Filter case without `preview` (rows must rebuild the lines). |
+| `preview` | Paket 10, Filter only, JS only: the pattern preview (`MatchPreviewWorker`, `buildMatchPreview`; it knows `caseSensitive` and `splitMatches`, not the mode). `segments` = rows `[text, match, …, text]` per line with a non-empty highlight, or `{ "error": "invalidRegex" \| "regexSplitsCharacter" }`; `keepSplitCutsCharacter: true` = some highlights join two halves of a character, so only "keep" with split matches refuses them (C2, E1); `resolved` = why C2 changed the expectation; `target` + `pending { decisions, phase, reason }` = a still open preview decision (E3); `note` = intended difference to the Filter result (E2). Rows never contain a lone surrogate and rebuild their input line; with the mode of the case the preview judgement gives exactly the JS Filter verdict (cut in every mode = refused; joined halves = refused only by keep with split matches). The preview worker runs for every Filter case (complete, without omissions, line numbers and match count checked). |
 
 JS paths per case: the real worker module; for Remove also `frontendInMainThread`; and the service without Web Worker
 (`invoke(args, false)` in Node): Filter always refuses (`regexRequiresWorker`, or `invalidRegex`), Remove runs
@@ -307,9 +307,17 @@ Chrome/WebView2 125+, Node 23+; older runtimes: `invalidRegex`): the JS result m
   the Filter page always uses JS in its own worker; in Rust mode it says so, and a pattern JS rejects shows a note.
 - **Known limits (Paket 10, decided for Phase C):** the backtracking limit applies to one search, not to a job
   (`backtrack_limit_applies_per_search_not_per_job`); one search of the linear engine cannot be interrupted either (measured
-  up to about a minute for a 10,000-character literal on a 1 MB line). The preview answer is not limited yet (`workers.test.ts`
-  R3 characterization); its sizes and UI costs are measured by `node tests/bench/preview-baseline.mjs` (headless Chrome/Edge,
-  bounded scenarios, not part of `npm test`). Details and the recommended limits: `docs/analyse/Paket10-PhaseB-Regexvertrag.md`.
+  up to about a minute for a 10,000-character literal on a 1 MB line). Details: `docs/analyse/Paket10-PhaseB-Regexvertrag.md`.
+- **Pattern preview (Paket 10 C2):** `buildMatchPreview` (`src/utils/matchPreview.ts`) builds the answer `MatchPreview`
+  `{ rows: [{ line, segments, elided, restOmitted }], matches, complete, keepSplitCutsCharacter }` with the limits
+  `PREVIEW_LIMITS`, enforced while it is built (no match list): 1,000 highlights per row (the rest of the line is cut,
+  `restOmitted`), 1,000 rows, 20,001 segments, 200,000 stored characters; segments longer than 200 units are shown as their
+  first and last 80 units with an omission marker (`elided`, never inside a surrogate pair). `complete: false` = a limit
+  stopped it (the page says "at least …" and "incomplete"; "no matches" only for a complete search). Cut characters use the
+  Filter guard `matchesWithoutCutCharacters` with adjacent matches joined: a cut in every mode is the error
+  `regexSplitsCharacter`, joined halves are one highlight and, with "split matches", `keepSplitCutsCharacter`. Unit tests:
+  `regex.test.ts` (Unicode cases, line endings, complete and limited previews with the omitted text), `workers.test.ts`
+  (worker answer, limits at full size, splitMatches change, timeout); sizes and UI costs: `node tests/bench/preview-baseline.mjs`.
 
 ## Integration tests
 
@@ -358,7 +366,12 @@ previous columns and metrics stay, and whole-emoji captures and a plain emoji de
 Regex robustness (`checkRegexRobustness`, Paket 5; browser: Web Worker, Tauri: Rust backend and JS mode): a catastrophic
 regex keeps the UI responsive and ends with one error message (JS: worker timeout after ~10 s, Rust: backtracking limit)
 while the previous result stays; the next normal Filter works. Split with the Rust-only pattern `(?i)x` is processed in
-Rust mode and reported with the JS syntax error in JS mode. The pattern preview is checked for highlighting, the engine
+Rust mode and reported with the JS syntax error in JS mode. Paket 10 C2 `checkMatchPreview` (browser; Tauri in Rust and JS mode): a surrogate half is a note, not a highlight;
+a whole emoji is highlighted with the match counter; "split matches" updates the joined-halves note; 100,000 matches show
+1,000 highlights, the row cut marker and the incomplete note; a valid preview after an error; the JS engine note only in
+Rust mode. Surrogate notes depend on the Filter engine: for `😀x` with `.` (keep, split matches) and `😁` with `[😀]`
+(remove) the real JS Filter refuses and its notes say so; the real Rust Filter succeeds (`😀`/`x`, `😁` unchanged) and the
+Rust mode notes speak only about the JS preview. The pattern preview is checked for highlighting, the engine
 hint (Rust mode), the note for patterns JS rejects (also after switching the engine) and the stop of a catastrophic
 preview (3 s preview timeout). JS mode only (the first run must still be running): two rapid Filter runs show only
 the newer result and one success message; a Split that finishes keeps the processing state of a running Filter.

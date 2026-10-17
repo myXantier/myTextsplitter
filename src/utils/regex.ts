@@ -40,7 +40,7 @@ const isHighSurrogate = (unit: number) => unit >= 0xd800 && unit <= 0xdbff;
 const isLowSurrogate = (unit: number) => unit >= 0xdc00 && unit <= 0xdfff;
 
 /** True if `index` lies between the two halves of a surrogate pair of `text` (a cut there splits one character). */
-const splitsSurrogatePair = (text: string, index: number): boolean =>
+export const splitsSurrogatePair = (text: string, index: number): boolean =>
   index > 0 && index < text.length && isHighSurrogate(text.charCodeAt(index - 1)) && isLowSurrogate(text.charCodeAt(index));
 
 /**

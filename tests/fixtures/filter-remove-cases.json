@@ -1,5 +1,5 @@
 {
-  "description": "Golden fixtures (Paket 8, Phase B) for Filter and Remove, shared by the Rust engine (cargo test, src-tauri/src/text_processor.rs) and the JS engine (npm test, tests/unit/filter-remove.test.ts). They characterize the CURRENT behaviour: a passing test means the behaviour is described correctly, not that it is wanted. Every case states all options explicitly (no defaults). 'pattern' is a string or { repeat, count } (the string repeated count times). Filter expectations: the result text or { error: invalidRegex | regexRuntime | invalidMode } (invalidMode, Paket 8 C3: an unknown or empty mode, checked before anything else); JS only: { error: regexSplitsCharacter } (Paket 8 C1: a JS match would cut a surrogate pair apart, the worker refuses instead of returning damaged text). Remove expectations: { text, removedLines } or { error }. A case with different engine results uses expectedRust + expectedJs and a divergence { kind, reason }; kinds: dialect (accepted regex dialect difference, Paket 5), utf16Guard (Rust processes valid Unicode, JS refuses a result that would contain cut characters; required for regexSplitsCharacter), suspectedBug, inconsistentDefinition, unvalidatedInput. Every successful JS result must be well-formed Unicode. 'ref' points to the Phase A report (docs/analyse/Paket8-PhaseA-Filter-Remove-Analyse.md). 'openQuestion' marks identical behaviour that still needs a product decision. 'resolved' explains why an expectation was changed by a correction (e.g. Paket 8 C2: in remove mode only a line from which a match removed text and whose rest is blank is dropped; lines without removed text stay unchanged). 'expectedJsUnreachableMainThread' characterizes FilterService.frontendInMainThread, which invoke never reaches (not a product path). Paket 10 Phase B (docs/analyse/Paket10-PhaseB-Regexvertrag.md; 'ref' R1..R10 = docs/analyse/Paket10-PhaseA-Regex-Analyse.md): 'target' is the result of a not yet implemented decision in both engines (may also be { error: emptyPattern | patternTooLong }, E3), always with 'pending' { decisions, phase, engines, reason }: exactly the engines listed in 'engines' still differ from the target (checked against the real engines). Filter only: 'preview' { segments, target?, pending?, note? } is the pattern preview of the Filter page (JS MatchPreviewWorker, no mode, no splitMatches): 'segments' are its CURRENT rows [text, match, ..., text] per line with a non-empty match, or { error: invalidRegex }; 'target' + 'pending' { decisions, phase, reason } the wanted preview (E1: no segment with a lone surrogate, a match refused by the JS Filter is { error: regexSplitsCharacter }); every row rebuilds its input line; the final preview reports the same input error as the final JS Filter result. The preview shows matches, not the Filter result (E2): 'note' explains a difference.",
+  "description": "Golden fixtures (Paket 8, Phase B) for Filter and Remove, shared by the Rust engine (cargo test, src-tauri/src/text_processor.rs) and the JS engine (npm test, tests/unit/filter-remove.test.ts). They characterize the CURRENT behaviour: a passing test means the behaviour is described correctly, not that it is wanted. Every case states all options explicitly (no defaults). 'pattern' is a string or { repeat, count } (the string repeated count times). Filter expectations: the result text or { error: invalidRegex | regexRuntime | invalidMode } (invalidMode, Paket 8 C3: an unknown or empty mode, checked before anything else); JS only: { error: regexSplitsCharacter } (Paket 8 C1: a JS match would cut a surrogate pair apart, the worker refuses instead of returning damaged text). Remove expectations: { text, removedLines } or { error }. A case with different engine results uses expectedRust + expectedJs and a divergence { kind, reason }; kinds: dialect (accepted regex dialect difference, Paket 5), utf16Guard (Rust processes valid Unicode, JS refuses a result that would contain cut characters; required for regexSplitsCharacter), suspectedBug, inconsistentDefinition, unvalidatedInput. Every successful JS result must be well-formed Unicode. 'ref' points to the Phase A report (docs/analyse/Paket8-PhaseA-Filter-Remove-Analyse.md). 'openQuestion' marks identical behaviour that still needs a product decision. 'resolved' explains why an expectation was changed by a correction (e.g. Paket 8 C2: in remove mode only a line from which a match removed text and whose rest is blank is dropped; lines without removed text stay unchanged). 'expectedJsUnreachableMainThread' characterizes FilterService.frontendInMainThread, which invoke never reaches (not a product path). Paket 10 Phase B (docs/analyse/Paket10-PhaseB-Regexvertrag.md; 'ref' R1..R10 = docs/analyse/Paket10-PhaseA-Regex-Analyse.md): 'target' is the result of a not yet implemented decision in both engines (may also be { error: emptyPattern | patternTooLong }, E3), always with 'pending' { decisions, phase, engines, reason }: exactly the engines listed in 'engines' still differ from the target (checked against the real engines). Filter only: 'preview' { segments, keepSplitCutsCharacter?, target?, pending?, note?, resolved? } is the pattern preview of the Filter page (JS MatchPreviewWorker with caseSensitive and splitMatches, no mode): 'segments' are its CURRENT rows [text, match, ..., text] per line with a non-empty highlight, or { error: invalidRegex | regexSplitsCharacter }; Paket 10 C2 (E1): a match that cuts a character in every Filter mode is the error regexSplitsCharacter, adjacent matches joined at a surrogate pair are one highlight and, with splitMatches, 'keepSplitCutsCharacter': true (only keep with split matches refuses them); 'resolved' explains a changed preview expectation; 'target' + 'pending' { decisions, phase, reason } is a still open preview decision (E3); no row contains a lone surrogate, every row rebuilds its input line, and the preview judgement together with the mode of the case gives the JS Filter verdict. The preview shows matches, not the Filter result (E2): 'note' explains a difference.",
   "filter": [
     {
       "name": "keep: one match per line, split off",
@@ -167,9 +167,9 @@
         "reason": "JS RegExp without the 'u' flag matches UTF-16 code units: the emoji halves would end up as lone surrogates on separate lines (formerly output as damaged text). The worker now refuses the result; Rust matches Unicode scalar values."
       },
       "preview": {
-        "segments": [["", "\uD83D", "", "\uDE00", "", "x", ""]],
-        "target": { "error": "regexSplitsCharacter" },
-        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "The preview judges cut characters like the JS Filter (same guard, splitMatches and mode): a refused match is not highlighted, the preview shows the note of regexSplitsCharacter." }
+        "segments": [["", "😀", "", "x", ""]],
+        "keepSplitCutsCharacter": true,
+        "resolved": "Paket 10 C2 (E1): the preview has no mode; the joined highlight is shown and keepSplitCutsCharacter notes that only \"keep\" with split matches refuses it (Phase B target was the error of the keep action)."
       }
     },
     {
@@ -179,9 +179,8 @@
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
       "expected": "😀x",
       "preview": {
-        "segments": [["", "\uD83D", "", "\uDE00", "", "x", ""]],
-        "target": [["", "😀", "", "x", ""]],
-        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "Adjacent matches whose common boundary lies inside a surrogate pair are shown as one highlight, so no segment contains a lone surrogate (Chromium draws both halves highlighted anyway)." }
+        "segments": [["", "😀", "", "x", ""]],
+        "resolved": "Paket 10 C2 (E1): adjacent matches whose boundary lies inside a surrogate pair are one highlight (no segment with a lone surrogate)."
       }
     },
     {
@@ -196,9 +195,9 @@
         "reason": "Same cause as F12: [^a] matches each surrogate half on its own in JS; split matches would separate them with a line break."
       },
       "preview": {
-        "segments": [["", "\uD83D", "", "\uDE00", ""]],
-        "target": { "error": "regexSplitsCharacter" },
-        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "The preview judges cut characters like the JS Filter (same guard, splitMatches and mode): a refused match is not highlighted, the preview shows the note of regexSplitsCharacter." }
+        "segments": [["", "😀", ""]],
+        "keepSplitCutsCharacter": true,
+        "resolved": "Paket 10 C2 (E1): the preview has no mode; the joined highlight is shown and keepSplitCutsCharacter notes that only \"keep\" with split matches refuses it (Phase B target was the error of the keep action)."
       }
     },
     {
@@ -208,9 +207,8 @@
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
       "expected": "😀",
       "preview": {
-        "segments": [["", "\uD83D", "", "\uDE00", ""]],
-        "target": [["", "😀", ""]],
-        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "Adjacent matches whose common boundary lies inside a surrogate pair are shown as one highlight, so no segment contains a lone surrogate (Chromium draws both halves highlighted anyway)." }
+        "segments": [["", "😀", ""]],
+        "resolved": "Paket 10 C2 (E1): adjacent matches whose boundary lies inside a surrogate pair are one highlight (no segment with a lone surrogate)."
       }
     },
     {
@@ -225,9 +223,8 @@
         "reason": "JS matches the high half of the first and the low half of the second emoji; joined they would form a different, well-formed character (U+1F603 alone). A well-formedness check alone would not notice; the match boundaries do."
       },
       "preview": {
-        "segments": [["", "\uD83D", "\uDE00\uD83D", "\uDE03", ""]],
-        "target": { "error": "regexSplitsCharacter" },
-        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "The preview judges cut characters like the JS Filter (same guard, splitMatches and mode): a refused match is not highlighted, the preview shows the note of regexSplitsCharacter." }
+        "segments": { "error": "regexSplitsCharacter" },
+        "resolved": "Paket 10 C2 (E1): the preview judges cut characters with the Filter guard (adjacent matches joined); a match that cuts a character in every mode is no highlight but the note regexSplitsCharacter."
       }
     },
     {
@@ -254,9 +251,8 @@
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
       "expected": "😀x\r\n😃\r\n",
       "preview": {
-        "segments": [["", "\uD83D", "", "\uDE00", "", "x", ""], ["", "\uD83D", "", "\uDE03", ""]],
-        "target": [["", "😀", "", "x", ""], ["", "😃", ""]],
-        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "Adjacent matches whose common boundary lies inside a surrogate pair are shown as one highlight, so no segment contains a lone surrogate (Chromium draws both halves highlighted anyway)." }
+        "segments": [["", "😀", "", "x", ""], ["", "😃", ""]],
+        "resolved": "Paket 10 C2 (E1): adjacent matches whose boundary lies inside a surrogate pair are one highlight (no segment with a lone surrogate)."
       }
     },
     {
@@ -287,9 +283,9 @@
         "reason": "Same cause as F12; the surrogate halves would be separated by the CRLF line ending of the input."
       },
       "preview": {
-        "segments": [["", "\uD83D", "", "\uDE00", ""]],
-        "target": { "error": "regexSplitsCharacter" },
-        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "The preview judges cut characters like the JS Filter (same guard, splitMatches and mode): a refused match is not highlighted, the preview shows the note of regexSplitsCharacter." }
+        "segments": [["", "😀", ""]],
+        "keepSplitCutsCharacter": true,
+        "resolved": "Paket 10 C2 (E1): the preview has no mode; the joined highlight is shown and keepSplitCutsCharacter notes that only \"keep\" with split matches refuses it (Phase B target was the error of the keep action)."
       }
     },
     {
@@ -425,9 +421,8 @@
       "expectedJs": { "error": "regexSplitsCharacter" },
       "divergence": { "kind": "utf16Guard", "reason": "Without the u flag [😀] is the class of the two code units of U+1F600: it matches the shared high half of U+1F601. Rust does not match." },
       "preview": {
-        "segments": [["a", "\uD83D", "\uDE01b"]],
-        "target": { "error": "regexSplitsCharacter" },
-        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "Phase A R1: Chromium draws the whole emoji highlighted although only its high half matched and the Filter refuses the result." }
+        "segments": { "error": "regexSplitsCharacter" },
+        "resolved": "Paket 10 C2 (E1): the preview judges cut characters with the Filter guard (adjacent matches joined); a match that cuts a character in every mode is no highlight but the note regexSplitsCharacter."
       }
     },
     {
@@ -438,9 +433,8 @@
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
       "expected": "😀",
       "preview": {
-        "segments": [["a", "\uD83D", "", "\uDE00", "b"]],
-        "target": [["a", "😀", "b"]],
-        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "Adjacent matches whose common boundary lies inside a surrogate pair are shown as one highlight, so no segment contains a lone surrogate (Chromium draws both halves highlighted anyway)." }
+        "segments": [["a", "😀", "b"]],
+        "resolved": "Paket 10 C2 (E1): adjacent matches whose boundary lies inside a surrogate pair are one highlight (no segment with a lone surrogate)."
       }
     },
     {
@@ -453,9 +447,9 @@
       "expectedJs": { "error": "regexSplitsCharacter" },
       "divergence": { "kind": "utf16Guard", "reason": "JS matches the two halves separately; split matches would put them on different lines. Rust matches the emoji." },
       "preview": {
-        "segments": [["a", "\uD83D", "", "\uDE00", "b"]],
-        "target": { "error": "regexSplitsCharacter" },
-        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "The same segments as without split matches: only the option decides, so the preview must know splitMatches (E1)." }
+        "segments": [["a", "😀", "b"]],
+        "keepSplitCutsCharacter": true,
+        "resolved": "Paket 10 C2 (E1): the preview has no mode; the joined highlight is shown and keepSplitCutsCharacter notes that only \"keep\" with split matches refuses it (Phase B target was the error of the keep action)."
       }
     },
     {
@@ -466,9 +460,8 @@
       "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
       "expected": "ab",
       "preview": {
-        "segments": [["a", "\uD83D", "", "\uDE00", "b"]],
-        "target": [["a", "😀", "b"]],
-        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "Removing adjacent matches removes both halves together: shown as one highlight." }
+        "segments": [["a", "😀", "b"]],
+        "resolved": "Paket 10 C2 (E1): adjacent matches whose boundary lies inside a surrogate pair are one highlight (no segment with a lone surrogate)."
       }
     },
     {
@@ -481,9 +474,8 @@
       "expectedJs": { "error": "regexSplitsCharacter" },
       "divergence": { "kind": "utf16Guard", "reason": "JS matches the high half alone and refuses the result. fancy-regex rejects \\uD83D (a surrogate is no Unicode scalar value)." },
       "preview": {
-        "segments": [["a", "\uD83D", "\uDE00b"]],
-        "target": { "error": "regexSplitsCharacter" },
-        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "Phase A R1: the lone high half is drawn as a fully highlighted emoji." }
+        "segments": { "error": "regexSplitsCharacter" },
+        "resolved": "Paket 10 C2 (E1): the preview judges cut characters with the Filter guard (adjacent matches joined); a match that cuts a character in every mode is no highlight but the note regexSplitsCharacter."
       }
     },
     {
@@ -496,9 +488,8 @@
       "expectedJs": { "error": "regexSplitsCharacter" },
       "divergence": { "kind": "utf16Guard", "reason": "JS matches the low half alone and refuses the result. fancy-regex rejects \\uDE00." },
       "preview": {
-        "segments": [["a\uD83D", "\uDE00", "b"]],
-        "target": { "error": "regexSplitsCharacter" },
-        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "The preview judges cut characters like the JS Filter (same guard, splitMatches and mode): a refused match is not highlighted, the preview shows the note of regexSplitsCharacter." }
+        "segments": { "error": "regexSplitsCharacter" },
+        "resolved": "Paket 10 C2 (E1): the preview judges cut characters with the Filter guard (adjacent matches joined); a match that cuts a character in every mode is no highlight but the note regexSplitsCharacter."
       }
     },
     {
@@ -523,9 +514,8 @@
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
       "expected": "👨\u200D👩\u200D👧",
       "preview": {
-        "segments": [["", "\uD83D", "", "\uDC68", "", "\u200D", "", "\uD83D", "", "\uDC69", "", "\u200D", "", "\uD83D", "", "\uDC67", ""]],
-        "target": [["", "👨", "", "\u200D", "", "👩", "", "\u200D", "", "👧", ""]],
-        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "Surrogate halves are joined; a grapheme cluster (ZWJ sequence) may still span several highlights, which is no cut character." }
+        "segments": [["", "👨", "", "\u200D", "", "👩", "", "\u200D", "", "👧", ""]],
+        "resolved": "Paket 10 C2 (E1): adjacent matches whose boundary lies inside a surrogate pair are one highlight (no segment with a lone surrogate)."
       }
     },
     {
@@ -538,9 +528,9 @@
       "expectedJs": { "error": "regexSplitsCharacter" },
       "divergence": { "kind": "utf16Guard", "reason": "JS . matches each code unit, split matches would put the halves on separate lines. Rust splits the sequence into its code points (no cut character)." },
       "preview": {
-        "segments": [["", "\uD83D", "", "\uDC68", "", "\u200D", "", "\uD83D", "", "\uDC69", "", "\u200D", "", "\uD83D", "", "\uDC67", ""]],
-        "target": { "error": "regexSplitsCharacter" },
-        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "The preview judges cut characters like the JS Filter (same guard, splitMatches and mode): a refused match is not highlighted, the preview shows the note of regexSplitsCharacter." }
+        "segments": [["", "👨", "", "\u200D", "", "👩", "", "\u200D", "", "👧", ""]],
+        "keepSplitCutsCharacter": true,
+        "resolved": "Paket 10 C2 (E1): the preview has no mode; the joined highlight is shown and keepSplitCutsCharacter notes that only \"keep\" with split matches refuses it (Phase B target was the error of the keep action)."
       }
     },
     {
@@ -964,9 +954,8 @@
       "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
       "expected": "a",
       "preview": {
-        "segments": [["", "\uD83D", "", "\uDE00", "a"]],
-        "target": [["", "😀", "a"]],
-        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "Adjacent matches whose common boundary lies inside a surrogate pair are shown as one highlight, so no segment contains a lone surrogate (Chromium draws both halves highlighted anyway)." }
+        "segments": [["", "😀", "a"]],
+        "resolved": "Paket 10 C2 (E1): adjacent matches whose boundary lies inside a surrogate pair are one highlight (no segment with a lone surrogate)."
       }
     },
     {
@@ -1002,9 +991,8 @@
         "reason": "In JS '.' matches only the low half of the emoji, removing '.a' would leave a lone high surrogate; Rust removes the whole emoji."
       },
       "preview": {
-        "segments": [["x\uD83D", "\uDE00a", ""]],
-        "target": { "error": "regexSplitsCharacter" },
-        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "The preview judges cut characters like the JS Filter (same guard, splitMatches and mode): a refused match is not highlighted, the preview shows the note of regexSplitsCharacter." }
+        "segments": { "error": "regexSplitsCharacter" },
+        "resolved": "Paket 10 C2 (E1): the preview judges cut characters with the Filter guard (adjacent matches joined); a match that cuts a character in every mode is no highlight but the note regexSplitsCharacter."
       }
     },
     {
@@ -1019,9 +1007,8 @@
         "reason": "In JS the class consists of the two code units of 😀 and matches only the low half of 😃; removing it would leave a lone high surrogate. Rust removes 😃."
       },
       "preview": {
-        "segments": [["😀\uD83D", "\uDE03", ""]],
-        "target": { "error": "regexSplitsCharacter" },
-        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "The preview judges cut characters like the JS Filter (same guard, splitMatches and mode): a refused match is not highlighted, the preview shows the note of regexSplitsCharacter." }
+        "segments": { "error": "regexSplitsCharacter" },
+        "resolved": "Paket 10 C2 (E1): the preview judges cut characters with the Filter guard (adjacent matches joined); a match that cuts a character in every mode is no highlight but the note regexSplitsCharacter."
       }
     },
     {
