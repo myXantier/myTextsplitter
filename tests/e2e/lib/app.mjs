@@ -2,7 +2,6 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expectedErrorsIn, withoutExpected } from './harness.mjs';
 
 export const APP_HELPERS = `window.__t = {
   /** Currently visible page container */
@@ -1700,10 +1699,12 @@ const generatedText = (size) => FILE_IO.generator.line.repeat(Math.ceil(size / F
 const fileBytes = (c) =>
   c.generate !== undefined ? Buffer.from(generatedText(c.generate), 'latin1') : Buffer.from(c.bytes.split(' ').filter(Boolean).map((h) => parseInt(h, 16)));
 /**
- * Text of the uncaught F1 error of OpenFileButton (dev build / production build). Only identifies the errors logged while
- * an F1 scenario runs; it never excuses an error by its text (see `provokedErrors` of checkFileIo).
+ * Text of the former F1 error of OpenFileButton (dev build / production build), fixed in Paket 11 C1. Only used to observe
+ * `hookException` in the read error scenarios; such an error is never excused, it also fails the error checks.
  */
 const HOOK_ERROR = /Invalid hook call|Minified React error #321/;
+/** notifications.readError (src/i18n/locales/en.ts, de.ts): the message of a failed file read. */
+const READ_ERROR_MESSAGES = ['error: Error reading file', 'error: Fehler beim Lesen der Datei'];
 
 /**
  * Counts the file reads of the page and can hold their START (`__t.reads.hold`): the FileReader read methods and the
@@ -1755,9 +1756,7 @@ const FILE_READ_GATE_UNINSTALL = `(() => { __t.reads?.restore.forEach((f) => f()
  *   - Read errors are real: a path that does not exist (NotFoundError) or a file deleted before its held read starts.
  *   - Races are a controlled simulation: real reads whose start is held and released in a fixed order.
  * The checks expect the CURRENT behaviour; a case or scenario with `pending` names its target in the check label.
- * Returns `provokedErrors`: the log entries of the F1 hook errors logged while the scenarios "read error on the button"
- * and "replaced import fails late" ran. A runner excludes exactly these entries; every other error, also an equal hook
- * error, stays unexpected.
+ * No error is expected: any logged error (also a React hook error) fails the check.
  */
 export async function checkFileIo(page, r, label, errorsSince) {
   const n = page.logs.length;
@@ -1791,11 +1790,8 @@ export async function checkFileIo(page, r, label, errorsSince) {
   };
   const started = () => page.eval('__t.reads.started');
   const snacks = () => page.eval('__t.takeSnacks()');
-  /** F1 hook errors logged since `from` (the entries themselves). */
-  const hookErrorsSince = (from) => expectedErrorsIn(page.logs, from, page.logs.length, HOOK_ERROR);
-  const isException = (l) => l.kind === 'exception';
-  /** Errors provoked on purpose, recorded by entry while their scenario runs. */
-  const provokedErrors = [];
+  /** A React hook exception (F1) was logged since `from`. */
+  const hookExceptionSince = (from) => errorsSince(from).some((l) => l.kind === 'exception' && HOOK_ERROR.test(l.text));
   /** Writes `content` (string or Buffer) to `dir/<sub>/<name>` and returns the path. */
   const writeFile = (sub, name, content) => {
     mkdirSync(join(dir, sub), { recursive: true });
@@ -1914,14 +1910,18 @@ export async function checkFileIo(page, r, label, errorsSince) {
     let from = page.logs.length;
     await choose(0, join(dir, 'missing', 'does-not-exist.txt'));
     await settle();
-    const buttonF1 = hookErrorsSince(from);
-    provokedErrors.push(...buttonF1);
+    const buttonErrorSnacks = await snacks();
     report('read error on the button', {
       text: await raw(0),
-      errorMessage: (await snacks()).some((s) => s.startsWith('error')),
-      hookException: buttonF1.some(isException),
+      errorMessage: buttonErrorSnacks.some((s) => s.startsWith('error')),
+      hookException: hookExceptionSince(from),
       readOnly: await textarea(0, 'ta.readOnly'),
     });
+    r.check(
+      `${label}: a failed button read shows exactly the read error message (notifications.readError)`,
+      buttonErrorSnacks.length === 1 && READ_ERROR_MESSAGES.includes(buttonErrorSnacks[0]),
+      json(buttonErrorSnacks)
+    );
     if (dropAvailable) {
       await nav('remove');
       await setText(0, PREV);
@@ -1932,7 +1932,7 @@ export async function checkFileIo(page, r, label, errorsSince) {
       report('read error on the drop', {
         text: await raw(0),
         errorMessage: (await snacks()).some((s) => s.startsWith('error')),
-        hookException: hookErrorsSince(from).some(isException),
+        hookException: hookExceptionSince(from),
         readOnly: await textarea(0, 'ta.readOnly'),
       });
     }
@@ -1985,26 +1985,11 @@ export async function checkFileIo(page, r, label, errorsSince) {
     unlinkSync(lateA);
     from = page.logs.length;
     await release(0);
-    const lateF1 = hookErrorsSince(from);
-    provokedErrors.push(...lateF1);
     report('replaced import fails late', {
       afterA: await raw(0),
       errorMessage: (await snacks()).some((s) => s.startsWith('error')),
-      hookException: lateF1.some(isException),
+      hookException: hookExceptionSince(from),
     });
-
-    // Negative check of the classification with the real entries: exactly one hook exception per F1 scenario is
-    // recorded, and an entry with the same text logged elsewhere (a copy, i.e. another log entry) stays unexpected
-    const f1Today = FILE_IO.scenarios.find((s) => s.name === 'read error on the button').current.hookException;
-    const elsewhere = provokedErrors.map((l) => ({ ...l }));
-    r.check(
-      `${label}: only the hook errors of the two F1 scenarios are expected, an equal error elsewhere is not`,
-      buttonF1.filter(isException).length === (f1Today ? 1 : 0) &&
-        lateF1.filter(isException).length === (f1Today ? 1 : 0) &&
-        withoutExpected(provokedErrors, provokedErrors).length === 0 &&
-        withoutExpected([...provokedErrors, ...elsewhere], provokedErrors).length === elsewhere.length,
-      json({ button: buttonF1.length, late: lateF1.length })
-    );
 
     if (dropAvailable) {
       await nav('remove');
@@ -2095,8 +2080,7 @@ export async function checkFileIo(page, r, label, errorsSince) {
     cancel.sameFileAfterCancel = await raw(0);
     report('cancelled file dialog', cancel);
 
-    const unexpected = withoutExpected(errorsSince(n), provokedErrors);
-    r.check(`${label}: file import checks without unexpected errors`, unexpected.length === 0, json(unexpected));
+    r.check(`${label}: file import checks without errors`, errorsSince(n).length === 0, json(errorsSince(n)));
   } finally {
     await page.eval(`__t.reads && (__t.reads.hold = false, __t.reads.held.forEach((f) => f?.()), true)`).catch(() => {});
     await page.eval(FILE_READ_GATE_UNINSTALL).catch(() => {});
@@ -2106,5 +2090,4 @@ export async function checkFileIo(page, r, label, errorsSince) {
   // The source text is shared by the pages: leave the usual one for the following checks
   await nav('split');
   await setText(0, 'a_b');
-  return { provokedErrors };
 }

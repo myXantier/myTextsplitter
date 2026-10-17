@@ -1,5 +1,5 @@
 {
-  "description": "File import fixtures (Paket 11, Phase B; contract: docs/analyse/Paket11-PhaseB-Datei-IO-Vertrag.md, findings F1..F14: docs/analyse/Paket11-PhaseA-Datei-IO-Analyse.md). Every case is a real file: 'bytes' are hex bytes (separated by spaces, empty = 0 bytes) or 'generate' is a byte count of the deterministic ASCII text of 'generator' (written at test run time, never versioned). 'file' is the file name. Import paths: 'button' = OpenFileButton (real file chosen with DOM.setFileInputFiles, the Chromium file chooser path) and 'drop' = drag-and-drop onto the Remove textarea (real file dropped with Input.dispatchDragEvent). Before every case the target textarea holds 'previousText'. Expectations describe the CURRENT behaviour: { text } = the textarea state is exactly this text and no error message is shown, { generatedText: true } = the state is exactly the generated text, { unchanged: true } = 'previousText' stays and no message is shown, { rejected: invalidEncoding | tooLarge | unsupportedExtension, message? } = 'previousText' stays and an error message is shown ('message' = its exact current text). 'expected' applies to both paths; a case where the paths differ uses 'expectedButton' + 'expectedDrop'. 'target' is the decided behaviour of the contract (both paths; a rejected target names no message text, the wording is open), always with 'pending' { decisions, phase, paths, reason }: exactly the paths listed in 'paths' still differ from the target (checked against the real app by the integration tests and for consistency by tests/unit/file-io-fixtures.test.ts). A case without 'target' already meets the contract. 'ref' is a Phase A finding, 'note' explains a case.",
+  "description": "File import fixtures (Paket 11, Phase B; contract: docs/analyse/Paket11-PhaseB-Datei-IO-Vertrag.md, findings F1..F14: docs/analyse/Paket11-PhaseA-Datei-IO-Analyse.md). Every case is a real file: 'bytes' are hex bytes (separated by spaces, empty = 0 bytes) or 'generate' is a byte count of the deterministic ASCII text of 'generator' (written at test run time, never versioned). 'file' is the file name. Import paths: 'button' = OpenFileButton (real file chosen with DOM.setFileInputFiles, the Chromium file chooser path) and 'drop' = drag-and-drop onto the Remove textarea (real file dropped with Input.dispatchDragEvent). Before every case the target textarea holds 'previousText'. Expectations describe the CURRENT behaviour: { text } = the textarea state is exactly this text and no error message is shown, { generatedText: true } = the state is exactly the generated text, { unchanged: true } = 'previousText' stays and no message is shown, { rejected: invalidEncoding | tooLarge | unsupportedExtension, message? } = 'previousText' stays and an error message is shown ('message' = its exact current text). 'expected' applies to both paths; a case where the paths differ uses 'expectedButton' + 'expectedDrop'. 'target' is the decided behaviour of the contract (both paths; a rejected target names no message text, the wording is open), always with 'pending' { decisions, phase, paths, reason }: exactly the paths listed in 'paths' still differ from the target (checked against the real app by the integration tests and for consistency by tests/unit/file-io-fixtures.test.ts). A case without 'target' already meets the contract. 'ref' is a Phase A finding, 'note' explains a case, 'resolved' explains an expectation changed by a correction (Paket 11 C1: D1, empty content).",
   "previousText": "TEXT_A",
   "maxBytes": 10485760,
   "generator": { "line": "0123456789 abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ\n", "note": "The generated text is 'line' repeated and cut to the byte count (ASCII only, so bytes = UTF-16 code units)." },
@@ -9,40 +9,32 @@
       "ref": "F2",
       "file": "empty.txt",
       "bytes": "",
-      "expectedButton": { "unchanged": true },
-      "expectedDrop": { "text": "" },
-      "target": { "text": "" },
-      "pending": { "decisions": ["D1"], "phase": "C1", "paths": ["button"], "reason": "OpenFileButton only sets a truthy content (if (content)); an empty file is silently ignored." }
+      "expected": { "text": "" },
+      "resolved": "Paket 11 C1 (D1): the button ignored an empty content (if (content)); it now sets every content read successfully, also ''."
     },
     {
       "name": "UTF-8 BOM only",
       "ref": "F2",
       "file": "bom-utf8-only.txt",
       "bytes": "EF BB BF",
-      "expectedButton": { "unchanged": true },
-      "expectedDrop": { "text": "" },
-      "target": { "text": "" },
-      "pending": { "decisions": ["D1", "D3"], "phase": "C1", "paths": ["button"], "reason": "The BOM is removed, the content '' is ignored by the truthiness check." }
+      "expected": { "text": "" },
+      "resolved": "Paket 11 C1 (D1): the BOM is removed and the content '' now replaces the text (the button ignored it before)."
     },
     {
       "name": "UTF-16LE BOM only",
       "ref": "F2",
       "file": "bom-utf16le-only.txt",
       "bytes": "FF FE",
-      "expectedButton": { "unchanged": true },
-      "expectedDrop": { "text": "" },
-      "target": { "text": "" },
-      "pending": { "decisions": ["D1", "D4"], "phase": "C1", "paths": ["button"], "reason": "As the UTF-8 BOM: decoded to '' and ignored by the button." }
+      "expected": { "text": "" },
+      "resolved": "Paket 11 C1 (D1): as the UTF-8 BOM, the decoded content '' now replaces the text (the button ignored it before)."
     },
     {
       "name": "UTF-16BE BOM only",
       "ref": "F2",
       "file": "bom-utf16be-only.txt",
       "bytes": "FE FF",
-      "expectedButton": { "unchanged": true },
-      "expectedDrop": { "text": "" },
-      "target": { "text": "" },
-      "pending": { "decisions": ["D1", "D4"], "phase": "C1", "paths": ["button"], "reason": "As the UTF-8 BOM: decoded to '' and ignored by the button." }
+      "expected": { "text": "" },
+      "resolved": "Paket 11 C1 (D1): as the UTF-8 BOM, the decoded content '' now replaces the text (the button ignored it before)."
     },
     {
       "name": "UTF-8 without BOM (umlauts, emoji)",
@@ -243,7 +235,7 @@
       "pending": { "decisions": ["D8"], "phase": "C3", "paths": ["button"], "reason": "OpenFileButton does not check the extension." }
     }
   ],
-  "scenarioDescription": "Import flows of the integration tests (checkFileIo in tests/e2e/lib/app.mjs, same names). 'current' and 'target' are the observations of the flow; 'pending' { decisions, phase, fields, reason } lists exactly the fields where 'current' still differs from 'target' (none = the flow already meets the contract). 'method': 'real' = real file chooser path / real drop and real reads, 'gated' = real reads whose START is held and released by the test in a fixed order (controlled race simulation, FileReader and Blob read methods wrapped in the page), 'intercepted' = the file chooser is opened with a user gesture and intercepted by CDP (no native dialog). 'readOnly' is the readOnly attribute of the target textarea, 'busy' its aria-busy=\"true\" (the proposed test hook for the visible loading hint D11).",
+  "scenarioDescription": "Import flows of the integration tests (checkFileIo in tests/e2e/lib/app.mjs, same names). 'current' and 'target' are the observations of the flow; 'pending' { decisions, phase, fields, reason } lists exactly the fields where 'current' still differs from 'target' (none = the flow already meets the contract); 'resolved' explains an observation changed by a correction. 'method': 'real' = real file chooser path / real drop and real reads, 'gated' = real reads whose START is held and released by the test in a fixed order (controlled race simulation, FileReader and Blob read methods wrapped in the page), 'intercepted' = the file chooser is opened with a user gesture and intercepted by CDP (no native dialog). 'readOnly' is the readOnly attribute of the target textarea, 'busy' its aria-busy=\"true\" (the proposed test hook for the visible loading hint D11).",
   "scenarios": [
     {
       "name": "same file chosen again",
@@ -259,9 +251,9 @@
       "ref": "F1",
       "method": "real",
       "steps": "A path that does not exist is chosen on Split (real change event, the FileReader fails with NotFoundError).",
-      "current": { "text": "TEXT_A", "errorMessage": false, "hookException": true, "readOnly": false },
+      "current": { "text": "TEXT_A", "errorMessage": true, "hookException": false, "readOnly": false },
       "target": { "text": "TEXT_A", "errorMessage": true, "hookException": false, "readOnly": false },
-      "pending": { "decisions": ["D13"], "phase": "C1", "fields": ["errorMessage", "hookException"], "reason": "useSnackbar() is called inside reader.onerror: 'Invalid hook call' (production: Minified React error #321) instead of the message." }
+      "resolved": "Paket 11 C1 (D13): useSnackbar() was called inside reader.onerror ('Invalid hook call', production: Minified React error #321, no message); it is now called by the component and the error shows notifications.readError. The lock of D10 is checked by the loading-state scenarios (C2)."
     },
     {
       "name": "read error on the drop",
@@ -293,9 +285,10 @@
       "ref": "F5",
       "method": "gated",
       "steps": "Choose A, then B on Split (both held); release B; delete A on disk; release A (real NotFoundError).",
-      "current": { "afterA": "RACE_B", "errorMessage": false, "hookException": true },
+      "current": { "afterA": "RACE_B", "errorMessage": true, "hookException": false },
       "target": { "afterA": "RACE_B", "errorMessage": false, "hookException": false },
-      "pending": { "decisions": ["D9", "D13"], "phase": "C1", "fields": ["hookException"], "reason": "A late error of a replaced import must be ignored silently; today it throws the hook error (F1)." }
+      "pending": { "decisions": ["D9"], "phase": "C2", "fields": ["errorMessage"], "reason": "C1 intermediate state: the late error of the replaced import A no longer throws, but still shows the read error message (no latest-import-wins yet); the text of B stays. Target: a replaced import is ignored silently." },
+      "resolved": "Paket 11 C1 (D13): before C1 the late error threw the hook error (F1) and showed no message."
     },
     {
       "name": "button and drop share the Remove target",

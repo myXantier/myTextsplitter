@@ -445,12 +445,9 @@ read starts); overlapping imports, the loading state and navigation as a **contr
 Blob read methods are wrapped in the page and the start of a read is held and released in a fixed order, then the
 browser really reads (no fixed sleeps, completion is counted); typing uses real key input (`Input.insertText`); the
 cancelled dialog uses an intercepted file chooser (`Page.setInterceptFileChooserDialog`, opened with a user gesture).
-The checks expect the current behaviour; a pending target is named in the check label. The uncaught hook error of a
-failed button read (F1) is expected until Phase C1, but only as the log entries recorded while the two F1 scenarios run
-("read error on the button", "replaced import fails late"): `checkFileIo` returns them as `provokedErrors`, and its own
-error check and the final error check of the Tauri main window exclude exactly these entries (`withoutExpected` in
-`tests/e2e/lib/harness.mjs`, by identity, never by text). Any other hook error fails the run;
-`tests/unit/e2e-error-classification.test.ts` checks this classification. **Limit:** in Tauri the CDP drag enters the renderer
+The checks expect the current behaviour; a pending target is named in the check label. No error is expected: since
+Paket 11 C1 a failed button read shows `notifications.readError` without a React hook error (F1), and any logged error,
+also a hook error, fails `checkFileIo` and the final error check of the Tauri main window. **Limit:** in Tauri the CDP drag enters the renderer
 after wry's native drop handling, so it does not show whether a real Explorer drop arrives (F8 stays unconfirmed, manual
 check). Native file dialogs are not automated.
 

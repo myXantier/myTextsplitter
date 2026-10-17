@@ -3,7 +3,7 @@
 //   - the format (bytes, expectations, pending lists that name exactly the paths/fields still differing from the target),
 //   - the CURRENT expectations against an independent model of today's code: FileReader.readAsText = the WHATWG "decode"
 //     algorithm (BOM sniffing UTF-8 / UTF-16LE / UTF-16BE, otherwise UTF-8, invalid bytes become U+FFFD), the button sets
-//     only a truthy content (F2), the drop checks `.txt` (case-sensitive) and then `size > 10 MiB` (F6),
+//     every content read, also '' (since C1, D1), the drop checks `.txt` (case-sensitive) and then `size > 10 MiB` (F6),
 //   - the TARGETS against the contract (docs/analyse/Paket11-PhaseB-Datei-IO-Vertrag.md): `.txt` in any case (D8), at most
 //     10 MiB inclusive (D7), strict decoding with the same BOM rule (D3-D6), an empty content is a text (D1).
 // Whether the app really behaves like this is checked only by the integration tests, never here.
@@ -31,6 +31,7 @@ interface Case {
   /** Chromium's FileReader decodes differently from the WHATWG algorithm (`whatwg` = the result of the algorithm). */
   divergence?: { kind: 'chromiumFileReader'; whatwg: string; reason: string };
   note?: string;
+  resolved?: string;
 }
 interface Scenario {
   name: string;
@@ -105,8 +106,8 @@ test('file I/O fixtures: current expectations follow the code of today', () => {
     const chromium = c.divergence ? (c.expected as { text: string } | undefined)?.text : undefined;
     assert.ok(!c.divergence || (chromium !== undefined && chromium !== c.divergence.whatwg), `${c.name}: a divergence needs a differing common text`);
     const decoded = chromium ?? legacyDecode(bytes);
-    // OpenFileButton: no checks; `if (content) setFileText(content)` (F2)
-    assert.deepEqual(observable(c, currentOf(c, 'button')), decoded === '' ? { unchanged: true } : { text: decoded }, `${c.name}: button`);
+    // OpenFileButton: no checks; every content read is set, also '' (Paket 11 C1, D1)
+    assert.deepEqual(observable(c, currentOf(c, 'button')), { text: decoded }, `${c.name}: button`);
     // useDragAndDrop: `.txt` (case-sensitive), then `file.size > maxSize`; RemovePage sets every content, also ''
     const drop = !c.file.endsWith('.txt') ? { rejected: 'unsupportedExtension' } : bytes.length > fixtures.maxBytes ? { rejected: 'tooLarge' } : { text: decoded };
     assert.deepEqual(observable(c, currentOf(c, 'drop')), drop, `${c.name}: drop`);
