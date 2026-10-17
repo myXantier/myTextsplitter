@@ -1,5 +1,5 @@
 {
-  "description": "Shared regex fixtures (Paket 5) for the Rust engine (fancy-regex, cargo test) and the JS engine (native RegExp in FilterWorker, npm test). Operation: Filter per line (mode 'keep' or 'remove', defaults: mode=keep, caseSensitive=true, splitMatches=true). 'expected' is the filter result text or { \"error\": \"invalidRegex\" | \"regexRuntime\" }. Categories: 'same' = shared syntax, same result ('expected'); 'different' = accepted by both engines with different results; 'rustOnly' / 'jsOnly' = only one engine accepts the pattern. Every category except 'same' uses 'expectedRust' + 'expectedJs' and explains the difference in 'divergence'. Catastrophic backtracking is not part of these fixtures (the JS engine has no limit and would run for minutes): see the backtracking tests in src-tauri/src/text_processor.rs and tests/unit/worker-termination.test.ts.",
+  "description": "Shared regex fixtures (Paket 5) for the Rust engine (fancy-regex, cargo test) and the JS engine (native RegExp in FilterWorker, npm test). Operation: Filter per line (mode 'keep' or 'remove', defaults: mode=keep, caseSensitive=true, splitMatches=true). 'expected' is the filter result text or { \"error\": \"invalidRegex\" | \"regexRuntime\" }. Categories: 'same' = shared syntax, same result ('expected'); 'different' = accepted by both engines with different results; 'rustOnly' / 'jsOnly' = only one engine accepts the pattern. Every category except 'same' uses 'expectedRust' + 'expectedJs' and explains the difference in 'divergence'. Catastrophic backtracking is not part of these fixtures (the JS engine has no limit and would run for minutes): see the backtracking tests in src-tauri/src/text_processor.rs and tests/unit/worker-termination.test.ts. Paket 10 Phase B added the dialect differences R7 of docs/analyse/Paket10-PhaseA-Regex-Analyse.md (no compatibility translation). 'jsRuntimeDependent' { reason, otherJsResults } marks syntax whose JS result depends on the JS engine version (WebView2, WebKit, Node): the JS result must be the expectation or one of otherJsResults; no cross-version guarantee is claimed.",
   "cases": [
     {
       "name": "positive lookbehind",
@@ -340,6 +340,96 @@
       "expectedRust": { "error": "invalidRegex" },
       "expectedJs": "a\t",
       "divergence": "JS: \\cI = TAB (control character escape); fancy-regex has no \\c escape."
+    },
+    {
+      "name": "\\h is a hex digit only in Rust",
+      "category": "different",
+      "input": "ah b9",
+      "pattern": "\\h",
+      "expectedRust": "a\nb\n9",
+      "expectedJs": "h",
+      "divergence": "Paket 10 R7: fancy-regex \\h = hex digit [0-9A-Fa-f]; JS without the u flag treats the unknown escape \\h as the letter h."
+    },
+    {
+      "name": "\\u{...} code point escape only in Rust",
+      "category": "different",
+      "input": "😀 u{1F600}",
+      "pattern": "\\u{1F600}",
+      "expectedRust": "😀",
+      "expectedJs": "u{1F600}",
+      "divergence": "Paket 10 R7: \\u{1F600} is U+1F600 in fancy-regex; JS without the u flag reads it as the letter u followed by the literal text {1F600}."
+    },
+    {
+      "name": "\\0 matches NUL only in JS",
+      "category": "different",
+      "input": "a\u0000b",
+      "pattern": "\\0",
+      "expectedRust": "",
+      "expectedJs": "\u0000",
+      "divergence": "Paket 10 R7: JS \\0 is the NUL character; fancy-regex accepts \\0 but it does not match NUL (no error, silently no match)."
+    },
+    {
+      "name": ". and the line separator U+2028",
+      "category": "different",
+      "input": "a b",
+      "pattern": ".",
+      "expectedRust": "a\n \nb",
+      "expectedJs": "a\nb",
+      "divergence": "Paket 10 R7: JS . excludes the ECMAScript line terminators U+2028/U+2029 (also without the m flag); fancy-regex . only excludes \\n."
+    },
+    {
+      "name": ". and the paragraph separator U+2029",
+      "category": "different",
+      "input": "a b",
+      "pattern": ".",
+      "expectedRust": "a\n \nb",
+      "expectedJs": "a\nb",
+      "divergence": "Paket 10 R7: like U+2028, JS . excludes U+2029."
+    },
+    {
+      "name": "\\s and the next line character U+0085",
+      "category": "different",
+      "input": "a\u0085b",
+      "pattern": "\\s",
+      "expectedRust": "\u0085",
+      "expectedJs": "",
+      "divergence": "Paket 10 R7: Rust \\s is Unicode White_Space (contains U+0085); JS \\s does not contain U+0085 (but U+FEFF, see above)."
+    },
+    {
+      "name": "\\Z is a literal Z in JS",
+      "category": "jsOnly",
+      "input": "aZ\nZ",
+      "pattern": "a\\Z",
+      "expectedRust": { "error": "invalidRegex" },
+      "expectedJs": "aZ",
+      "divergence": "Paket 10 R7: fancy-regex rejects the escape \\Z; JS without the u flag treats \\Z as the letter Z (no end anchor)."
+    },
+    {
+      "name": "\\1 without a capture group",
+      "category": "jsOnly",
+      "input": "a\u0001b",
+      "pattern": "\\1",
+      "expectedRust": { "error": "invalidRegex" },
+      "expectedJs": "\u0001",
+      "divergence": "Paket 10 R7: fancy-regex rejects a backreference to a missing group; JS (Annex B) reads \\1 as the octal escape U+0001."
+    },
+    {
+      "name": "$ before U+2028 inside a line (Filter flag g, no m)",
+      "category": "same",
+      "input": "a b",
+      "pattern": "a$",
+      "expected": ""
+    },
+    {
+      "name": "modifier group (?i:...) depends on the JS runtime",
+      "category": "same",
+      "input": "A",
+      "pattern": "(?i:a)",
+      "expected": "A",
+      "jsRuntimeDependent": {
+        "reason": "Paket 10 R7: RegExp modifiers (?i:...) exist since V8 12.5 (Chrome/Edge/WebView2 125, Node 23). Older runtimes, e.g. an old WebView2 or Node 22, reject the pattern; WebKitGTK/WKWebView follow their own release.",
+        "otherJsResults": [{ "error": "invalidRegex" }]
+      }
     }
   ]
 }

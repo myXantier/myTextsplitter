@@ -104,11 +104,14 @@ test('line model: a large CRLF text round-trips', () => {
 // --- Split: the shared split fixtures through the worker module (BaseWorker splits the lines) ---
 
 for (const c of splitFixtures.cases) {
+  const expected = c.expectedJs ?? c.expected;
+  // Error expectations (Paket 10, e.g. an invalid regex) are checked by split.test.ts
+  if (!Array.isArray(expected)) continue;
   test(`split worker: ${c.name}`, () => {
     const configParams = { useRegex: c.useRegex ?? false, trimParts: c.trimParts ?? false, keepEmptyLines: c.keepEmptyLines ?? true };
-    const expected = c.expectedJs ?? c.expected;
-    assert.deepEqual(runWorker('split', { sourceText: c.input, mainParam: c.delimiter, configParams } as SplitConfig), expected);
-    assert.deepEqual(splitTextToColumns(c.input, c.delimiter, configParams), expected, 'main-thread entry point');
+    const delimiter = typeof c.delimiter === 'string' ? c.delimiter : c.delimiter.repeat.repeat(c.delimiter.count);
+    assert.deepEqual(runWorker('split', { sourceText: c.input, mainParam: delimiter, configParams } as SplitConfig), expected);
+    assert.deepEqual(splitTextToColumns(c.input, delimiter, configParams), expected, 'main-thread entry point');
   });
 }
 

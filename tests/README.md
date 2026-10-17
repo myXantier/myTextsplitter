@@ -53,6 +53,20 @@ The former differences for trailing newlines, empty input and CRLF (`str::lines(
 Further regex split differences (named/non-participating captures, zero-width matches at the line start, `\b`,
 Unicode `\d`) are documented as `divergence` cases in the fixtures.
 
+Paket 10 Phase B (contract: `docs/analyse/Paket10-PhaseB-Regexvertrag.md`) extended the format, backwards compatible:
+
+| Field | Meaning |
+|---|---|
+| `delimiter` | A string or `{ "repeat", "count" }` (long patterns). |
+| `expected*` | Current behaviour; may also be `{ "error": "invalidRegex" }`. |
+| `divergence` | A string (accepted dialect difference) or `{ kind, reason }`: `dialect`, `utf16Damage` (the JS split puts a split position inside a surrogate pair, R2: lone surrogates or a column between the halves), `unvalidatedInput`. A test oracle checks that exactly the cases whose JS split cuts a pair are marked `utf16Damage`. |
+| `target` or `targetRust` + `targetJs`, `pending` | Target of a not yet implemented decision (E3 pattern rule, E4 empty plain delimiter, E5 cut characters, E9 flags `gm` → `g`): columns or `{ error: invalidRegex \| emptyDelimiter \| emptyPattern \| patternTooLong \| regexSplitsCharacter }` (the last JS only). `pending { decisions, phase, engines, reason }`: exactly the listed engines still differ from their target; both runners check it against the real engines, so the suite stays green and a reached target is noticed. |
+| `ref` | Finding of `docs/analyse/Paket10-PhaseA-Regex-Analyse.md`. |
+
+The JS side runs every case through `splitColumns.ts`, the real `SplitWorker` module and the service without Web Worker
+(plain splits run in the main thread, a regex is refused: `regexRequiresWorker`, or `invalidRegex` for an invalid, empty
+or too long pattern). Rust does not read `expectedJs`/`targetJs` (they may contain lone surrogates).
+
 ## Line-ending fixtures (`tests/fixtures/line-endings-cases.json`, Paket 6)
 
 Shared by `npm test` (`tests/unit/line-endings.test.ts`: line model, real worker modules, main-thread fallbacks) and
@@ -117,6 +131,8 @@ Semantics fixed in C1:
 | `expectedJsUnreachableMainThread` | `FilterService.frontendInMainThread`, which `invoke` never reaches. Tested separately, **not a product path**. |
 | `ref`, `openQuestion` | Case id in the Phase A report; open product decision for identical behaviour. |
 | `resolved` | Why a correction changed the expectation (only with a shared `expected`). |
+| `target` + `pending` | Paket 10: result of a not yet implemented decision in both engines, may use `{ "error": "emptyPattern" \| "patternTooLong" }` (E3). `pending { decisions, phase, engines, reason }`: exactly the listed engines still differ from the target (checked against the real engines in both runners). |
+| `preview` | Paket 10, Filter only, JS only: the pattern preview (`MatchPreviewWorker`, no mode, no `splitMatches`). `segments` = current rows `[text, match, …, text]` per line with a non-empty match, or `{ "error": "invalidRegex" }`; `target` + `pending { decisions, phase, reason }` = wanted preview (E1: no segment with a lone surrogate, adjacent halves as one highlight, `{ "error": "regexSplitsCharacter" }` where the JS Filter refuses); `note` = intended difference to the Filter result (E2). Every row must rebuild its input line; the final preview reports the same input error as the final JS Filter. The preview worker also runs for every Filter case without `preview` (rows must rebuild the lines). |
 
 JS paths per case: the real worker module; for Remove also `frontendInMainThread`; and the service without Web Worker
 (`invoke(args, false)` in Node): Filter always refuses (`regexRequiresWorker`, or `invalidRegex`), Remove runs
@@ -247,6 +263,15 @@ Important: without the `u` flag several Rust escapes (`\p{L}`, `\A`, `\z`, `\x{4
 JS flags are enabled (`u`/`v` would change existing JS behaviour and need their own decision and regression tests).
 Catastrophic backtracking is not in the fixtures: see `worker-termination.test.ts` (JS) and the backtracking tests in Rust.
 
+Paket 10 (R7) added more silent differences: `\h` (Rust: hex digit, JS: `h`), `\u{1F600}` (JS: literal text), `\0`
+(Rust accepts it but does not match NUL), `.` at U+2028/U+2029 and `\s` at U+0085 (`different`), `\Z` and `\1` without a
+group (`jsOnly`: JS literal/octal, Rust error), and `a$` before U+2028 (`same` in the Filter, flag `g`; the JS Split uses
+`gm` and differs, see the E9 cases in `split-cases.json`). A surrogate escape such as `\uD83D` is an error in Rust (no
+Unicode scalar value) and cuts characters in JS (Filter: `regexSplitsCharacter`). `jsRuntimeDependent { reason,
+otherJsResults }` marks syntax whose JS result depends on the engine version, e.g. the modifier group `(?i:a)` (V8 12.5+,
+Chrome/WebView2 125+, Node 23+; older runtimes: `invalidRegex`): the JS result must be the expectation or one of
+`otherJsResults`, no cross-version guarantee is claimed.
+
 ## Regex execution (Paket 5)
 
 - **Rust:** `fancy-regex` with an explicit `REGEX_BACKTRACK_LIMIT` (= default 1,000,000 per match attempt). This is a
@@ -266,6 +291,11 @@ Catastrophic backtracking is not in the fixtures: see `worker-termination.test.t
   pattern still reports `invalidRegex`); jobs without regex still run there.
 - **Validation** happens in the engine that runs the pattern (no JS pre-validation in Rust mode). The pattern preview of
   the Filter page always uses JS in its own worker; in Rust mode it says so, and a pattern JS rejects shows a note.
+- **Known limits (Paket 10, decided for Phase C):** the backtracking limit applies to one search, not to a job
+  (`backtrack_limit_applies_per_search_not_per_job`); one search of the linear engine cannot be interrupted either (measured
+  up to about a minute for a 10,000-character literal on a 1 MB line). The preview answer is not limited yet (`workers.test.ts`
+  R3 characterization); its sizes and UI costs are measured by `node tests/bench/preview-baseline.mjs` (headless Chrome/Edge,
+  bounded scenarios, not part of `npm test`). Details and the recommended limits: `docs/analyse/Paket10-PhaseB-Regexvertrag.md`.
 
 ## Integration tests
 

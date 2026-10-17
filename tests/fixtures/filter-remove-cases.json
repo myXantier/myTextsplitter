@@ -1,12 +1,15 @@
 {
-  "description": "Golden fixtures (Paket 8, Phase B) for Filter and Remove, shared by the Rust engine (cargo test, src-tauri/src/text_processor.rs) and the JS engine (npm test, tests/unit/filter-remove.test.ts). They characterize the CURRENT behaviour: a passing test means the behaviour is described correctly, not that it is wanted. Every case states all options explicitly (no defaults). 'pattern' is a string or { repeat, count } (the string repeated count times). Filter expectations: the result text or { error: invalidRegex | regexRuntime | invalidMode } (invalidMode, Paket 8 C3: an unknown or empty mode, checked before anything else); JS only: { error: regexSplitsCharacter } (Paket 8 C1: a JS match would cut a surrogate pair apart, the worker refuses instead of returning damaged text). Remove expectations: { text, removedLines } or { error }. A case with different engine results uses expectedRust + expectedJs and a divergence { kind, reason }; kinds: dialect (accepted regex dialect difference, Paket 5), utf16Guard (Rust processes valid Unicode, JS refuses a result that would contain cut characters; required for regexSplitsCharacter), suspectedBug, inconsistentDefinition, unvalidatedInput. Every successful JS result must be well-formed Unicode. 'ref' points to the Phase A report (docs/analyse/Paket8-PhaseA-Filter-Remove-Analyse.md). 'openQuestion' marks identical behaviour that still needs a product decision. 'resolved' explains why an expectation was changed by a correction (e.g. Paket 8 C2: in remove mode only a line from which a match removed text and whose rest is blank is dropped; lines without removed text stay unchanged). 'expectedJsUnreachableMainThread' characterizes FilterService.frontendInMainThread, which invoke never reaches (not a product path).",
+  "description": "Golden fixtures (Paket 8, Phase B) for Filter and Remove, shared by the Rust engine (cargo test, src-tauri/src/text_processor.rs) and the JS engine (npm test, tests/unit/filter-remove.test.ts). They characterize the CURRENT behaviour: a passing test means the behaviour is described correctly, not that it is wanted. Every case states all options explicitly (no defaults). 'pattern' is a string or { repeat, count } (the string repeated count times). Filter expectations: the result text or { error: invalidRegex | regexRuntime | invalidMode } (invalidMode, Paket 8 C3: an unknown or empty mode, checked before anything else); JS only: { error: regexSplitsCharacter } (Paket 8 C1: a JS match would cut a surrogate pair apart, the worker refuses instead of returning damaged text). Remove expectations: { text, removedLines } or { error }. A case with different engine results uses expectedRust + expectedJs and a divergence { kind, reason }; kinds: dialect (accepted regex dialect difference, Paket 5), utf16Guard (Rust processes valid Unicode, JS refuses a result that would contain cut characters; required for regexSplitsCharacter), suspectedBug, inconsistentDefinition, unvalidatedInput. Every successful JS result must be well-formed Unicode. 'ref' points to the Phase A report (docs/analyse/Paket8-PhaseA-Filter-Remove-Analyse.md). 'openQuestion' marks identical behaviour that still needs a product decision. 'resolved' explains why an expectation was changed by a correction (e.g. Paket 8 C2: in remove mode only a line from which a match removed text and whose rest is blank is dropped; lines without removed text stay unchanged). 'expectedJsUnreachableMainThread' characterizes FilterService.frontendInMainThread, which invoke never reaches (not a product path). Paket 10 Phase B (docs/analyse/Paket10-PhaseB-Regexvertrag.md; 'ref' R1..R10 = docs/analyse/Paket10-PhaseA-Regex-Analyse.md): 'target' is the result of a not yet implemented decision in both engines (may also be { error: emptyPattern | patternTooLong }, E3), always with 'pending' { decisions, phase, engines, reason }: exactly the engines listed in 'engines' still differ from the target (checked against the real engines). Filter only: 'preview' { segments, target?, pending?, note? } is the pattern preview of the Filter page (JS MatchPreviewWorker, no mode, no splitMatches): 'segments' are its CURRENT rows [text, match, ..., text] per line with a non-empty match, or { error: invalidRegex }; 'target' + 'pending' { decisions, phase, reason } the wanted preview (E1: no segment with a lone surrogate, a match refused by the JS Filter is { error: regexSplitsCharacter }); every row rebuilds its input line; the final preview reports the same input error as the final JS Filter result. The preview shows matches, not the Filter result (E2): 'note' explains a difference.",
   "filter": [
     {
       "name": "keep: one match per line, split off",
       "input": "apple\nbanana\napricot",
       "pattern": "ap",
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
-      "expected": "ap\nap"
+      "expected": "ap\nap",
+      "preview": {
+        "segments": [["", "ap", "ple"], ["", "ap", "ricot"]]
+      }
     },
     {
       "name": "keep: several matches in a line are joined (split off)",
@@ -64,14 +67,21 @@
       "input": "a1\n\n   \n\t\nb2",
       "pattern": "\\d",
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
-      "expected": "1\n2"
+      "expected": "1\n2",
+      "preview": {
+        "segments": [["a", "1", ""], ["b", "2", ""]],
+        "note": "Empty and whitespace-only lines without a match have no preview row."
+      }
     },
     {
       "name": "keep: a whitespace-only result is kept",
       "input": "a b",
       "pattern": " ",
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
-      "expected": " "
+      "expected": " ",
+      "preview": {
+        "segments": [["a", " ", "b"]]
+      }
     },
     {
       "name": "keep: matches keep their order within the line",
@@ -155,6 +165,11 @@
       "divergence": {
         "kind": "utf16Guard",
         "reason": "JS RegExp without the 'u' flag matches UTF-16 code units: the emoji halves would end up as lone surrogates on separate lines (formerly output as damaged text). The worker now refuses the result; Rust matches Unicode scalar values."
+      },
+      "preview": {
+        "segments": [["", "\uD83D", "", "\uDE00", "", "x", ""]],
+        "target": { "error": "regexSplitsCharacter" },
+        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "The preview judges cut characters like the JS Filter (same guard, splitMatches and mode): a refused match is not highlighted, the preview shows the note of regexSplitsCharacter." }
       }
     },
     {
@@ -162,7 +177,12 @@
       "input": "😀x",
       "pattern": ".",
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
-      "expected": "😀x"
+      "expected": "😀x",
+      "preview": {
+        "segments": [["", "\uD83D", "", "\uDE00", "", "x", ""]],
+        "target": [["", "😀", "", "x", ""]],
+        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "Adjacent matches whose common boundary lies inside a surrogate pair are shown as one highlight, so no segment contains a lone surrogate (Chromium draws both halves highlighted anyway)." }
+      }
     },
     {
       "name": "keep: negated class on an emoji with split matches",
@@ -174,6 +194,11 @@
       "divergence": {
         "kind": "utf16Guard",
         "reason": "Same cause as F12: [^a] matches each surrogate half on its own in JS; split matches would separate them with a line break."
+      },
+      "preview": {
+        "segments": [["", "\uD83D", "", "\uDE00", ""]],
+        "target": { "error": "regexSplitsCharacter" },
+        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "The preview judges cut characters like the JS Filter (same guard, splitMatches and mode): a refused match is not highlighted, the preview shows the note of regexSplitsCharacter." }
       }
     },
     {
@@ -181,7 +206,12 @@
       "input": "😀",
       "pattern": "[^a]",
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
-      "expected": "😀"
+      "expected": "😀",
+      "preview": {
+        "segments": [["", "\uD83D", "", "\uDE00", ""]],
+        "target": [["", "😀", ""]],
+        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "Adjacent matches whose common boundary lies inside a surrogate pair are shown as one highlight, so no segment contains a lone surrogate (Chromium draws both halves highlighted anyway)." }
+      }
     },
     {
       "name": "keep: halves of two different emoji would be recombined",
@@ -193,6 +223,11 @@
       "divergence": {
         "kind": "utf16Guard",
         "reason": "JS matches the high half of the first and the low half of the second emoji; joined they would form a different, well-formed character (U+1F603 alone). A well-formedness check alone would not notice; the match boundaries do."
+      },
+      "preview": {
+        "segments": [["", "\uD83D", "\uDE00\uD83D", "\uDE03", ""]],
+        "target": { "error": "regexSplitsCharacter" },
+        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "The preview judges cut characters like the JS Filter (same guard, splitMatches and mode): a refused match is not highlighted, the preview shows the note of regexSplitsCharacter." }
       }
     },
     {
@@ -200,7 +235,10 @@
       "input": "a😀b😃",
       "pattern": "😀|😃",
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
-      "expected": "😀\n😃"
+      "expected": "😀\n😃",
+      "preview": {
+        "segments": [["a", "😀", "b", "😃", ""]]
+      }
     },
     {
       "name": "keep: emoji in the line, matches elsewhere",
@@ -214,7 +252,12 @@
       "input": "😀x\r\n😃\r\n",
       "pattern": ".",
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
-      "expected": "😀x\r\n😃\r\n"
+      "expected": "😀x\r\n😃\r\n",
+      "preview": {
+        "segments": [["", "\uD83D", "", "\uDE00", "", "x", ""], ["", "\uD83D", "", "\uDE03", ""]],
+        "target": [["", "😀", "", "x", ""], ["", "😃", ""]],
+        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "Adjacent matches whose common boundary lies inside a surrogate pair are shown as one highlight, so no segment contains a lone surrogate (Chromium draws both halves highlighted anyway)." }
+      }
     },
     {
       "name": "keep: empty matches inside an emoji cut nothing",
@@ -226,6 +269,10 @@
       "divergence": {
         "kind": "dialect",
         "reason": "Empty matches advance by one UTF-16 code unit in JS and by one character in Rust (Paket 5); no character is cut, so the JS guard does not refuse it."
+      },
+      "preview": {
+        "segments": [],
+        "note": "Zero-width matches are not highlighted (also inside a surrogate pair)."
       }
     },
     {
@@ -238,6 +285,11 @@
       "divergence": {
         "kind": "utf16Guard",
         "reason": "Same cause as F12; the surrogate halves would be separated by the CRLF line ending of the input."
+      },
+      "preview": {
+        "segments": [["", "\uD83D", "", "\uDE00", ""]],
+        "target": { "error": "regexSplitsCharacter" },
+        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "The preview judges cut characters like the JS Filter (same guard, splitMatches and mode): a refused match is not highlighted, the preview shows the note of regexSplitsCharacter." }
       }
     },
     {
@@ -268,7 +320,10 @@
       "input": "a",
       "pattern": "([a-",
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
-      "expected": { "error": "invalidRegex" }
+      "expected": { "error": "invalidRegex" },
+      "preview": {
+        "segments": { "error": "invalidRegex" }
+      }
     },
     {
       "name": "keep: inline flag (?i) is Rust-only syntax",
@@ -277,7 +332,11 @@
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
       "expectedRust": "Ap",
       "expectedJs": { "error": "invalidRegex" },
-      "divergence": { "kind": "dialect", "reason": "Inline flags are fancy-regex syntax; JS rejects them (Paket 5)." }
+      "divergence": { "kind": "dialect", "reason": "Inline flags are fancy-regex syntax; JS rejects them (Paket 5)." },
+      "preview": {
+        "segments": { "error": "invalidRegex" },
+        "note": "The preview always uses JS: in Rust mode the Filter accepts the pattern although the preview cannot compile it (E8: the note names the JS engine and must not claim the pattern is invalid for Rust)."
+      }
     },
     {
       "name": "keep: variable-length lookbehind is JS-only syntax",
@@ -286,7 +345,11 @@
       "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
       "expectedRust": { "error": "invalidRegex" },
       "expectedJs": "b",
-      "divergence": { "kind": "dialect", "reason": "fancy-regex only allows constant-length lookbehinds (Paket 5)." }
+      "divergence": { "kind": "dialect", "reason": "fancy-regex only allows constant-length lookbehinds (Paket 5)." },
+      "preview": {
+        "segments": [["aa", "b", " b"]],
+        "note": "In Rust mode the Filter rejects the pattern although the preview highlights a match (E8)."
+      }
     },
     {
       "name": "keep: \\w is Unicode-aware only in Rust",
@@ -324,6 +387,13 @@
       "divergence": {
         "kind": "unvalidatedInput",
         "reason": "JS rejects patterns longer than MAX_PATTERN_LENGTH (10000) as invalidRegex; Rust has no length limit and runs the pattern (no match here). Reachable from the UI (no maxLength)."
+      },
+      "target": { "error": "patternTooLong" },
+      "pending": { "decisions": ["E3"], "phase": "C2", "engines": ["rust", "js"], "reason": "Both engines refuse a regex pattern longer than 10000 UTF-16 code units with their own error (not invalidRegex)." },
+      "preview": {
+        "segments": { "error": "invalidRegex" },
+        "target": { "error": "patternTooLong" },
+        "pending": { "decisions": ["E3", "E11"], "phase": "C2", "reason": "The preview reports the length error (not \"JavaScript does not support this pattern\")." }
       }
     },
     {
@@ -336,7 +406,237 @@
       "divergence": {
         "kind": "unvalidatedInput",
         "reason": "JS rejects an empty pattern; Rust runs it (only empty matches, every line is dropped). Not reachable from the UI (FilterPage requires a pattern)."
+      },
+      "target": { "error": "emptyPattern" },
+      "pending": { "decisions": ["E3"], "phase": "C2", "engines": ["rust", "js"], "reason": "Both engines refuse an empty regex pattern with their own error." },
+      "preview": {
+        "segments": { "error": "invalidRegex" },
+        "target": { "error": "emptyPattern" },
+        "pending": { "decisions": ["E3"], "phase": "C2", "reason": "The worker reports the empty pattern with its own error (the component shows no preview for an empty pattern anyway)." }
       }
+    },
+    {
+      "name": "R1: class with an emoji on another emoji with the same high surrogate",
+      "ref": "R1",
+      "input": "a😁b",
+      "pattern": "[😀]",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expectedRust": "",
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "Without the u flag [😀] is the class of the two code units of U+1F600: it matches the shared high half of U+1F601. Rust does not match." },
+      "preview": {
+        "segments": [["a", "\uD83D", "\uDE01b"]],
+        "target": { "error": "regexSplitsCharacter" },
+        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "Phase A R1: Chromium draws the whole emoji highlighted although only its high half matched and the Filter refuses the result." }
+      }
+    },
+    {
+      "name": "R1: class with an emoji rebuilds it from two adjacent matches",
+      "ref": "R1",
+      "input": "a😀b",
+      "pattern": "[😀]",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "😀",
+      "preview": {
+        "segments": [["a", "\uD83D", "", "\uDE00", "b"]],
+        "target": [["a", "😀", "b"]],
+        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "Adjacent matches whose common boundary lies inside a surrogate pair are shown as one highlight, so no segment contains a lone surrogate (Chromium draws both halves highlighted anyway)." }
+      }
+    },
+    {
+      "name": "R1: class with an emoji and split matches",
+      "ref": "R1",
+      "input": "a😀b",
+      "pattern": "[😀]",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expectedRust": "😀",
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS matches the two halves separately; split matches would put them on different lines. Rust matches the emoji." },
+      "preview": {
+        "segments": [["a", "\uD83D", "", "\uDE00", "b"]],
+        "target": { "error": "regexSplitsCharacter" },
+        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "The same segments as without split matches: only the option decides, so the preview must know splitMatches (E1)." }
+      }
+    },
+    {
+      "name": "R1: remove mode removes both halves matched by a class",
+      "ref": "R1",
+      "input": "a😀b",
+      "pattern": "[😀]",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "ab",
+      "preview": {
+        "segments": [["a", "\uD83D", "", "\uDE00", "b"]],
+        "target": [["a", "😀", "b"]],
+        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "Removing adjacent matches removes both halves together: shown as one highlight." }
+      }
+    },
+    {
+      "name": "R1: high surrogate escape",
+      "ref": "R1",
+      "input": "a😀b",
+      "pattern": "\\uD83D",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expectedRust": { "error": "invalidRegex" },
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS matches the high half alone and refuses the result. fancy-regex rejects \\uD83D (a surrogate is no Unicode scalar value)." },
+      "preview": {
+        "segments": [["a", "\uD83D", "\uDE00b"]],
+        "target": { "error": "regexSplitsCharacter" },
+        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "Phase A R1: the lone high half is drawn as a fully highlighted emoji." }
+      }
+    },
+    {
+      "name": "R1: low surrogate escape",
+      "ref": "R1",
+      "input": "a😀b",
+      "pattern": "\\uDE00",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expectedRust": { "error": "invalidRegex" },
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS matches the low half alone and refuses the result. fancy-regex rejects \\uDE00." },
+      "preview": {
+        "segments": [["a\uD83D", "\uDE00", "b"]],
+        "target": { "error": "regexSplitsCharacter" },
+        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "The preview judges cut characters like the JS Filter (same guard, splitMatches and mode): a refused match is not highlighted, the preview shows the note of regexSplitsCharacter." }
+      }
+    },
+    {
+      "name": "R1: zero-width lookahead inside a surrogate pair",
+      "ref": "R1",
+      "input": "😀",
+      "pattern": "(?=\\uDE00)",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expectedRust": { "error": "invalidRegex" },
+      "expectedJs": "",
+      "divergence": { "kind": "dialect", "reason": "fancy-regex rejects \\uDE00. The empty JS match inside the pair cuts nothing (the guard ignores empty matches)." },
+      "preview": {
+        "segments": [],
+        "note": "Zero-width matches are not highlighted."
+      }
+    },
+    {
+      "name": "R1: dot on a ZWJ sequence without split matches",
+      "ref": "R1",
+      "input": "👨\u200D👩\u200D👧",
+      "pattern": ".",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": "👨\u200D👩\u200D👧",
+      "preview": {
+        "segments": [["", "\uD83D", "", "\uDC68", "", "\u200D", "", "\uD83D", "", "\uDC69", "", "\u200D", "", "\uD83D", "", "\uDC67", ""]],
+        "target": [["", "👨", "", "\u200D", "", "👩", "", "\u200D", "", "👧", ""]],
+        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "Surrogate halves are joined; a grapheme cluster (ZWJ sequence) may still span several highlights, which is no cut character." }
+      }
+    },
+    {
+      "name": "R1: dot on a ZWJ sequence with split matches",
+      "ref": "R1",
+      "input": "👨\u200D👩\u200D👧",
+      "pattern": ".",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": true },
+      "expectedRust": "👨\n\u200D\n👩\n\u200D\n👧",
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS . matches each code unit, split matches would put the halves on separate lines. Rust splits the sequence into its code points (no cut character)." },
+      "preview": {
+        "segments": [["", "\uD83D", "", "\uDC68", "", "\u200D", "", "\uD83D", "", "\uDC69", "", "\u200D", "", "\uD83D", "", "\uDC67", ""]],
+        "target": { "error": "regexSplitsCharacter" },
+        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "The preview judges cut characters like the JS Filter (same guard, splitMatches and mode): a refused match is not highlighted, the preview shows the note of regexSplitsCharacter." }
+      }
+    },
+    {
+      "name": "R1: removing the ZWJ splits a family into single emoji",
+      "ref": "R1",
+      "input": "👨\u200D👩\u200D👧",
+      "pattern": "\\u200D",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "👨👩👧",
+      "preview": {
+        "segments": [["👨", "\u200D", "👩", "\u200D", "👧"]]
+      }
+    },
+    {
+      "name": "R6: the preview highlights matches in a line that keep mode drops as blank",
+      "ref": "R6",
+      "input": "a b\n   ",
+      "pattern": " ",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": " ",
+      "preview": {
+        "segments": [["a", " ", "b"], ["", " ", "", " ", "", " ", ""]],
+        "note": "E2: the preview shows regex matches, not the Filter result. The blank second line is matched but dropped by the keep mode."
+      }
+    },
+    {
+      "name": "R6: the preview highlights matches in a line that remove mode drops",
+      "ref": "R6",
+      "input": "a b\n   ",
+      "pattern": " ",
+      "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
+      "expected": "ab",
+      "preview": {
+        "segments": [["a", " ", "b"], ["", " ", "", " ", "", " ", ""]],
+        "note": "E2: the second line becomes blank and is dropped by the remove mode; the preview only shows the matches."
+      }
+    },
+    {
+      "name": "R5/E3: pattern of 9999 UTF-16 code units",
+      "ref": "R5",
+      "input": "a",
+      "pattern": { "repeat": "a", "count": 9999 },
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": ""
+    },
+    {
+      "name": "R5/E3: emoji pattern of 10000 UTF-16 code units (5000 code points, 20000 UTF-8 bytes) is accepted",
+      "ref": "R5",
+      "input": "a",
+      "pattern": { "repeat": "😀", "count": 5000 },
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": ""
+    },
+    {
+      "name": "R5/E3: pattern of 10001 UTF-16 code units but only 5037 code points",
+      "ref": "R5",
+      "input": "a",
+      "pattern": { "repeat": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀a", "count": 73 },
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expectedRust": "",
+      "expectedJs": { "error": "invalidRegex" },
+      "divergence": { "kind": "unvalidatedInput", "reason": "JS counts UTF-16 code units (pattern.length) and refuses it; Rust has no limit." },
+      "target": { "error": "patternTooLong" },
+      "pending": { "decisions": ["E3"], "phase": "C2", "engines": ["rust", "js"], "reason": "The limit counts UTF-16 code units in both engines (Rust: encode_utf16().count(), not chars or bytes)." }
+    },
+    {
+      "name": "R5/E3: empty pattern on an empty text",
+      "ref": "R5",
+      "input": "",
+      "pattern": "",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expectedRust": "",
+      "expectedJs": { "error": "invalidRegex" },
+      "divergence": { "kind": "unvalidatedInput", "reason": "JS validates the pattern before the text; Rust runs the empty pattern on no line." },
+      "target": { "error": "emptyPattern" },
+      "pending": { "decisions": ["E3"], "phase": "C2", "engines": ["rust", "js"], "reason": "The pattern is validated before the text is processed, also for an empty text." }
+    },
+    {
+      "name": "R5/E3: pattern longer than 10000 UTF-16 code units on an empty text",
+      "ref": "R5",
+      "input": "",
+      "pattern": { "repeat": "a", "count": 10001 },
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expectedRust": "",
+      "expectedJs": { "error": "invalidRegex" },
+      "divergence": { "kind": "unvalidatedInput", "reason": "JS validates the pattern length before the text; Rust has no limit." },
+      "target": { "error": "patternTooLong" },
+      "pending": { "decisions": ["E3"], "phase": "C2", "engines": ["rust", "js"], "reason": "The pattern is validated before the text is processed, also for an empty text." }
+    },
+    {
+      "name": "R5: invalid regex on an empty text is still an error",
+      "ref": "R5",
+      "input": "",
+      "pattern": "([a-",
+      "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false },
+      "expected": { "error": "invalidRegex" }
     },
     {
       "name": "unknown filter mode is an error",
@@ -385,6 +685,22 @@
       "name": "unknown filter mode is reported before an invalid regex",
       "input": "a",
       "pattern": "([a-",
+      "options": { "mode": "bogus", "caseSensitive": true, "splitMatches": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "unknown filter mode is reported before an empty pattern",
+      "ref": "R5",
+      "input": "a",
+      "pattern": "",
+      "options": { "mode": "bogus", "caseSensitive": true, "splitMatches": false },
+      "expected": { "error": "invalidMode" }
+    },
+    {
+      "name": "unknown filter mode is reported before a too long pattern",
+      "ref": "R5",
+      "input": "a",
+      "pattern": { "repeat": "a", "count": 10001 },
       "options": { "mode": "bogus", "caseSensitive": true, "splitMatches": false },
       "expected": { "error": "invalidMode" }
     },
@@ -646,7 +962,12 @@
       "input": "😀a",
       "pattern": "[^a]",
       "options": { "mode": "remove", "caseSensitive": true, "splitMatches": false },
-      "expected": "a"
+      "expected": "a",
+      "preview": {
+        "segments": [["", "\uD83D", "", "\uDE00", "a"]],
+        "target": [["", "😀", "a"]],
+        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "Adjacent matches whose common boundary lies inside a surrogate pair are shown as one highlight, so no segment contains a lone surrogate (Chromium draws both halves highlighted anyway)." }
+      }
     },
     {
       "name": "remove: negated class removes whole emoji with CRLF and trailing newline",
@@ -679,6 +1000,11 @@
       "divergence": {
         "kind": "utf16Guard",
         "reason": "In JS '.' matches only the low half of the emoji, removing '.a' would leave a lone high surrogate; Rust removes the whole emoji."
+      },
+      "preview": {
+        "segments": [["x\uD83D", "\uDE00a", ""]],
+        "target": { "error": "regexSplitsCharacter" },
+        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "The preview judges cut characters like the JS Filter (same guard, splitMatches and mode): a refused match is not highlighted, the preview shows the note of regexSplitsCharacter." }
       }
     },
     {
@@ -691,6 +1017,11 @@
       "divergence": {
         "kind": "utf16Guard",
         "reason": "In JS the class consists of the two code units of 😀 and matches only the low half of 😃; removing it would leave a lone high surrogate. Rust removes 😃."
+      },
+      "preview": {
+        "segments": [["😀\uD83D", "\uDE03", ""]],
+        "target": { "error": "regexSplitsCharacter" },
+        "pending": { "decisions": ["E1"], "phase": "C1", "reason": "The preview judges cut characters like the JS Filter (same guard, splitMatches and mode): a refused match is not highlighted, the preview shows the note of regexSplitsCharacter." }
       }
     },
     {
@@ -1160,7 +1491,9 @@
       "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": true, "trimParts": false },
       "expectedRust": { "text": "", "removedLines": 2 },
       "expectedJs": { "error": "invalidRegex" },
-      "divergence": { "kind": "unvalidatedInput", "reason": "JS rejects an empty pattern, Rust's empty regex matches every line. Not reachable from the UI." }
+      "divergence": { "kind": "unvalidatedInput", "reason": "JS rejects an empty pattern, Rust's empty regex matches every line. Not reachable from the UI." },
+      "target": { "error": "emptyPattern" },
+      "pending": { "decisions": ["E3"], "phase": "C2", "engines": ["rust", "js"], "reason": "Both engines refuse an empty regex pattern with their own error." }
     },
     {
       "name": "containing: regex pattern longer than 10000 characters",
@@ -1169,7 +1502,9 @@
       "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": true, "trimParts": false },
       "expectedRust": { "text": "a", "removedLines": 0 },
       "expectedJs": { "error": "invalidRegex" },
-      "divergence": { "kind": "unvalidatedInput", "reason": "JS rejects regex patterns longer than MAX_PATTERN_LENGTH (10000), Rust has no limit (see F31)." }
+      "divergence": { "kind": "unvalidatedInput", "reason": "JS rejects regex patterns longer than MAX_PATTERN_LENGTH (10000), Rust has no limit (see F31)." },
+      "target": { "error": "patternTooLong" },
+      "pending": { "decisions": ["E3"], "phase": "C2", "engines": ["rust", "js"], "reason": "Both engines refuse a regex pattern longer than 10000 UTF-16 code units with their own error." }
     },
     {
       "name": "containing: literal pattern longer than 10000 characters",
@@ -1177,6 +1512,46 @@
       "pattern": { "repeat": "a", "count": 10001 },
       "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": false, "trimParts": false },
       "expected": { "text": "a", "removedLines": 0 }
+    },
+    {
+      "name": "R5/E3: duplicates ignore an empty regex pattern",
+      "ref": "R5",
+      "input": "x\nx",
+      "pattern": "",
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": true, "trimParts": false },
+      "expected": { "text": "x", "removedLines": 1 }
+    },
+    {
+      "name": "R5/E3: duplicates ignore a regex pattern longer than 10000 UTF-16 code units",
+      "ref": "R5",
+      "input": "x\nx",
+      "pattern": { "repeat": "a", "count": 10001 },
+      "options": { "removeMode": "duplicates", "caseSensitive": true, "useRegex": true, "trimParts": false },
+      "expected": { "text": "x", "removedLines": 1 }
+    },
+    {
+      "name": "R5/E3: whitespace-only regex pattern stays allowed",
+      "ref": "R5",
+      "input": "a b\nc",
+      "pattern": " ",
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": true, "trimParts": false },
+      "expected": { "text": "c", "removedLines": 1 }
+    },
+    {
+      "name": "R5/E3: regex pattern of exactly 10000 UTF-16 code units",
+      "ref": "R5",
+      "input": "a",
+      "pattern": { "repeat": "a", "count": 10000 },
+      "options": { "removeMode": "containing", "caseSensitive": true, "useRegex": true, "trimParts": false },
+      "expected": { "text": "a", "removedLines": 0 }
+    },
+    {
+      "name": "R5/E3: unknown remove mode is reported before an empty regex pattern",
+      "ref": "R5",
+      "input": "a",
+      "pattern": "",
+      "options": { "removeMode": "bogus", "caseSensitive": true, "useRegex": true, "trimParts": false },
+      "expected": { "error": "invalidMode" }
     }
   ]
 }

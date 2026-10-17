@@ -3,6 +3,8 @@
 // duplicate trim output, the whitespace set and cut surrogate pairs in the JS Filter. The JS side runs the real worker
 // modules (in-process, `self` stand-in), the Remove main-thread fallback, the service path without Web Worker
 // (`invoke(args, false)` in Node) and, separately marked, the Filter main-thread implementation that `invoke` never reaches.
+// Paket 10 Phase B: targets of not yet implemented decisions (`target` + `pending`) and the pattern preview of the Filter
+// page (`preview`: current segments of the real MatchPreviewWorker, its target, checked against the JS Filter verdict).
 import { installWindow, disableWorkerCleanupInterval, rejectionOf } from './helpers/setup.ts';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,6 +14,7 @@ const { FilterService, RemoveService } = await import('../../src/services/Servic
 const { BaseService } = await import('../../src/services/BaseService.ts');
 const { ERROR_KEYS } = await import('../../src/services/ProcessingError.ts');
 const { trimWhitespace, isWhitespaceCodePoint } = await import('../../src/utils/diff/whitespace.ts');
+const { splitLines } = await import('../../src/utils/lines.ts');
 disableWorkerCleanupInterval(BaseService);
 installWindow();
 
@@ -22,6 +25,14 @@ type FixtureError = { error: ErrorKind };
 type FilterExpected = string | FixtureError;
 type RemoveExpected = { text: string; removedLines: number } | FixtureError;
 type Pattern = string | { repeat: string; count: number };
+/** Rows of the pattern preview: `[text, match, text, ..., text]` per line with a non-empty match (`findMatchSegments`). */
+type PreviewRows = string[][];
+interface Preview {
+  segments: PreviewRows | { error: string };
+  target?: PreviewRows | { error: string };
+  pending?: { decisions: string[]; phase: string; reason: string };
+  note?: string;
+}
 
 interface Case<O, E> {
   name: string;
@@ -36,6 +47,11 @@ interface Case<O, E> {
   divergence?: { kind: string; reason: string };
   openQuestion?: string;
   resolved?: string;
+  /** Paket 10: result of a not yet implemented decision, the same in both engines. */
+  target?: E | { error: string };
+  pending?: { decisions: string[]; phase: string; engines: string[]; reason: string };
+  /** Paket 10, Filter only: the pattern preview (JS only). */
+  preview?: Preview;
 }
 type FilterOptions = { mode: string; caseSensitive: boolean; splitMatches: boolean };
 type RemoveOptions = { removeMode: string; caseSensitive: boolean; useRegex: boolean; trimParts: boolean };
@@ -47,7 +63,12 @@ interface Fixtures {
   remove: RemoveCase[];
 }
 
-const CASE_KEYS = ['name', 'ref', 'input', 'pattern', 'options', 'expected', 'expectedRust', 'expectedJs', 'expectedJsUnreachableMainThread', 'divergence', 'openQuestion', 'resolved'];
+const CASE_KEYS = ['name', 'ref', 'input', 'pattern', 'options', 'expected', 'expectedRust', 'expectedJs', 'expectedJsUnreachableMainThread', 'divergence', 'openQuestion', 'resolved', 'target', 'pending', 'preview'];
+/** Errors that only a target may use (Paket 10 E3): own errors for an empty or too long regex pattern. */
+const TARGET_ERROR_KINDS = ['invalidRegex', 'regexRuntime', 'invalidMode', 'emptyPattern', 'patternTooLong'];
+const PREVIEW_ERROR_KINDS = ['invalidRegex'];
+const PREVIEW_TARGET_ERROR_KINDS = ['invalidRegex', 'emptyPattern', 'patternTooLong', 'regexSplitsCharacter'];
+const DECISIONS = ['E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E7', 'E8', 'E9', 'E10', 'E11'];
 const OPTION_TYPES = {
   filter: { mode: 'string', caseSensitive: 'boolean', splitMatches: 'boolean' },
   remove: { removeMode: 'string', caseSensitive: 'boolean', useRegex: 'boolean', trimParts: 'boolean' },
@@ -82,6 +103,67 @@ function expectationProblems(section: 'filter' | 'remove', value: unknown, engin
       : [`invalid remove expectation ${JSON.stringify(value)}`];
   }
   return typeof value === 'string' ? [] : [`invalid filter expectation ${JSON.stringify(value)}`];
+}
+
+/** Problems of a `pending` entry (`engines` only for engine targets, not for the JS-only preview). */
+function pendingProblems(pending: unknown, withEngines: boolean): string[] {
+  const keys = withEngines ? ['decisions', 'phase', 'engines', 'reason'] : ['decisions', 'phase', 'reason'];
+  const ok =
+    isObject(pending) &&
+    hasExactKeys(pending, keys) &&
+    Array.isArray(pending.decisions) && pending.decisions.length > 0 && pending.decisions.every((d) => DECISIONS.includes(d as string)) &&
+    ['C1', 'C2'].includes(pending.phase as string) &&
+    (!withEngines || (Array.isArray(pending.engines) && pending.engines.length > 0 && pending.engines.every((e) => e === 'rust' || e === 'js') && new Set(pending.engines).size === pending.engines.length)) &&
+    typeof pending.reason === 'string' && pending.reason !== '';
+  return ok ? [] : [`pending must be { ${keys.join(', ')} } (decisions E1..E11, phase C1 | C2${withEngines ? ', engines rust | js' : ''})`];
+}
+
+/** The preview rows of `input`: every row rebuilds a line with a non-empty match, in line order; matches are non-empty. */
+function previewRowProblems(rows: unknown, input: string, wellFormed: boolean): string[] {
+  if (!Array.isArray(rows) || !rows.every((row) => Array.isArray(row) && row.length % 2 === 1 && row.length >= 3 && row.every((s) => typeof s === 'string'))) {
+    return [`invalid preview rows ${JSON.stringify(rows)}`];
+  }
+  const problems: string[] = [];
+  const lines = splitLines(input).lines;
+  let line = 0;
+  for (const row of rows as string[][]) {
+    while (line < lines.length && lines[line] !== row.join('')) line++;
+    if (line === lines.length) problems.push(`preview row ${JSON.stringify(row)} does not rebuild a line of the input (in order)`);
+    line++;
+    if (row.some((segment, index) => index % 2 === 1 && segment === '')) problems.push(`empty match segment in ${JSON.stringify(row)}`);
+    if (wellFormed && row.some(hasLoneSurrogate)) problems.push(`segment with a lone surrogate in ${JSON.stringify(row)}`);
+  }
+  return problems;
+}
+
+/** Problems of the preview of a Filter case, also against the Filter verdict of the JS worker. */
+function previewProblems(c: Record<string, any>): string[] {
+  const preview = c.preview;
+  if (!isObject(preview) || !('segments' in preview) || Object.keys(preview).some((key) => !['segments', 'target', 'pending', 'note'].includes(key))) {
+    return ['preview must be { segments, target?, pending?, note? }'];
+  }
+  const problems: string[] = [];
+  const outcome = (value: unknown, errors: string[], wellFormed: boolean) =>
+    isObject(value) && 'error' in value
+      ? hasExactKeys(value, ['error']) && errors.includes(value.error as string) ? [] : [`invalid preview error ${JSON.stringify(value)}`]
+      : previewRowProblems(value, c.input, wellFormed);
+  problems.push(...outcome(preview.segments, PREVIEW_ERROR_KINDS, false));
+  if (preview.target !== undefined) {
+    problems.push(...outcome(preview.target, PREVIEW_TARGET_ERROR_KINDS, true));
+    if (JSON.stringify(preview.target) === JSON.stringify(preview.segments)) problems.push('preview target equals the current segments');
+  }
+  if ((preview.target !== undefined) !== (preview.pending !== undefined)) problems.push('a preview target needs pending (and only a target)');
+  if (preview.pending !== undefined) problems.push(...pendingProblems(preview.pending, false).map((p) => `preview ${p}`));
+  if (preview.note !== undefined && (typeof preview.note !== 'string' || !preview.note)) problems.push('preview note must be a non-empty string');
+  // Without a target the current segments are already the wanted ones: no lone surrogate
+  const final = preview.target ?? preview.segments;
+  if (!(isObject(final) && 'error' in final)) problems.push(...previewRowProblems(final, c.input, true).map((p) => `final preview: ${p}`));
+  // E1/E3: the final preview reports the same input error as the final JS Filter (cut character, pattern errors)
+  const filterFinal = c.target ?? c.expectedJs ?? c.expected;
+  const errorOf = (value: unknown) => (isObject(value) && 'error' in value ? (value.error as string) : null);
+  if (errorOf(filterFinal) === 'invalidMode') problems.push('no preview for an invalid mode (the preview has no mode)');
+  else if (errorOf(final) !== errorOf(filterFinal)) problems.push(`final preview error ${errorOf(final)} differs from the final JS Filter error ${errorOf(filterFinal)}`);
+  return problems;
 }
 
 /** All problems of a fixture file; an empty list means well-formed. */
@@ -146,6 +228,19 @@ function fixtureProblems(fixtures: unknown): string[] {
       for (const key of ['ref', 'openQuestion', 'resolved']) if (c[key] !== undefined && (typeof c[key] !== 'string' || !c[key])) problems.push(`${where}: ${key} must be a non-empty string`);
       // A resolved (corrected) case has one shared expectation
       if (c.resolved !== undefined && !shared) problems.push(`${where}: a resolved case uses expected`);
+      // Paket 10: target of a not yet implemented decision (both engines), checked against the engines in the runners
+      if ((c.target !== undefined) !== (c.pending !== undefined)) problems.push(`${where}: a target needs pending (and only a target)`);
+      if (c.target !== undefined) {
+        const targetError = isObject(c.target) && 'error' in c.target;
+        if (targetError && !(hasExactKeys(c.target as Record<string, unknown>, ['error']) && TARGET_ERROR_KINDS.includes((c.target as Record<string, unknown>).error as string))) {
+          problems.push(`${where}: invalid target error ${JSON.stringify(c.target)}`);
+        } else if (!targetError) problems.push(...expectationProblems(section, c.target, 'shared').map((p) => `${where}: target: ${p}`));
+      }
+      if (c.pending !== undefined) problems.push(...pendingProblems(c.pending, true).map((p) => `${where}: ${p}`));
+      if (c.preview !== undefined) {
+        if (section !== 'filter') problems.push(`${where}: preview is only for the Filter`);
+        else problems.push(...previewProblems(c).map((p) => `${where}: ${p}`));
+      }
     }
   }
   return problems;
@@ -191,11 +286,46 @@ test('filter/remove fixture check rejects malformed entries', () => {
   assert.notDeepEqual(check([valid], [{ ...validRemove, expected: { text: 'x' } }]), [], 'remove expectation without removedLines');
   assert.notDeepEqual(check([valid], [{ ...validRemove, options: { removeMode: 'duplicates', caseSensitive: true, useRegex: false } }]), [], 'implicit trimParts');
   assert.notDeepEqual(check([valid], [{ ...validRemove, expected: undefined, expectedRust: { text: 'a', removedLines: 0 }, expectedJs: { error: 'regexSplitsCharacter' }, divergence: guard }]), [], 'regexSplitsCharacter for Remove');
+
+  // Paket 10: targets, pending decisions and previews
+  const pending = { decisions: ['E3'], phase: 'C2', engines: ['js'], reason: 'r' };
+  const previewPending = { decisions: ['E1'], phase: 'C1', reason: 'r' };
+  const plain = { name: 'p', input: 'ab', pattern: 'b', options: { mode: 'keep', caseSensitive: true, splitMatches: false }, expected: 'b' };
+  assert.deepEqual(check([{ ...plain, target: { error: 'patternTooLong' }, pending }]), []);
+  assert.deepEqual(check([{ ...plain, preview: { segments: [['a', 'b', '']] } }]), []);
+  const previewBroken: [string, unknown][] = [
+    ['target without pending', { ...plain, target: { error: 'patternTooLong' } }],
+    ['pending without target', { ...plain, pending }],
+    ['unknown target error', { ...plain, target: { error: 'tooLong' }, pending }],
+    ['regexSplitsCharacter as target', { ...plain, target: { error: 'regexSplitsCharacter' }, pending }],
+    ['unknown decision', { ...plain, target: { error: 'patternTooLong' }, pending: { ...pending, decisions: ['E0'] } }],
+    ['unknown phase', { ...plain, target: { error: 'patternTooLong' }, pending: { ...pending, phase: 'B' } }],
+    ['unknown engine', { ...plain, target: { error: 'patternTooLong' }, pending: { ...pending, engines: ['ts'] } }],
+    ['preview without segments', { ...plain, preview: { note: 'n' } }],
+    ['preview with unknown key', { ...plain, preview: { segments: [['a', 'b', '']], expected: [] } }],
+    ['preview row that does not rebuild a line', { ...plain, preview: { segments: [['a', 'x', '']] } }],
+    ['preview row with an even number of segments', { ...plain, preview: { segments: [['a', 'b']] } }],
+    ['preview with an empty match segment', { ...plain, input: 'ab', preview: { segments: [['a', '', 'b']] } }],
+    ['preview target without pending', { ...plain, preview: { segments: [['a', 'b', '']], target: [['', 'ab', '']] } }],
+    ['preview pending with engines', { ...plain, preview: { segments: [['a', 'b', '']], target: [['', 'ab', '']], pending } }],
+    ['preview target equal to the segments', { ...plain, preview: { segments: [['a', 'b', '']], target: [['a', 'b', '']], pending: previewPending } }],
+    ['lone surrogate without a target', { ...plain, input: '😀', pattern: '[^a]', expected: '😀', preview: { segments: [['', '\uD83D', '', '\uDE00', '']] } }],
+    ['lone surrogate in the target', { ...plain, input: '😀', pattern: '[^a]', expected: '😀', preview: { segments: [['', '\uD83D', '', '\uDE00', '']], target: [['', '\uD83D', '\uDE00']], pending: previewPending } }],
+    ['preview error differs from the Filter', { ...plain, preview: { segments: { error: 'invalidRegex' } } }],
+    ['preview success although the Filter refuses', { ...plain, expected: undefined, expectedRust: 'b', expectedJs: { error: 'regexSplitsCharacter' }, divergence: guard, preview: { segments: [['a', 'b', '']] } }],
+    ['preview for an invalid mode', { ...plain, options: { mode: 'x', caseSensitive: true, splitMatches: false }, expected: { error: 'invalidMode' }, preview: { segments: [['a', 'b', '']] } }],
+  ];
+  for (const [label, entry] of previewBroken) assert.notDeepEqual(check([JSON.parse(JSON.stringify(entry))]), [], label);
+  assert.notDeepEqual(check([valid], [{ ...validRemove, preview: { segments: [] } }]), [], 'preview for Remove');
 });
 
 test('filter/remove fixtures cover the Phase A reproductions', () => {
   const refs = new Set([...fixtures.filter, ...fixtures.remove].map((c) => c.ref).filter(Boolean));
   for (const ref of ['R05', 'R06', 'F04', 'F06', 'F12', 'F16', 'F17', 'R07', 'R08', 'R21', 'F31']) assert.ok(refs.has(ref), `missing ${ref}`);
+  // Paket 10 Phase A (docs/analyse/Paket10-PhaseA-Regex-Analyse.md): preview R1/R6, pattern rules R5
+  for (const ref of ['R1', 'R5', 'R6']) assert.ok(refs.has(ref), `missing ${ref}`);
+  const decisions = new Set([...fixtures.filter, ...fixtures.remove].flatMap((c) => [...(c.pending?.decisions ?? []), ...(c.preview?.pending?.decisions ?? [])]));
+  for (const decision of ['E1', 'E3']) assert.ok(decisions.has(decision), `missing ${decision}`);
 });
 
 // --- Engines ---
@@ -210,7 +340,18 @@ const loadWorker = async (path: string) => {
 const workers = {
   filter: await loadWorker('../../src/workers/FilterWorker.ts'),
   remove: await loadWorker('../../src/workers/RemoveWorker.ts'),
+  preview: await loadWorker('../../src/workers/MatchPreviewWorker.ts'),
 };
+
+/**
+ * Pending rule (Paket 10): the JS engine still differs from the target exactly when `pending.engines` lists it
+ * (the Rust runner checks the same for Rust). Keeps the target honest without an intentionally red test.
+ */
+function assertPendingJs(c: { name: string; target?: unknown; pending?: { engines: string[] } }, actual: unknown) {
+  if (c.target === undefined) return;
+  const differs = JSON.stringify(actual) !== JSON.stringify(c.target);
+  assert.equal(differs, c.pending!.engines.includes('js'), `${c.name}: pending.engines must list js exactly while the JS result differs from the target`);
+}
 
 const patternOf = (pattern: Pattern) => (typeof pattern === 'string' ? pattern : pattern.repeat.repeat(pattern.count));
 const filterArgs = (c: { input: string; pattern: Pattern; options: FilterOptions }): FilterConfig => ({
@@ -251,6 +392,7 @@ for (const c of fixtures.filter) {
 
   test(`filter worker: ${c.name}`, () => {
     const message = runWorker('filter', filterArgs(c));
+    assertPendingJs(c, message.success ? message.result.result : { error: Object.entries(ERROR_KEYS).find(([, key]) => key === message.error)?.[0] });
     if (typeof expected === 'object') {
       assert.equal(message.success, false, JSON.stringify(message));
       assertInputError(message.errorKind, message.error, expected.error, c.name);
@@ -260,6 +402,24 @@ for (const c of fixtures.filter) {
     assert.equal(message.result.type, 'Text');
     assertFilterText(message.result.result, expected, 'worker');
   });
+
+  // The pattern preview (MatchPreviewWorker) of the same text and pattern: it has no mode and no splitMatches
+  if (!isErrorOf(expected, 'invalidMode')) {
+    test(`filter preview worker: ${c.name}`, () => {
+      const message = runWorker('preview', { sourceText: c.input, mainParam: patternOf(c.pattern), configParams: { caseSensitive: c.options.caseSensitive } } as MatchPreviewConfig);
+      let segments: unknown;
+      if (message.success) {
+        assert.equal(message.result.type, 'ColumnList');
+        segments = message.result.result;
+        // Every row rebuilds the original line exactly (also for cases without a preview expectation)
+        assert.deepEqual(previewRowProblems(segments, c.input, false), []);
+      } else {
+        assert.equal(message.errorKind, 'invalidInput', JSON.stringify(message));
+        segments = { error: Object.entries(ERROR_KEYS).find(([, key]) => key === message.error)?.[0] };
+      }
+      if (c.preview) assert.deepEqual(segments, c.preview.segments);
+    });
+  }
 
   // Without Web Worker (Node) the Filter never runs its regex in the main thread: only the mode check (service) and
   // compiling can fail
@@ -284,6 +444,8 @@ test('filter: Rust expectations of refused JS results are well-formed Unicode', 
   const cases = fixtures.filter.filter((c) => c.divergence?.kind === 'utf16Guard');
   assert.ok(cases.length >= 4);
   for (const c of cases) {
+    // A surrogate escape (\uD83D) is no Unicode scalar value: fancy-regex rejects the pattern (Paket 10 R1)
+    if (isErrorOf(c.expectedRust, 'invalidRegex')) continue;
     assert.equal(typeof c.expectedRust, 'string', c.name);
     assert.ok(!hasLoneSurrogate(c.expectedRust as string), c.name);
   }
@@ -340,6 +502,12 @@ for (const c of fixtures.remove) {
 
   test(`remove worker + main thread: ${c.name}`, async () => {
     const message = runWorker('remove', removeArgs(c));
+    assertPendingJs(
+      c,
+      message.success
+        ? { text: message.result.result.result_text, removedLines: message.result.result.removed_lines }
+        : { error: Object.entries(ERROR_KEYS).find(([, key]) => key === message.error)?.[0] }
+    );
     let main: any;
     let mainError: any;
     try {

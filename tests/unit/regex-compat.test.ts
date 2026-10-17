@@ -19,6 +19,8 @@ interface RegexCase {
   expectedRust?: Expected;
   expectedJs?: Expected;
   divergence?: string;
+  /** Paket 10: the JS result depends on the JS engine version; it is the expectation or one of `otherJsResults`. */
+  jsRuntimeDependent?: { reason: string; otherJsResults: Expected[] };
 }
 
 const fixtures: { cases: RegexCase[] } = JSON.parse(readFileSync(new URL('../fixtures/regex-cases.json', import.meta.url), 'utf8'));
@@ -68,11 +70,20 @@ test('regex fixtures are well-formed', () => {
     if (c.category === 'rustOnly') assert.ok(!isError(c.expectedRust) && isError(c.expectedJs), `${c.name}: rustOnly = JS rejects the pattern`);
     if (c.category === 'jsOnly') assert.ok(isError(c.expectedRust) && !isError(c.expectedJs), `${c.name}: jsOnly = Rust rejects the pattern`);
     if (c.category === 'different') assert.ok(!isError(c.expectedRust) && !isError(c.expectedJs), `${c.name}: different = both accept the pattern`);
+    const dependent = c.jsRuntimeDependent;
+    if (dependent !== undefined) {
+      assert.ok(dependent.reason && Array.isArray(dependent.otherJsResults) && dependent.otherJsResults.length > 0, `${c.name}: jsRuntimeDependent needs a reason and otherJsResults`);
+      assert.ok(!dependent.otherJsResults.some((other) => JSON.stringify(other) === JSON.stringify(c.expectedJs ?? c.expected)), `${c.name}: otherJsResults repeat the expectation`);
+    }
   }
 });
 
 for (const c of fixtures.cases) {
   test(`regex (JS, ${c.category}): ${c.name}`, () => {
-    assert.deepEqual(runJs(c), c.expectedJs ?? c.expected);
+    const actual = runJs(c);
+    const expected = c.expectedJs ?? c.expected;
+    // No cross-version guarantee: a runtime-dependent case accepts each documented JS result
+    const allowed = [expected, ...(c.jsRuntimeDependent?.otherJsResults ?? [])];
+    assert.ok(allowed.some((result) => JSON.stringify(result) === JSON.stringify(actual)), `${JSON.stringify(actual)} is none of ${JSON.stringify(allowed)}`);
   });
 }

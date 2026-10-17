@@ -495,6 +495,20 @@ test('MatchPreviewWorker: invalid regex is an invalid-input error', () => {
   assert.equal(messages[0].errorKind, 'invalidInput');
 });
 
+test('MatchPreviewWorker: the answer is not limited yet (Paket 10 R3, target E7 in Phase C1)', () => {
+  // Characterization at a small size: every matching line becomes a row and every match two segments, although the
+  // page shows one row at a time. The limits of E7 (docs/analyse/Paket10-PhaseB-Regexvertrag.md) are not built in yet;
+  // the full sizes are measured by tests/bench/preview-baseline.mjs, not here.
+  const [oneLine] = runWorker('MatchPreviewWorker', previewArgs('ab'.repeat(2_000), 'a'));
+  assert.deepEqual([oneLine.result.result.length, oneLine.result.result[0].length], [1, 4_001]);
+  const [manyLines] = runWorker('MatchPreviewWorker', previewArgs('xa\n'.repeat(2_000), 'a'));
+  assert.equal(manyLines.result.result.length, 2_000);
+  assert.ok(manyLines.result.result.every((row: string[]) => row.join('') === 'xa'));
+  // Zero-width matches create no segments, a pattern without matches no rows
+  const [zeroWidth] = runWorker('MatchPreviewWorker', previewArgs('ab'.repeat(2_000), '(?=a)'));
+  assert.deepEqual(zeroWidth.result.result, []);
+});
+
 test('MatchPreviewService runs in the preview worker, independent of a running filter job', limited, async () => {
   behaviour = 'manual';
   const filter = new FilterService().invoke(filterArgs('apple', 'ap'), false);

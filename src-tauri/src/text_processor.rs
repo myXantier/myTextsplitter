@@ -401,26 +401,90 @@ mod tests {
         cases: Vec<SplitCase>,
     }
 
+    /// A delimiter string, or `{ repeat, count }` for long patterns (Paket 10).
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Delimiter {
+        Text(String),
+        Repeat { repeat: String, count: usize },
+    }
+
+    impl Delimiter {
+        fn text(&self) -> String {
+            match self {
+                Delimiter::Text(text) => text.clone(),
+                Delimiter::Repeat { repeat, count } => repeat.repeat(*count),
+            }
+        }
+    }
+
+    /// Split result in fixture form: the columns or an error kind. `expectedJs` / `targetJs` are not read here (they may
+    /// contain lone surrogates, which a Rust `String` cannot hold); the JS runner checks them.
+    #[derive(Deserialize, Debug, PartialEq)]
+    #[serde(untagged)]
+    enum SplitOutcome {
+        Columns(Vec<Vec<String>>),
+        Error { error: String },
+    }
+
+    /// A not yet implemented decision of Paket 10 (`docs/analyse/Paket10-PhaseB-Regexvertrag.md`).
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Pending {
+        decisions: Vec<String>,
+        phase: String,
+        engines: Vec<String>,
+        reason: String,
+    }
+
     #[derive(Deserialize)]
     #[serde(rename_all = "camelCase")]
     struct SplitCase {
         name: String,
         input: String,
-        delimiter: String,
+        delimiter: Delimiter,
         #[serde(default)]
         use_regex: bool,
         #[serde(default)]
         trim_parts: bool,
         keep_empty_lines: Option<bool>,
-        expected: Option<Vec<Vec<String>>>,
-        expected_rust: Option<Vec<Vec<String>>>,
+        expected: Option<SplitOutcome>,
+        expected_rust: Option<SplitOutcome>,
+        target: Option<SplitOutcome>,
+        target_rust: Option<SplitOutcome>,
+        pending: Option<Pending>,
     }
 
-    fn split(text: &str, delimiter: &str, trim_parts: bool, use_regex: bool, keep_empty_lines: bool) -> Vec<Vec<String>> {
-        let result = TextProcessor::process_text_block_to_column_strings(text, delimiter, trim_parts, use_regex, keep_empty_lines)
-            .expect("split failed");
-        // Same decoding as the frontend (SplitService.invokeBackend)
-        result.result_text.iter().map(|col| col.split('\n').map(String::from).collect()).collect()
+    fn split(text: &str, delimiter: &str, trim_parts: bool, use_regex: bool, keep_empty_lines: bool) -> SplitOutcome {
+        match TextProcessor::process_text_block_to_column_strings(text, delimiter, trim_parts, use_regex, keep_empty_lines) {
+            // Same decoding as the frontend (SplitService.invokeBackend)
+            Ok(result) => SplitOutcome::Columns(result.result_text.iter().map(|col| col.split('\n').map(String::from).collect()).collect()),
+            Err(TextError::InvalidRegex(_)) => SplitOutcome::Error { error: "invalidRegex".into() },
+            Err(e) => panic!("unexpected split error {e:?}"),
+        }
+    }
+
+    /// The pending rule of the shared fixtures: an engine listed in `pending.engines` still differs from its target,
+    /// every other engine already delivers it. Returns a problem or `None`.
+    fn pending_problem<T: PartialEq + std::fmt::Debug>(name: &str, actual: &T, target: Option<&T>, pending: Option<&Pending>) -> Option<String> {
+        const DECISIONS: [&str; 11] = ["E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10", "E11"];
+        let pending = match (target, pending) {
+            (None, None) => return None,
+            (Some(_), Some(pending)) => pending,
+            _ => return Some(format!("{name}: a target needs 'pending' (and only a target)")),
+        };
+        let well_formed = !pending.decisions.is_empty()
+            && pending.decisions.iter().all(|d| DECISIONS.contains(&d.as_str()))
+            && ["C1", "C2"].contains(&pending.phase.as_str())
+            && !pending.engines.is_empty()
+            && pending.engines.iter().all(|e| e == "rust" || e == "js")
+            && !pending.reason.is_empty();
+        if !well_formed {
+            return Some(format!("{name}: invalid pending"));
+        }
+        let listed = pending.engines.iter().any(|e| e == "rust");
+        let differs = target.is_some_and(|target| target != actual);
+        (listed != differs).then(|| format!("{name}: pending.engines must list rust exactly while the Rust result differs from its target\n    target: {target:?}\n    actual: {actual:?}"))
     }
 
     #[test]
@@ -431,11 +495,17 @@ mod tests {
         let mut failures = Vec::new();
         for c in &fixtures.cases {
             let expected = c.expected_rust.as_ref().or(c.expected.as_ref()).expect(&c.name);
-            let actual = split(&c.input, &c.delimiter, c.trim_parts, c.use_regex, c.keep_empty_lines.unwrap_or(true));
-            let rows = actual.first().map_or(0, |col| col.len());
-            if &actual != expected || actual.iter().any(|col| col.len() != rows) {
+            let actual = split(&c.input, &c.delimiter.text(), c.trim_parts, c.use_regex, c.keep_empty_lines.unwrap_or(true));
+            let ragged = matches!(&actual, SplitOutcome::Columns(columns) if columns.iter().any(|col| col.len() != columns[0].len()));
+            if &actual != expected || ragged {
                 failures.push(format!("{}\n    expected: {:?}\n    actual:   {:?}", c.name, expected, actual));
             }
+            // `targetJs` always comes with `targetRust` (checked by the JS runner)
+            let target = c.target_rust.as_ref().or(c.target.as_ref());
+            if matches!(target, Some(SplitOutcome::Error { error }) if error == "regexSplitsCharacter") {
+                failures.push(format!("{}: regexSplitsCharacter is a JS-only target", c.name));
+            }
+            failures.extend(pending_problem(&c.name, &actual, target, c.pending.as_ref()));
         }
         assert!(failures.is_empty(), "{} of {} split fixtures failed:\n  {}", failures.len(), fixtures.cases.len(), failures.join("\n  "));
     }
@@ -736,6 +806,23 @@ mod tests {
     }
 
     #[test]
+    fn backtrack_limit_applies_per_search_not_per_job() {
+        // Paket 10 R4 (characterization, decision E6 for Phase C2): the limit counts the steps of one search for the next
+        // match. Each line below needs more than a third of the limit (proved with a third of the limit), so the three lines
+        // together need more steps than REGEX_BACKTRACK_LIMIT, and the job still succeeds: there is no budget per job.
+        const PATTERN: &str = "(a|aa)+(?=c)";
+        let line = format!("{}b", "a".repeat(22));
+        let third = RegexBuilder::new(PATTERN).backtrack_limit(REGEX_BACKTRACK_LIMIT / 3).build().unwrap();
+        assert!(third.find(&line).is_err(), "one line needs more than a third of the limit");
+        let text = [line.as_str(); 3].join("\n");
+        let result = TextProcessor::filter_text_internal(&text, PATTERN, "keep", true, false).unwrap();
+        assert_eq!(result.result_text, "", "no match, no runtime error");
+        // Two more `a` exceed the limit within one search
+        let over = TextProcessor::filter_text_internal(&format!("{}b", "a".repeat(24)), PATTERN, "keep", true, false);
+        assert!(matches!(over, Err(TextError::RegexRuntime(_))), "{over:?}");
+    }
+
+    #[test]
     fn non_fancy_patterns_have_no_backtracking_limit() {
         // Without lookaround/backreferences fancy-regex delegates to the linear-time `regex` crate:
         // the classic catastrophic pattern for backtracking engines finishes immediately and correctly
@@ -942,6 +1029,11 @@ mod tests {
             open_question: Option<String>,
             /// Why a correction changed the expectation (always a shared `expected`).
             resolved: Option<String>,
+            /// Paket 10: result of a not yet implemented decision (both engines), with `pending`.
+            target: Option<Value>,
+            pending: Option<Pending>,
+            /// Paket 10: the pattern preview of the Filter page, JS only (checked by the JS runner; may contain lone surrogates).
+            preview: Option<serde::de::IgnoredAny>,
         }
 
         /// Filter outcome in fixture form: the result text or the error kind.
@@ -970,6 +1062,14 @@ mod tests {
             }
         }
 
+        /// A target may also use the errors of Paket 10 E3 (own errors for an empty or too long regex pattern).
+        fn parse_target<X>(value: &Value, parse: fn(&Value) -> Result<Result<X, String>, String>) -> Result<Result<X, String>, String> {
+            match value.get("error").and_then(Value::as_str) {
+                Some(kind @ ("emptyPattern" | "patternTooLong")) if value.as_object().is_some_and(|map| map.len() == 1) => Ok(Err(kind.into())),
+                _ => parse(value),
+            }
+        }
+
         /// Rust and shared expectations; `regexSplitsCharacter` is a JS-only error (Rust never cuts a character).
         fn parse_filter(value: &Value) -> Result<FilterOutcome, String> {
             match value {
@@ -991,7 +1091,7 @@ mod tests {
         }
 
         /// Structural problems of one case (the JS runner checks the same rules plus the JS-only forms).
-        fn case_problems<O, T>(case: &Case<O>, parse: fn(&Value) -> Result<T, String>) -> Vec<String> {
+        fn case_problems<O, X>(case: &Case<O>, parse: fn(&Value) -> Result<Result<X, String>, String>) -> Vec<String> {
             let mut problems = Vec::new();
             if case.name.is_empty() {
                 problems.push("empty name".to_string());
@@ -1032,6 +1132,12 @@ mod tests {
                 if r.repeat.is_empty() || r.count == 0 {
                     problems.push("pattern repeat must be non-empty with count > 0".into());
                 }
+            }
+            if let Some(Err(problem)) = case.target.as_ref().map(|target| parse_target(target, parse)) {
+                problems.push(format!("target: {problem}"));
+            }
+            if case.target.is_some() != case.pending.is_some() {
+                problems.push("a target needs pending (and only a target)".into());
             }
             problems.into_iter().map(|p| format!("{}: {p}", case.name)).collect()
         }
@@ -1087,6 +1193,22 @@ mod tests {
             assert!(!problems(json!({ "expectedRust": { "utf16": ["D83D"] }, "expectedJs": "a", "divergence": { "kind": "dialect", "reason": "r" } })).is_empty(), "utf16 form");
             assert!(!problems(json!({ "expected": { "error": "timeout" } })).is_empty(), "unknown error kind");
             assert!(parse_remove(&json!({ "text": "a" })).is_err(), "remove expectation without removedLines");
+            // Paket 10: targets with pending decisions; the JS-only preview is not read (it may hold lone surrogates)
+            let pending = json!({ "decisions": ["E3"], "phase": "C2", "engines": ["rust"], "reason": "r" });
+            assert!(problems(json!({ "expected": "a", "target": { "error": "patternTooLong" }, "pending": pending })).is_empty());
+            assert!(!problems(json!({ "expected": "a", "target": { "error": "patternTooLong" } })).is_empty(), "target without pending");
+            assert!(!problems(json!({ "expected": "a", "pending": pending })).is_empty(), "pending without target");
+            assert!(!problems(json!({ "expected": "a", "target": { "error": "tooLong" }, "pending": pending })).is_empty(), "unknown target error");
+            assert!(case(json!({ "expected": "a", "target": "b", "pending": { "decisions": ["E3"], "phase": "C2", "engines": ["rust"] } })).is_err(), "pending without reason");
+            let preview: Value = serde_json::from_str(r#"{ "expected": "a", "preview": { "segments": [["", "\uD83D", "\uDE00"]] } }"#).unwrap_or(Value::Null);
+            assert!(preview.is_null(), "a lone surrogate cannot be a serde_json Value, so the preview is only skipped while parsing a case");
+            let with_preview = r#"{ "name": "x", "input": "a", "pattern": "a", "options": { "mode": "keep", "caseSensitive": true, "splitMatches": false }, "expected": "a", "preview": { "segments": [["", "\uD83D", "\uDE00"]] } }"#;
+            assert!(serde_json::from_str::<Case<FilterOptions>>(with_preview).is_ok(), "preview with lone surrogates is accepted and ignored");
+            // The pending rule against the real Rust result
+            let pending: Pending = serde_json::from_value(pending).unwrap();
+            let target: FilterOutcome = Err("patternTooLong".into());
+            assert!(pending_problem("x", &Ok::<String, String>(String::new()), Some(&target), Some(&pending)).is_none(), "Rust still differs and is listed");
+            assert!(pending_problem("x", &target, Some(&target), Some(&pending)).is_some(), "Rust already delivers the target but is still listed");
         }
 
         #[test]
@@ -1105,7 +1227,11 @@ mod tests {
                         }
                     }
                     let actual: FilterOutcome = result.map(|r| r.result_text).map_err(error_kind);
-                    (actual != expected).then(|| format!("{}\n    expected: {:?}\n    actual:   {:?}", c.name, expected, actual))
+                    if actual != expected {
+                        return Some(format!("{}\n    expected: {:?}\n    actual:   {:?}", c.name, expected, actual));
+                    }
+                    let target = c.target.as_ref().map(|t| parse_target(t, parse_filter).unwrap_or_else(|p| panic!("{}: {p}", c.name)));
+                    pending_problem(&c.name, &actual, target.as_ref(), c.pending.as_ref())
                 })
                 .collect();
             assert!(failures.is_empty(), "{} of {} filter fixtures failed:\n  {}", failures.len(), cases.len(), failures.join("\n  "));
@@ -1123,7 +1249,11 @@ mod tests {
                         TextProcessor::remove_lines_internal(&c.input, &c.pattern.text(), &o.remove_mode, o.case_sensitive, o.use_regex, o.trim_parts)
                             .map(|r| RemoveResult { text: r.result_text, removed_lines: r.removed_lines })
                             .map_err(error_kind);
-                    (actual != expected).then(|| format!("{}\n    expected: {:?}\n    actual:   {:?}", c.name, expected, actual))
+                    if actual != expected {
+                        return Some(format!("{}\n    expected: {:?}\n    actual:   {:?}", c.name, expected, actual));
+                    }
+                    let target = c.target.as_ref().map(|t| parse_target(t, parse_remove).unwrap_or_else(|p| panic!("{}: {p}", c.name)));
+                    pending_problem(&c.name, &actual, target.as_ref(), c.pending.as_ref())
                 })
                 .collect();
             assert!(failures.is_empty(), "{} of {} remove fixtures failed:\n  {}", failures.len(), cases.len(), failures.join("\n  "));
