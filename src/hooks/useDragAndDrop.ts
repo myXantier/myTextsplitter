@@ -1,9 +1,10 @@
 import { useEffect, useState, useCallback, DragEvent } from 'react';
 
 interface DragAndDropHandlers {
+  /** A file was dropped; its extension, size and content are checked by the import (Paket 11 C3, same as the button). */
   onFileAccepted: (file: File) => void;
-  onError: (message: string) => void;
-  maxSize?: number;
+  /** Something without a file was dropped. */
+  onNoFile: () => void;
 }
 
 export function useDragAndDropFiles(setText: (text: string) => void) {
@@ -25,11 +26,7 @@ export function useDragAndDropFiles(setText: (text: string) => void) {
 }
 
 
-export function useDragAndDrop({
-  onFileAccepted,
-  onError,
-  maxSize = 10 * 1024 * 1024 // 10MB default
-}: DragAndDropHandlers) {
+export function useDragAndDrop({ onFileAccepted, onNoFile }: DragAndDropHandlers) {
   const [isDragging, setIsDragging] = useState(false);
 
   const handleDragOver = useCallback((event: DragEvent<HTMLElement>) => {
@@ -51,22 +48,12 @@ export function useDragAndDrop({
 
     const file = event.dataTransfer?.files[0];
     if (!file) {
-      onError('No file was dropped');
-      return;
-    }
-
-    if (!file.name.endsWith('.txt')) {
-      onError('Only .txt files are supported');
-      return;
-    }
-
-    if (file.size > maxSize) {
-      onError(`File is too large. Maximum size is ${(maxSize / (1024 * 1024)).toFixed(1)}MB`);
+      onNoFile();
       return;
     }
 
     onFileAccepted(file);
-  }, [maxSize, onFileAccepted, onError]);
+  }, [onFileAccepted, onNoFile]);
 
   return {
     isDragging,

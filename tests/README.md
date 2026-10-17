@@ -369,10 +369,15 @@ of today's code (WHATWG decode with BOM sniffing, every content read is set also
 case-sensitively and 10 MiB), the targets against the contract (strict decoding, `.txt` in any case, at most 10 MiB
 inclusive) and the pending lists. Whether the app behaves like this is checked only by `checkFileIo` (below).
 
-`tests/unit/file-import.test.ts` (Paket 11 C2) checks the import jobs of one text target (`src/utils/fileImport.ts`) with
-a controllable FileReader stand-in: latest import wins, a replaced import sets no text, shows no error and does not end
-the loading state of its successor, an empty content is a text, targets are independent, nothing happens after
-`dispose` (unmount) and a new import works after an error. The React binding (`useFileImport`: the shared source text in
+`tests/unit/file-import.test.ts` (Paket 11 C2, C3) checks the shared import path (`src/utils/fileImport.ts`): the strict
+decoder `decodeText` (BOM selects UTF-8 / UTF-16LE / UTF-16BE and is removed once, otherwise UTF-8; invalid or incomplete
+sequences and an odd UTF-16 byte count are refused, never replaced by U+FFFD; a valid U+FFFD stays), the file check
+`checkImportFile` (`.txt` in any case, at most 10 MiB inclusive) and, with a controllable FileReader stand-in
+(`readAsArrayBuffer`), the import jobs: latest import wins, a replaced import sets no text, shows no error and does not
+end the loading state of its successor, a refused file starts no job (a running import stays current), an accepted file
+that fails to decode ends its own job with `invalidEncoding`, an empty content is a text, targets are independent,
+nothing happens after `dispose` (unmount) and a new import works after an error. Since C3 `file-io-fixtures.test.ts`
+checks the current expectations with these product functions. The React binding (`useFileImport`: the shared source text in
 `PageList`, the new Diff text in `DiffPage`; `readOnly` + `aria-busy` + the hint) is checked by `checkFileIo`.
 
 ## Integration tests
@@ -383,6 +388,8 @@ They drive the **real application** and are not part of `npm test`.
 
 - Builds the frontend, then tests the Vite dev server **and** the production build (`vite preview`).
 - Single mode: `node tests/e2e/browser.e2e.mjs --mode=dev` or `--mode=preview` (needs `npm run build`).
+- Targeted run (Paket 11): `E2E_ONLY=file-io` runs only the start checks and `checkFileIo`, e.g.
+  `E2E_ONLY=file-io node tests/e2e/browser.e2e.mjs --mode=dev` (PowerShell: `$env:E2E_ONLY='file-io'`).
 - Runs without Tauri runtime and without mocks. It checks startup, navigation, Split/Sort/Filter/Remove/Diff,
   the JS mode with its metrics, persistence of the settings across a reload, and damaged `localStorage` data.
 - Browser: found automatically (Chrome, Edge, Chromium); otherwise set `CHROME_PATH`.
@@ -393,6 +400,8 @@ They drive the **real application** and are not part of `npm test`.
 
 - Prerequisite: `npx tauri build --no-bundle` (the test warns if sources are newer than the build).
   `TAURI_APP_PATH` can point to another executable.
+- Targeted run (Paket 11): `E2E_ONLY=file-io npm run test:e2e:tauri` starts the app once and runs only the start checks,
+  `checkFileIo` and the error check of the main window (no settings round trip, no restart).
 - Starts the real release build with the Tauri runtime and Rust backend. The WebView2 is driven through its DevTools port
   (`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=…`, only for this process).
 - Checks splash → main window, window title, backend processing and metrics, mode switch,
@@ -451,7 +460,12 @@ read starts); overlapping imports, the loading state and navigation as a **contr
 Blob read methods are wrapped in the page and the start of a read is held and released in a fixed order, then the
 browser really reads (no fixed sleeps, completion is counted); typing uses real key input (`Input.insertText`); the
 cancelled dialog uses an intercepted file chooser (`Page.setInterceptFileChooserDialog`, opened with a user gesture).
-The checks expect the current behaviour; a pending target is named in the check label. No error is expected: since
+Since C3 a refused file (extension, size, invalid encoding) shows exactly one snackbar, the localized message of its
+reason (read from `src/i18n/locales`), the same for the button and the drop. The drop point is a visible point of the
+textarea outside the layout boxes of the snackbar containers (their messages slide with a transform, the boxes do not
+move) and confirmed with `elementFromPoint`; no app style is changed, a missing free point or an undelivered drop fails
+with the covering elements; a valid drop is checked while error messages cover a part of the textarea. The checks expect the current behaviour; a
+pending target is named in the check label. No error is expected: since
 Paket 11 C1 a failed button read shows `notifications.readError` without a React hook error (F1), and any logged error,
 also a hook error, fails `checkFileIo` and the final error check of the Tauri main window. **Limit:** in Tauri the CDP drag enters the renderer
 after wry's native drop handling, so it does not show whether a real Explorer drop arrives (F8 stays unconfirmed, manual

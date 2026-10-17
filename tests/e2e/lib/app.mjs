@@ -1703,8 +1703,21 @@ const fileBytes = (c) =>
  * `hookException` in the read error scenarios; such an error is never excused, it also fails the error checks.
  */
 const HOOK_ERROR = /Invalid hook call|Minified React error #321/;
-/** notifications.readError (src/i18n/locales/en.ts, de.ts): the message of a failed file read. */
-const READ_ERROR_MESSAGES = ['error: Error reading file', 'error: Fehler beim Lesen der Datei'];
+/** Snackbar texts of a notifications key in English and German, read from src/i18n/locales (first occurrence = notifications). */
+const notificationTexts = (key) =>
+  ['en', 'de'].map((lang) => {
+    const source = readFileSync(new URL(`../../../src/i18n/locales/${lang}.ts`, import.meta.url), 'utf8');
+    return 'error: ' + new RegExp(String.raw`\n\s+` + key + ": '([^']*)'").exec(source)[1];
+  });
+/** The message of each import error (useFileImport), the same for the Open File button and the drop (Paket 11 C3). */
+const IMPORT_ERROR_MESSAGES = {
+  unsupportedExtension: notificationTexts('unsupportedFileType'),
+  tooLarge: notificationTexts('fileTooLarge'),
+  invalidEncoding: notificationTexts('invalidEncoding'),
+  readError: notificationTexts('readError'),
+};
+/** Exactly one snackbar, the message of `error`. */
+const onlyMessage = (shown, error) => shown.length === 1 && IMPORT_ERROR_MESSAGES[error].includes(shown[0]);
 
 /**
  * Counts the file reads of the page and can hold their START (`__t.reads.hold`): the FileReader read methods and the
@@ -1806,18 +1819,40 @@ export async function checkFileIo(page, r, label, errorsSince) {
     await page.send('DOM.setFileInputFiles', { files: [].concat(files), nodeId: nodeIds[index] });
   };
   /** Drops the file at `path` onto the index-th textarea; true once the drop event was handled. */
-  const dropFile = async (path, index = 0) => {
-    const before = await page.eval('__t.dropCount');
-    // A point really on the textarea (error snackbars at the top would swallow the drag)
-    const at = await page.eval(`(() => { const ta = __t.textareas()[${index}]; ta.scrollIntoView({ block: 'center' });
-      const rect = ta.getBoundingClientRect(); const x = Math.round(rect.x + rect.width / 2);
-      for (let y = Math.round(rect.bottom - 10); y > rect.top; y -= 10) if (document.elementFromPoint(x, y) === ta) return { x, y };
-      return null; })()`);
-    if (!at) return false;
-    const data = { items: [], files: [path], dragOperationsMask: 1 };
-    for (const type of ['dragEnter', 'dragOver', 'drop']) await page.send('Input.dispatchDragEvent', { type, ...at, data });
-    return page.waitFor(`__t.dropCount > ${before}`, 5000);
+  /**
+   * A visible point of the index-th textarea for a drop. Snackbar messages slide in and out with a transform, so the
+   * point they cover changes during the animation; the layout box of their container does not (a transform does not
+   * change the layout). The point avoids these boxes (with a margin) and `elementFromPoint` must hit the textarea.
+   * Throws with the covering elements when no such point exists; the app styles are never changed.
+   */
+  const dropPoint = async (index) => {
+    const found = await page.eval(`(() => { const ta = __t.textareas()[${index}]; ta.scrollIntoView({ block: 'center' });
+      const r = ta.getBoundingClientRect(); const pad = 16;
+      const boxes = [...document.querySelectorAll('.snackbar-container')].map((c) => c.getBoundingClientRect()).filter((b) => b.width && b.height);
+      const free = (x, y) => !boxes.some((b) => x > b.left - pad && x < b.right + pad && y > b.top - pad && y < b.bottom + pad);
+      for (let y = Math.round(r.bottom - 12); y > r.top + 4; y -= 12)
+        for (let x = Math.round(r.left + 12); x < r.right - 4; x += 24)
+          if (free(x, y) && document.elementFromPoint(x, y) === ta) return { x, y };
+      const center = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return { error: 'no free drop point on the textarea ' + JSON.stringify({ textarea: [r.left, r.top, r.right, r.bottom],
+        snackbarBoxes: boxes.map((b) => [b.left, b.top, b.right, b.bottom]), atCenter: center?.className || center?.tagName }) };
+    })()`);
+    if (found.error) throw new Error(found.error);
+    return found;
   };
+  /** Drags `data` (CDP drag data) onto the index-th textarea; resolves once the drop event was handled. */
+  const drag = async (data, index = 0) => {
+    const before = await page.eval('__t.dropCount');
+    const at = await dropPoint(index);
+    for (const type of ['dragEnter', 'dragOver', 'drop']) await page.send('Input.dispatchDragEvent', { type, ...at, data });
+    if (await page.waitFor(`__t.dropCount > ${before}`, 5000)) return true;
+    // Not delivered: end the drag session, so later input does not wait for it
+    await page.send('Input.dispatchDragEvent', { type: 'dragCancel', ...at, data }).catch(() => {});
+    const hit = await page.eval(`document.elementFromPoint(${at.x}, ${at.y})?.className ?? null`);
+    throw new Error(`drop at ${at.x},${at.y} not delivered (element there now: ${hit})`);
+  };
+  /** Drops the file at `path` onto the index-th textarea (a real file through Chromium's drag pipeline). */
+  const dropFile = (path, index = 0) => drag({ items: [], files: [path], dragOperationsMask: 1 }, index);
   const describe = (e) =>
     'text' in e ? `text ${json(e.text.length > 24 ? e.text.slice(0, 24) + '…' : e.text)}` : 'generatedText' in e ? 'generated text' : 'unchanged' in e ? 'ignored' : `rejected (${e.rejected})`;
 
@@ -1838,15 +1873,11 @@ export async function checkFileIo(page, r, label, errorsSince) {
           await choose(0, file);
           await page.waitFor(`__t.reads.started > ${before}`, 3000);
         } else {
-          let dropped = false;
           try {
-            dropped = await dropFile(file);
+            await dropFile(file);
           } catch (err) {
-            r.check(`${label}: file drop (Input.dispatchDragEvent) available`, false, err.message);
-          }
-          if (!dropped) {
             dropAvailable = false;
-            r.check(`${label}: file drop reaches the Remove textarea`, false, c.name);
+            r.check(`${label}: file drop reaches the Remove textarea`, false, `${c.name}: ${err.message}`);
             break;
           }
         }
@@ -1855,16 +1886,56 @@ export async function checkFileIo(page, r, label, errorsSince) {
         const state = await page.eval(`(() => { const v = __t.raw(__t.textareas()[0]);
           return { prev: v === ${json(PREV)}, matches: v === ${want}, length: v.length, head: v.slice(0, 40) }; })()`);
         const shown = await snacks();
-        const errors = shown.filter((s) => s.startsWith('error'));
+        // A loaded file shows no message; a refused one exactly the message of its reason (no second snackbar)
         const ok =
           'text' in expected || 'generatedText' in expected
-            ? state.matches && errors.length === 0
+            ? state.matches && shown.length === 0
             : 'unchanged' in expected
               ? state.prev && shown.length === 0
-              : state.prev && errors.length > 0 && (!expected.message || shown.includes(`error: ${expected.message}`));
+              : state.prev && onlyMessage(shown, expected.rejected);
         const pending = c.pending?.paths.includes(path) ? ` [current; target: ${describe(c.target)}, pending ${c.pending.decisions.join('+')} ${c.pending.phase}]` : '';
         r.check(`${label}: file ${path} "${c.name}" -> ${describe(expected)}${pending}`, ok, json({ ...state, snacks: shown }));
       }
+    }
+
+    // A drop without a file (e.g. dragged text) is refused with the localized message, the text stays
+    if (dropAvailable) {
+      await setText(0, PREV);
+      await snacks();
+      await drag({ items: [{ mimeType: 'text/plain', data: 'dragged text' }], dragOperationsMask: 1 });
+      await frame();
+      const shown = await snacks();
+      r.check(
+        `${label}: a drop without a file shows only the localized message and keeps the text`,
+        shown.length === 1 && notificationTexts('noFileDropped').includes(shown[0]) && (await raw(0)) === PREV,
+        json(shown)
+      );
+
+      // A valid drop while error messages of refused drops are visible over a part of the textarea: refused drops until
+      // the message stack reaches into the textarea (no waiting for the messages to disappear), then the valid file
+      await setText(0, PREV);
+      await snacks();
+      const refused = writeFile('drop-under-message', 'refused.csv', 'x');
+      const overlap = `(() => { const t = __t.textareas()[0].getBoundingClientRect();
+        return [...document.querySelectorAll('.snackbar-message')].some((m) => { const b = m.getBoundingClientRect();
+          return b.bottom > t.top && b.top < t.bottom && b.right > t.left && b.left < t.right; }); })()`;
+      let refusals = 0;
+      while (refusals < 12 && !(await page.eval(overlap))) {
+        await dropFile(refused);
+        await frame();
+        refusals++;
+      }
+      const covered = await page.eval(overlap);
+      const visible = await page.eval(`document.querySelectorAll('.snackbar-message').length`);
+      await snacks();
+      await dropFile(writeFile('drop-under-message', 'valid.txt', 'DROPPED_UNDER_MESSAGE'));
+      await settle();
+      const underMessage = { text: await raw(0), messages: await snacks() };
+      r.check(
+        `${label}: a valid drop works while error messages cover a part of the textarea`,
+        covered && visible > 0 && underMessage.text === 'DROPPED_UNDER_MESSAGE' && underMessage.messages.length === 0,
+        json({ refusals, covered, visible, ...underMessage })
+      );
     }
 
     const report = (name, observed) => {
@@ -1924,7 +1995,7 @@ export async function checkFileIo(page, r, label, errorsSince) {
     report('read error on the button', buttonError);
     r.check(
       `${label}: a failed button read shows exactly the read error message (notifications.readError)`,
-      buttonErrorSnacks.length === 1 && READ_ERROR_MESSAGES.includes(buttonErrorSnacks[0]),
+      onlyMessage(buttonErrorSnacks, 'readError'),
       json(buttonErrorSnacks)
     );
     if (dropAvailable) {
@@ -2023,6 +2094,65 @@ export async function checkFileIo(page, r, label, errorsSince) {
       errorMessage: (await snacks()).some((s) => s.startsWith('error')),
       hookException: hookExceptionSince(from),
     });
+
+    // --- C3: a refused file is no import job, an accepted file that fails to decode is one ---
+    await setText(0, PREV);
+    await snacks();
+    await hold(true);
+    await choose(0, writeFile('refused', 'running.txt', 'RUNNING_A'));
+    await choose(0, writeFile('refused', 'refused.csv', 'B'));
+    const refusedChoice = {
+      refusedMessage: onlyMessage(await snacks(), 'unsupportedExtension'),
+      readOnlyAfterRefusal: await textarea(0, 'ta.readOnly'),
+      busyAfterRefusal: await textarea(0, `ta.getAttribute('aria-busy') === 'true'`),
+    };
+    await hold(false);
+    await release(0);
+    refusedChoice.text = await raw(0);
+    refusedChoice.readOnlyAfter = await textarea(0, 'ta.readOnly');
+    report('refused choice during a running import', refusedChoice);
+
+    await setText(0, PREV);
+    await snacks();
+    await hold(true);
+    await choose(0, writeFile('decode', 'running.txt', 'RUNNING_A'));
+    await choose(0, writeFile('decode', 'invalid.txt', Buffer.from([0x61, 0xff, 0x62])));
+    await hold(false);
+    await release(1);
+    const decodeFails = {
+      afterB: await raw(0),
+      decodeErrorMessage: onlyMessage(await snacks(), 'invalidEncoding'),
+      readOnlyAfterB: await textarea(0, 'ta.readOnly'),
+      busyAfterB: await textarea(0, `ta.getAttribute('aria-busy') === 'true'`),
+      hintAfterB: await page.eval(`!!__t.page().querySelector('.file-loading')`),
+    };
+    await release(0);
+    decodeFails.afterA = await raw(0);
+    decodeFails.messagesAfterA = (await snacks()).length;
+    await choose(0, writeFile('decode', 'next.txt', 'NEXT'));
+    await settle();
+    decodeFails.nextImport = await raw(0);
+    report('newer import fails to decode', decodeFails);
+
+    if (dropAvailable) {
+      await nav('remove');
+      await setText(0, PREV);
+      await snacks();
+      await hold(true);
+      await choose(0, writeFile('refused-drop', 'running.txt', 'RUNNING_A'));
+      const tooLarge = FILE_IO.cases.find((c) => c.generate === FILE_IO.maxBytes + 1);
+      await dropFile(writeFile('refused-drop', 'too-large.txt', fileBytes(tooLarge)));
+      const refusedDrop = {
+        refusedMessage: onlyMessage(await snacks(), 'tooLarge'),
+        readOnlyAfterRefusal: await textarea(0, 'ta.readOnly'),
+        busyAfterRefusal: await textarea(0, `ta.getAttribute('aria-busy') === 'true'`),
+      };
+      await hold(false);
+      await release(0);
+      refusedDrop.text = await raw(0);
+      refusedDrop.readOnlyAfter = await textarea(0, 'ta.readOnly');
+      report('refused drop during a running import', refusedDrop);
+    }
 
     if (dropAvailable) {
       await nav('remove');

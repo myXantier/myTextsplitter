@@ -1,5 +1,5 @@
 {
-  "description": "File import fixtures (Paket 11, Phase B; contract: docs/analyse/Paket11-PhaseB-Datei-IO-Vertrag.md, findings F1..F14: docs/analyse/Paket11-PhaseA-Datei-IO-Analyse.md). Every case is a real file: 'bytes' are hex bytes (separated by spaces, empty = 0 bytes) or 'generate' is a byte count of the deterministic ASCII text of 'generator' (written at test run time, never versioned). 'file' is the file name. Import paths: 'button' = OpenFileButton (real file chosen with DOM.setFileInputFiles, the Chromium file chooser path) and 'drop' = drag-and-drop onto the Remove textarea (real file dropped with Input.dispatchDragEvent). Before every case the target textarea holds 'previousText'. Expectations describe the CURRENT behaviour: { text } = the textarea state is exactly this text and no error message is shown, { generatedText: true } = the state is exactly the generated text, { unchanged: true } = 'previousText' stays and no message is shown, { rejected: invalidEncoding | tooLarge | unsupportedExtension, message? } = 'previousText' stays and an error message is shown ('message' = its exact current text). 'expected' applies to both paths; a case where the paths differ uses 'expectedButton' + 'expectedDrop'. 'target' is the decided behaviour of the contract (both paths; a rejected target names no message text, the wording is open), always with 'pending' { decisions, phase, paths, reason }: exactly the paths listed in 'paths' still differ from the target (checked against the real app by the integration tests and for consistency by tests/unit/file-io-fixtures.test.ts). A case without 'target' already meets the contract. 'ref' is a Phase A finding, 'note' explains a case, 'resolved' explains an expectation changed by a correction (Paket 11 C1: D1, empty content).",
+  "description": "File import fixtures (Paket 11, Phase B; contract: docs/analyse/Paket11-PhaseB-Datei-IO-Vertrag.md, findings F1..F14: docs/analyse/Paket11-PhaseA-Datei-IO-Analyse.md). Every case is a real file: 'bytes' are hex bytes (separated by spaces, empty = 0 bytes) or 'generate' is a byte count of the deterministic ASCII text of 'generator' (written at test run time, never versioned). 'file' is the file name. Import paths: 'button' = OpenFileButton (real file chosen with DOM.setFileInputFiles, the Chromium file chooser path) and 'drop' = drag-and-drop onto the Remove textarea (real file dropped with Input.dispatchDragEvent). Before every case the target textarea holds 'previousText'. Expectations describe the CURRENT behaviour: { text } = the textarea state is exactly this text and no error message is shown, { generatedText: true } = the state is exactly the generated text, { unchanged: true } = 'previousText' stays and no message is shown, { rejected: invalidEncoding | tooLarge | unsupportedExtension } = 'previousText' stays and exactly one error message is shown (since C3 the localized message of that reason, the same for both paths; before C3 'message' named the exact English drop text). 'expected' applies to both paths; a case where the paths differ uses 'expectedButton' + 'expectedDrop'. 'target' is the decided behaviour of the contract (both paths; a rejected target names no message text, the wording is open), always with 'pending' { decisions, phase, paths, reason }: exactly the paths listed in 'paths' still differ from the target (checked against the real app by the integration tests and for consistency by tests/unit/file-io-fixtures.test.ts). A case without 'target' already meets the contract. 'ref' is a Phase A finding, 'note' explains a case, 'resolved' explains an expectation changed by a correction (Paket 11 C1: D1, empty content; C3: D3-D8, strict decoding, 10 MiB and .txt for both paths).",
   "previousText": "TEXT_A",
   "maxBytes": 10485760,
   "generator": { "line": "0123456789 abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ\n", "note": "The generated text is 'line' repeated and cut to the byte count (ASCII only, so bytes = UTF-16 code units)." },
@@ -52,7 +52,7 @@
       "name": "UTF-8 with two BOMs: only the first one is the signature",
       "file": "utf8-two-boms.txt",
       "bytes": "EF BB BF EF BB BF 61",
-      "expected": { "text": "﻿a" },
+      "expected": { "text": "\uFEFFa" },
       "note": "The second U+FEFF is content (ZERO WIDTH NO-BREAK SPACE) and is kept."
     },
     {
@@ -72,54 +72,48 @@
       "ref": "F4",
       "file": "invalid-utf8.txt",
       "bytes": "61 FF 62",
-      "expected": { "text": "a�b" },
-      "target": { "rejected": "invalidEncoding" },
-      "pending": { "decisions": ["D5"], "phase": "C3", "paths": ["button", "drop"], "reason": "readAsText replaces invalid bytes with U+FFFD without a message." }
+      "expected": { "rejected": "invalidEncoding" },
+      "resolved": "Paket 11 C3 (D5): the case now meets the contract (both paths). Before C3 the result was text \"a\uFFFDb\"; reason: readAsText replaces invalid bytes with U+FFFD without a message."
     },
     {
       "name": "truncated UTF-8 sequence at the end",
       "ref": "F4",
       "file": "truncated-utf8.txt",
       "bytes": "61 F0 9F 98",
-      "expected": { "text": "a�" },
-      "target": { "rejected": "invalidEncoding" },
-      "pending": { "decisions": ["D5"], "phase": "C3", "paths": ["button", "drop"], "reason": "The incomplete 4-byte sequence becomes one U+FFFD." }
+      "expected": { "rejected": "invalidEncoding" },
+      "resolved": "Paket 11 C3 (D5): the case now meets the contract (both paths). Before C3 the result was text \"a\uFFFD\"; reason: the incomplete 4-byte sequence becomes one U+FFFD."
     },
     {
       "name": "Windows-1252 umlauts (not UTF-8)",
       "ref": "F4",
       "file": "windows-1252.txt",
       "bytes": "47 72 FC DF 65",
-      "expected": { "text": "Gr��e" },
-      "target": { "rejected": "invalidEncoding" },
-      "pending": { "decisions": ["D5", "D6"], "phase": "C3", "paths": ["button", "drop"], "reason": "No encoding detection (D6): the bytes are invalid UTF-8 and must be refused instead of damaged." }
+      "expected": { "rejected": "invalidEncoding" },
+      "resolved": "Paket 11 C3 (D5, D6): the case now meets the contract (both paths). Before C3 the result was text \"Gr\uFFFD\uFFFDe\"; reason: no encoding detection (D6): the bytes are invalid UTF-8 and must be refused instead of damaged."
     },
     {
       "name": "encoded surrogate (CESU-8)",
       "ref": "F4",
       "file": "cesu8.txt",
       "bytes": "ED A0 BD",
-      "expected": { "text": "���" },
-      "target": { "rejected": "invalidEncoding" },
-      "pending": { "decisions": ["D5"], "phase": "C3", "paths": ["button", "drop"], "reason": "UTF-8 must not encode surrogates; every byte becomes U+FFFD." }
+      "expected": { "rejected": "invalidEncoding" },
+      "resolved": "Paket 11 C3 (D5): the case now meets the contract (both paths). Before C3 the result was text \"\uFFFD\uFFFD\uFFFD\"; reason: uTF-8 must not encode surrogates; every byte becomes U+FFFD."
     },
     {
       "name": "overlong UTF-8 encoding",
       "ref": "F4",
       "file": "overlong.txt",
       "bytes": "C0 AF",
-      "expected": { "text": "��" },
-      "target": { "rejected": "invalidEncoding" },
-      "pending": { "decisions": ["D5"], "phase": "C3", "paths": ["button", "drop"], "reason": "Overlong '/' is invalid UTF-8." }
+      "expected": { "rejected": "invalidEncoding" },
+      "resolved": "Paket 11 C3 (D5): the case now meets the contract (both paths). Before C3 the result was text \"\uFFFD\uFFFD\"; reason: overlong '/' is invalid UTF-8."
     },
     {
       "name": "UTF-16LE without BOM, non-ASCII (invalid UTF-8)",
       "ref": "F11",
       "file": "utf16le-no-bom.txt",
       "bytes": "48 00 E4 00",
-      "expected": { "text": "H\u0000�\u0000" },
-      "target": { "rejected": "invalidEncoding" },
-      "pending": { "decisions": ["D5", "D6"], "phase": "C3", "paths": ["button", "drop"], "reason": "Without a BOM the file is read as UTF-8 (D6: no detection); E4 00 is invalid UTF-8." }
+      "expected": { "rejected": "invalidEncoding" },
+      "resolved": "Paket 11 C3 (D5, D6): the case now meets the contract (both paths). Before C3 the result was text \"H\\u0000\uFFFD\\u0000\"; reason: without a BOM the file is read as UTF-8 (D6: no detection); E4 00 is invalid UTF-8."
     },
     {
       "name": "UTF-16LE without BOM, ASCII only (valid UTF-8 with NUL)",
@@ -134,25 +128,45 @@
       "ref": "F4",
       "file": "utf16le-lone-surrogate.txt",
       "bytes": "FF FE 3D D8 41 00",
-      "expected": { "text": "�A" },
-      "target": { "rejected": "invalidEncoding" },
-      "pending": { "decisions": ["D4", "D5"], "phase": "C3", "paths": ["button", "drop"], "reason": "An unpaired high surrogate is an invalid UTF-16 sequence and becomes U+FFFD." }
+      "expected": { "rejected": "invalidEncoding" },
+      "resolved": "Paket 11 C3 (D4, D5): the case now meets the contract (both paths). Before C3 the result was text \"\uFFFDA\"; reason: an unpaired high surrogate is an invalid UTF-16 sequence and becomes U+FFFD."
     },
     {
       "name": "UTF-16LE with BOM and an odd byte count",
       "ref": "F4",
       "file": "utf16le-odd.txt",
       "bytes": "FF FE 41 00 42",
-      "expected": { "text": "A" },
-      "divergence": { "kind": "chromiumFileReader", "whatwg": "A�", "reason": "Chromium's FileReader.readAsText silently drops the incomplete last code unit (the WHATWG decode gives U+FFFD; Chromium's TextDecoder does so too and throws with fatal: true). Silent data loss, found in Phase B." },
-      "target": { "rejected": "invalidEncoding" },
-      "pending": { "decisions": ["D4", "D5"], "phase": "C3", "paths": ["button", "drop"], "reason": "The last single byte is an incomplete code unit; today it is dropped without a message." }
+      "expected": { "rejected": "invalidEncoding" },
+      "resolved": "Paket 11 C3 (D4, D5): the case now meets the contract (both paths). Before C3 the result was text \"A\"; reason: the last single byte is an incomplete code unit; today it is dropped without a message. Chromium's FileReader.readAsText silently drops the incomplete last code unit (the WHATWG decode gives U+FFFD; Chromium's TextDecoder does so too and throws with fatal: true). Silent data loss, found in Phase B."
+    },
+    {
+      "name": "valid U+FFFD inside the text",
+      "file": "valid-replacement-character.txt",
+      "bytes": "61 EF BF BD 62",
+      "expected": { "text": "a\uFFFDb" },
+      "note": "Added in C3: a correctly encoded U+FFFD is content; only invalid bytes are refused (no search for U+FFFD)."
+    },
+    {
+      "name": "UTF-16BE with BOM and an odd byte count",
+      "ref": "F15",
+      "file": "utf16be-odd.txt",
+      "bytes": "FE FF 00 41 42",
+      "expected": { "rejected": "invalidEncoding" },
+      "note": "Added in C3 (D4, D5): the incomplete last code unit is refused, not dropped."
+    },
+    {
+      "name": "UTF-16BE with BOM and a lone surrogate",
+      "ref": "F4",
+      "file": "utf16be-lone-surrogate.txt",
+      "bytes": "FE FF D8 3D 00 41",
+      "expected": { "rejected": "invalidEncoding" },
+      "note": "Added in C3 (D4, D5): an unpaired high surrogate in UTF-16BE is refused."
     },
     {
       "name": "emoji, non-BMP and ZWJ sequence",
       "file": "emoji.txt",
       "bytes": "F0 9F 98 80 F0 9D 84 9E F0 9F 91 A8 E2 80 8D F0 9F 91 A9 E2 80 8D F0 9F 91 A7",
-      "expected": { "text": "😀𝄞👨‍👩‍👧" }
+      "expected": { "text": "😀𝄞👨\u200D👩\u200D👧" }
     },
     {
       "name": "NUL only",
@@ -166,17 +180,72 @@
       "bytes": "61 00 62",
       "expected": { "text": "a\u0000b" }
     },
-    { "name": "LF only", "file": "lf.txt", "bytes": "0A", "expected": { "text": "\n" } },
-    { "name": "CRLF only", "file": "crlf.txt", "bytes": "0D 0A", "expected": { "text": "\r\n" } },
-    { "name": "CR only", "file": "cr.txt", "bytes": "0D", "expected": { "text": "\r" } },
-    { "name": "mixed line endings", "file": "mixed-endings.txt", "bytes": "61 0D 0A 62 0A 63 0D 64", "expected": { "text": "a\r\nb\nc\rd" } },
-    { "name": "trailing empty lines (LF)", "file": "trailing-lf.txt", "bytes": "61 0A 0A 0A", "expected": { "text": "a\n\n\n" } },
-    { "name": "trailing empty lines (CRLF)", "file": "trailing-crlf.txt", "bytes": "61 0D 0A 0D 0A", "expected": { "text": "a\r\n\r\n" } },
-    { "name": "no trailing newline", "file": "no-trailing.txt", "bytes": "61 0A 62", "expected": { "text": "a\nb" } },
-    { "name": "spaces only", "file": "spaces.txt", "bytes": "20 20 20", "expected": { "text": "   " } },
-    { "name": "whitespace-only lines", "file": "whitespace-lines.txt", "bytes": "20 20 0A 09 0A 20 0D 0A", "expected": { "text": "  \n\t\n \r\n" } },
-    { "name": "leading and trailing spaces", "file": "spaces-around.txt", "bytes": "20 20 61 20 20 0A 20 20", "expected": { "text": "  a  \n  " } },
-    { "name": "U+2028 and U+2029 inside a line", "file": "unicode-separators.txt", "bytes": "61 E2 80 A8 62 E2 80 A9 63", "expected": { "text": "a b c" } },
+    {
+      "name": "LF only",
+      "file": "lf.txt",
+      "bytes": "0A",
+      "expected": { "text": "\n" }
+    },
+    {
+      "name": "CRLF only",
+      "file": "crlf.txt",
+      "bytes": "0D 0A",
+      "expected": { "text": "\r\n" }
+    },
+    {
+      "name": "CR only",
+      "file": "cr.txt",
+      "bytes": "0D",
+      "expected": { "text": "\r" }
+    },
+    {
+      "name": "mixed line endings",
+      "file": "mixed-endings.txt",
+      "bytes": "61 0D 0A 62 0A 63 0D 64",
+      "expected": { "text": "a\r\nb\nc\rd" }
+    },
+    {
+      "name": "trailing empty lines (LF)",
+      "file": "trailing-lf.txt",
+      "bytes": "61 0A 0A 0A",
+      "expected": { "text": "a\n\n\n" }
+    },
+    {
+      "name": "trailing empty lines (CRLF)",
+      "file": "trailing-crlf.txt",
+      "bytes": "61 0D 0A 0D 0A",
+      "expected": { "text": "a\r\n\r\n" }
+    },
+    {
+      "name": "no trailing newline",
+      "file": "no-trailing.txt",
+      "bytes": "61 0A 62",
+      "expected": { "text": "a\nb" }
+    },
+    {
+      "name": "spaces only",
+      "file": "spaces.txt",
+      "bytes": "20 20 20",
+      "expected": { "text": "   " }
+    },
+    {
+      "name": "whitespace-only lines",
+      "file": "whitespace-lines.txt",
+      "bytes": "20 20 0A 09 0A 20 0D 0A",
+      "expected": { "text": "  \n\t\n \r\n" }
+    },
+    {
+      "name": "leading and trailing spaces",
+      "file": "spaces-around.txt",
+      "bytes": "20 20 61 20 20 0A 20 20",
+      "expected": { "text": "  a  \n  " }
+    },
+    {
+      "name": "U+2028 and U+2029 inside a line",
+      "file": "unicode-separators.txt",
+      "bytes": "61 E2 80 A8 62 E2 80 A9 63",
+      "expected": { "text": "a\u2028b\u2029c" }
+    },
     {
       "name": "exactly 10 MiB",
       "file": "exactly-10mib.txt",
@@ -189,50 +258,40 @@
       "ref": "F6",
       "file": "over-10mib.txt",
       "generate": 10485761,
-      "expectedButton": { "generatedText": true },
-      "expectedDrop": { "rejected": "tooLarge", "message": "File is too large. Maximum size is 10.0MB" },
-      "target": { "rejected": "tooLarge" },
-      "pending": { "decisions": ["D7"], "phase": "C3", "paths": ["button"], "reason": "OpenFileButton has no size limit." }
+      "expected": { "rejected": "tooLarge" },
+      "resolved": "Paket 11 C3 (D7): the case now meets the contract (both paths). Before C3 the result was button: the generated text, drop: rejected (tooLarge); reason: openFileButton has no size limit."
     },
     {
       "name": "upper-case extension .TXT",
       "ref": "F6",
       "file": "UPPER.TXT",
       "bytes": "75 70 70 65 72",
-      "expectedButton": { "text": "upper" },
-      "expectedDrop": { "rejected": "unsupportedExtension", "message": "Only .txt files are supported" },
-      "target": { "text": "upper" },
-      "pending": { "decisions": ["D8"], "phase": "C3", "paths": ["drop"], "reason": "The drop checks file.name.endsWith('.txt') case-sensitively." }
+      "expected": { "text": "upper" },
+      "resolved": "Paket 11 C3 (D8): the case now meets the contract (both paths). Before C3 the result was button: text \"upper\", drop: rejected (unsupportedExtension); reason: the drop checks file.name.endsWith('.txt') case-sensitively."
     },
     {
       "name": "mixed-case extension .Txt",
       "ref": "F6",
       "file": "Mixed.Txt",
       "bytes": "6D 69 78 65 64",
-      "expectedButton": { "text": "mixed" },
-      "expectedDrop": { "rejected": "unsupportedExtension", "message": "Only .txt files are supported" },
-      "target": { "text": "mixed" },
-      "pending": { "decisions": ["D8"], "phase": "C3", "paths": ["drop"], "reason": "The drop checks file.name.endsWith('.txt') case-sensitively." }
+      "expected": { "text": "mixed" },
+      "resolved": "Paket 11 C3 (D8): the case now meets the contract (both paths). Before C3 the result was button: text \"mixed\", drop: rejected (unsupportedExtension); reason: the drop checks file.name.endsWith('.txt') case-sensitively."
     },
     {
       "name": "other extension .csv",
       "ref": "F6",
       "file": "data.csv",
       "bytes": "61 2C 62",
-      "expectedButton": { "text": "a,b" },
-      "expectedDrop": { "rejected": "unsupportedExtension", "message": "Only .txt files are supported" },
-      "target": { "rejected": "unsupportedExtension" },
-      "pending": { "decisions": ["D8"], "phase": "C3", "paths": ["button"], "reason": "accept=\".txt\" only preselects the dialog filter; a file chosen with another extension (\"All files\") is read." }
+      "expected": { "rejected": "unsupportedExtension" },
+      "resolved": "Paket 11 C3 (D8): the case now meets the contract (both paths). Before C3 the result was button: text \"a,b\", drop: rejected (unsupportedExtension); reason: accept=\".txt\" only preselects the dialog filter; a file chosen with another extension (\"All files\") is read."
     },
     {
       "name": "no extension",
       "ref": "F6",
       "file": "README",
       "bytes": "72 65 61 64 6D 65",
-      "expectedButton": { "text": "readme" },
-      "expectedDrop": { "rejected": "unsupportedExtension", "message": "Only .txt files are supported" },
-      "target": { "rejected": "unsupportedExtension" },
-      "pending": { "decisions": ["D8"], "phase": "C3", "paths": ["button"], "reason": "OpenFileButton does not check the extension." }
+      "expected": { "rejected": "unsupportedExtension" },
+      "resolved": "Paket 11 C3 (D8): the case now meets the contract (both paths). Before C3 the result was button: text \"readme\", drop: rejected (unsupportedExtension); reason: openFileButton does not check the extension."
     }
   ],
   "scenarioDescription": "Import flows of the integration tests (checkFileIo in tests/e2e/lib/app.mjs, same names). 'current' and 'target' are the observations of the flow; 'pending' { decisions, phase, fields, reason } lists exactly the fields where 'current' still differs from 'target' (none = the flow already meets the contract); 'resolved' explains an observation changed by a correction. 'method': 'real' = real file chooser path / real drop and real reads, 'gated' = real reads whose START is held and released by the test in a fixed order (controlled race simulation, FileReader and Blob read methods wrapped in the page), 'intercepted' = the file chooser is opened with a user gesture and intercepted by CDP (no native dialog). 'readOnly' is the readOnly attribute of the target textarea, 'busy' its aria-busy=\"true\" (D11; since C2 together with the visible hint notifications.fileLoading next to the Open File button). 'note' explains a field or flow added later.",
@@ -296,6 +355,30 @@
       "current": { "afterA": "RACE_B", "errorMessage": false, "hookException": false },
       "target": { "afterA": "RACE_B", "errorMessage": false, "hookException": false },
       "resolved": "Paket 11 C1 (D13): the late error threw the hook error (F1) and showed no message; after C1 it showed the read error message. Paket 11 C2 (D9): a replaced import is ignored silently."
+    },
+    {
+      "name": "refused choice during a running import",
+      "method": "gated",
+      "steps": "Choose A on Split (read held), then choose a .csv file with the button; release A.",
+      "current": { "refusedMessage": true, "readOnlyAfterRefusal": true, "busyAfterRefusal": true, "text": "RUNNING_A", "readOnlyAfter": false },
+      "target": { "refusedMessage": true, "readOnlyAfterRefusal": true, "busyAfterRefusal": true, "text": "RUNNING_A", "readOnlyAfter": false },
+      "note": "Added in C3 (D8, decision of the C3 task): a refused file is no import job; it shows exactly the message of its reason, A stays the current import, sets its text and ends the lock."
+    },
+    {
+      "name": "newer import fails to decode",
+      "method": "gated",
+      "steps": "Choose A on Split, then B with invalid UTF-8 bytes (both held); release B, then A; then choose a valid file.",
+      "current": { "afterB": "TEXT_A", "decodeErrorMessage": true, "readOnlyAfterB": false, "busyAfterB": false, "hintAfterB": false, "afterA": "TEXT_A", "messagesAfterA": 0, "nextImport": "NEXT" },
+      "target": { "afterB": "TEXT_A", "decodeErrorMessage": true, "readOnlyAfterB": false, "busyAfterB": false, "hintAfterB": false, "afterA": "TEXT_A", "messagesAfterA": 0, "nextImport": "NEXT" },
+      "note": "Added in C3 (D5, D9): an accepted file that fails to decode is a started import; it replaces A, keeps the text, shows the invalid encoding message and ends the lock; the late A is ignored; a new import works."
+    },
+    {
+      "name": "refused drop during a running import",
+      "method": "gated",
+      "steps": "Choose A with the button on Remove (read held), then drop a file of 10 MiB + 1 byte; release A.",
+      "current": { "refusedMessage": true, "readOnlyAfterRefusal": true, "busyAfterRefusal": true, "text": "RUNNING_A", "readOnlyAfter": false },
+      "target": { "refusedMessage": true, "readOnlyAfterRefusal": true, "busyAfterRefusal": true, "text": "RUNNING_A", "readOnlyAfter": false },
+      "note": "Added in C3 (D7, decision of the C3 task): the same rule for the drop; the too large file is refused before reading and A stays the current import."
     },
     {
       "name": "button and drop share the Remove target",

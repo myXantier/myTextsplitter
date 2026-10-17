@@ -1,15 +1,16 @@
 // File import fixtures (Paket 11 Phase B): `tests/fixtures/file-io-cases.json`, run against the real app by the
 // integration tests (`checkFileIo` in tests/e2e/lib/app.mjs, browser and Tauri). This file checks only the fixture data:
 //   - the format (bytes, expectations, pending lists that name exactly the paths/fields still differing from the target),
-//   - the CURRENT expectations against an independent model of today's code: FileReader.readAsText = the WHATWG "decode"
-//     algorithm (BOM sniffing UTF-8 / UTF-16LE / UTF-16BE, otherwise UTF-8, invalid bytes become U+FFFD), the button sets
-//     every content read, also '' (since C1, D1), the drop checks `.txt` (case-sensitive) and then `size > 10 MiB` (F6),
+//   - the CURRENT expectations against the product functions of the shared import path (since Paket 11 C3, button and
+//     drop alike): `checkImportFile` (`.txt` in any case, at most 10 MiB) and `decodeText` (strict, BOM rule),
 //   - the TARGETS against the contract (docs/analyse/Paket11-PhaseB-Datei-IO-Vertrag.md): `.txt` in any case (D8), at most
 //     10 MiB inclusive (D7), strict decoding with the same BOM rule (D3-D6), an empty content is a text (D1).
 // Whether the app really behaves like this is checked only by the integration tests, never here.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+
+const { checkImportFile, decodeText } = await import('../../src/utils/fileImport.ts');
 
 type Expectation =
   | { text: string }
@@ -57,9 +58,7 @@ const bytesOf = (c: Case) => (c.generate !== undefined ? new TextEncoder().encod
 /** Encoding chosen by the BOM (WHATWG "decode"), UTF-8 without one. */
 const sniff = (b: Uint8Array) =>
   b[0] === 0xef && b[1] === 0xbb && b[2] === 0xbf ? 'utf-8' : b[0] === 0xff && b[1] === 0xfe ? 'utf-16le' : b[0] === 0xfe && b[1] === 0xff ? 'utf-16be' : 'utf-8';
-/** Today's FileReader.readAsText(file): replacement decoding, the BOM is removed. */
-const legacyDecode = (b: Uint8Array) => new TextDecoder(sniff(b)).decode(b);
-/** Contract decoding: the same BOM rule, invalid sequences are an error (null). */
+/** Contract decoding, independent of the product code (WHATWG decode with fatal): the BOM rule, invalid sequences are an error (null). */
 const strictDecode = (b: Uint8Array) => {
   try {
     return new TextDecoder(sniff(b), { fatal: true }).decode(b);
@@ -101,16 +100,18 @@ test('file I/O fixtures: format', () => {
 test('file I/O fixtures: current expectations follow the code of today', () => {
   for (const c of cases) {
     const bytes = bytesOf(c);
-    // A documented Chromium difference: the algorithm gives `whatwg`, the fixture holds what Chromium really returns
-    if (c.divergence) assert.equal(legacyDecode(bytes), c.divergence.whatwg, `${c.name}: WHATWG result of the divergence`);
-    const chromium = c.divergence ? (c.expected as { text: string } | undefined)?.text : undefined;
-    assert.ok(!c.divergence || (chromium !== undefined && chromium !== c.divergence.whatwg), `${c.name}: a divergence needs a differing common text`);
-    const decoded = chromium ?? legacyDecode(bytes);
-    // OpenFileButton: no checks; every content read is set, also '' (Paket 11 C1, D1)
-    assert.deepEqual(observable(c, currentOf(c, 'button')), { text: decoded }, `${c.name}: button`);
-    // useDragAndDrop: `.txt` (case-sensitive), then `file.size > maxSize`; RemovePage sets every content, also ''
-    const drop = !c.file.endsWith('.txt') ? { rejected: 'unsupportedExtension' } : bytes.length > fixtures.maxBytes ? { rejected: 'tooLarge' } : { text: decoded };
-    assert.deepEqual(observable(c, currentOf(c, 'drop')), drop, `${c.name}: drop`);
+    assert.ok(!c.divergence, `${c.name}: no decoder divergence since C3 (bytes are decoded by TextDecoder)`);
+    // The shared import path: check the file before reading, then decode strictly (an empty content is a text)
+    let current: unknown = checkImportFile({ name: c.file, size: bytes.length });
+    if (current) current = { rejected: current };
+    else {
+      try {
+        current = { text: decodeText(bytes) };
+      } catch {
+        current = { rejected: 'invalidEncoding' };
+      }
+    }
+    for (const path of PATHS) assert.deepEqual(observable(c, currentOf(c, path)), current, `${c.name}: ${path}`);
   }
 });
 

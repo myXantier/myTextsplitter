@@ -1,13 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import useSnackbar from './useSnackbar';
-import { createFileImporter } from '../utils/fileImport';
+import { createFileImporter, FileImportError } from '../utils/fileImport';
+
+/** One message per import error, the same for the Open File button and the drop (Paket 11 C3). */
+const ERROR_MESSAGES: Record<FileImportError, string> = {
+  unsupportedExtension: 'notifications.unsupportedFileType',
+  tooLarge: 'notifications.fileTooLarge',
+  invalidEncoding: 'notifications.invalidEncoding',
+  readError: 'notifications.readError',
+};
 
 /** Import state of one text target, handed to the "Open File" button, a drop zone and the textarea. */
 export interface FileImport {
   /** The current import of the target is being read. */
   loading: boolean;
-  /** Imports a chosen or dropped file into the target (latest import wins). */
+  /** Imports a chosen or dropped file into the target (latest import wins; a refused file starts no import). */
   importFile: (file: File) => void;
 }
 
@@ -20,13 +28,14 @@ export function useFileImport(setText: (text: string) => void): FileImport {
   const snackbar = useSnackbar();
   const [loading, setLoading] = useState(false);
   // Latest callbacks for imports that finish after a re-render
-  const latest = useRef({ setText, onError: () => snackbar.error(t('notifications.readError')) });
-  latest.current = { setText, onError: () => snackbar.error(t('notifications.readError')) };
+  const onError = (error: FileImportError) => snackbar.error(t(ERROR_MESSAGES[error]));
+  const latest = useRef({ setText, onError });
+  latest.current = { setText, onError };
 
   const [importer] = useState(() =>
     createFileImporter({
       setText: (text) => latest.current.setText(text),
-      onError: () => latest.current.onError(),
+      onError: (error) => latest.current.onError(error),
       onLoadingChange: setLoading,
     })
   );

@@ -25,6 +25,9 @@ import {
   waitForHttp,
 } from './lib/harness.mjs';
 
+// Targeted run: E2E_ONLY=file-io runs only the start checks and checkFileIo (Paket 11)
+const ONLY = process.env.E2E_ONLY;
+if (ONLY && ONLY !== 'file-io') throw new Error(`Unknown E2E_ONLY=${ONLY} (supported: file-io)`);
 const modeArg = process.argv.find((a) => a.startsWith('--mode='))?.split('=')[1] ?? 'dev,preview';
 const modes = modeArg.split(',');
 const r = createReporter();
@@ -89,6 +92,11 @@ async function testApp(page, url) {
       const k = new KeyboardEvent('keydown', { key: 'F5', bubbles: true, cancelable: true }); document.dispatchEvent(k);
       return !c.defaultPrevented && !k.defaultPrevented; })()`)
   );
+
+  if (ONLY === 'file-io') {
+    await checkFileIo(page, r, 'Browser', errorsSince);
+    return;
+  }
 
   // --- Navigation ---
   for (const name of ['sort', 'filter', 'remove', 'diff', 'about', 'split']) {

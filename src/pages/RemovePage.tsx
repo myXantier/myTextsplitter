@@ -40,7 +40,7 @@ export default function RemovePage({ sourceText, setSourceText, sourceImport, vi
   // A dropped file is one more import of the shared source text: same job as the Open File button (latest wins)
   const { isDragging, dragHandlers } = useDragAndDrop({
     onFileAccepted: sourceImport.importFile,
-    onError: (message) => snackbar.error(message),
+    onNoFile: () => snackbar.error(t('notifications.noFileDropped')),
   });
 
   // Process text - remove lines
