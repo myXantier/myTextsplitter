@@ -105,6 +105,7 @@ export default {
       saved: 'File saved successfully!',
       fileTooLarge: 'File is too large. Maximum size is 10MB.',
       readError: 'Error reading file',
+      fileLoading: 'Loading file …',
       saveError: 'Failed to save file',
       copyError: 'Failed to copy to clipboard',
       invalidRegex: 'Invalid regex pattern',

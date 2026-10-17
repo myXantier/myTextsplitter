@@ -1911,12 +1911,17 @@ export async function checkFileIo(page, r, label, errorsSince) {
     await choose(0, join(dir, 'missing', 'does-not-exist.txt'));
     await settle();
     const buttonErrorSnacks = await snacks();
-    report('read error on the button', {
+    const buttonError = {
       text: await raw(0),
       errorMessage: buttonErrorSnacks.some((s) => s.startsWith('error')),
       hookException: hookExceptionSince(from),
       readOnly: await textarea(0, 'ta.readOnly'),
-    });
+    };
+    // The same path again, now with a file: a new import after the error
+    await choose(0, writeFile('missing', 'does-not-exist.txt', 'RETRY'));
+    await settle();
+    buttonError.retryLoads = await raw(0);
+    report('read error on the button', buttonError);
     r.check(
       `${label}: a failed button read shows exactly the read error message (notifications.readError)`,
       buttonErrorSnacks.length === 1 && READ_ERROR_MESSAGES.includes(buttonErrorSnacks[0]),
@@ -1927,7 +1932,7 @@ export async function checkFileIo(page, r, label, errorsSince) {
       await setText(0, PREV);
       await snacks();
       from = page.logs.length;
-      await dropFile(join(dir, 'missing', 'does-not-exist.txt'));
+      await dropFile(join(dir, 'missing-drop', 'does-not-exist.txt'));
       await settle();
       report('read error on the drop', {
         text: await raw(0),
@@ -1946,7 +1951,18 @@ export async function checkFileIo(page, r, label, errorsSince) {
       readOnly: await textarea(0, 'ta.readOnly'),
       busy: await textarea(0, `ta.getAttribute('aria-busy') === 'true'`),
       selectable: await textarea(0, `(ta.focus(), ta.setSelectionRange(0, 4), !ta.disabled && ta.selectionStart === 0 && ta.selectionEnd === 4)`),
+      hint: await page.eval(`!!__t.page().querySelector('.file-loading')?.textContent`),
     };
+    // Copy command with a user gesture: the copy event of the locked textarea carries its selection
+    const copy = await page.send('Runtime.evaluate', {
+      expression: `(() => { const ta = __t.textareas()[0]; let copied = null;
+        const onCopy = () => { copied = ta.value.slice(ta.selectionStart, ta.selectionEnd); };
+        ta.addEventListener('copy', onCopy); ta.focus(); ta.setSelectionRange(0, 4); document.execCommand('copy');
+        ta.removeEventListener('copy', onCopy); return copied; })()`,
+      userGesture: true,
+      returnByValue: true,
+    });
+    loading.copied = copy.result.value;
     // Real key input (a readOnly textarea refuses it, unlike a programmatically set value)
     await textarea(0, '(ta.focus(), ta.setSelectionRange(ta.value.length, ta.value.length), true)');
     await page.send('Input.insertText', { text: 'X' });
@@ -1958,6 +1974,7 @@ export async function checkFileIo(page, r, label, errorsSince) {
     loading.text = await raw(0);
     loading.readOnlyAfter = await textarea(0, 'ta.readOnly');
     loading.busyAfter = await textarea(0, `ta.getAttribute('aria-busy') === 'true'`);
+    loading.hintAfter = await page.eval(`!!__t.page().querySelector('.file-loading')`);
     report('loading state of the shared target', loading);
 
     // --- Latest import wins (gated: real reads, their start released in a fixed order) ---
@@ -1973,6 +1990,22 @@ export async function checkFileIo(page, r, label, errorsSince) {
     race.afterA = await raw(0);
     r.check(`${label}: both overlapping reads were held`, raceHeld === 2, `held=${raceHeld}`);
     report('newer file replaces a running import', race);
+
+    await setText(0, PREV);
+    await hold(true);
+    await choose(0, writeFile('race-older', 'a.txt', 'RACE_A'));
+    await choose(0, writeFile('race-older', 'b.txt', 'RACE_B'));
+    await hold(false);
+    await release(0);
+    const older = {
+      textAfterOlder: await raw(0),
+      readOnlyAfterOlder: await textarea(0, 'ta.readOnly'),
+      busyAfterOlder: await textarea(0, `ta.getAttribute('aria-busy') === 'true'`),
+    };
+    await release(1);
+    older.text = await raw(0);
+    older.readOnlyAfter = await textarea(0, 'ta.readOnly');
+    report('older import finishes first', older);
 
     const lateA = writeFile('race-error', 'a.txt', 'RACE_A');
     await setText(0, PREV);
@@ -2004,6 +2037,22 @@ export async function checkFileIo(page, r, label, errorsSince) {
       await release(0);
       shared.afterA = await raw(0);
       report('button and drop share the Remove target', shared);
+
+      const dropA = writeFile('shared-reverse', 'a.txt', 'RACE_A');
+      await setText(0, PREV);
+      await snacks();
+      await hold(true);
+      await dropFile(dropA);
+      await choose(0, writeFile('shared-reverse', 'b.txt', 'RACE_B'));
+      const reverse = { readOnlyWhileLoading: await textarea(0, 'ta.readOnly') };
+      await hold(false);
+      await release(1);
+      reverse.afterB = await raw(0);
+      unlinkSync(dropA);
+      await release(0);
+      reverse.afterA = await raw(0);
+      reverse.errorMessage = (await snacks()).some((s) => s.startsWith('error'));
+      report('drop then button on the Remove target', reverse);
     }
 
     // --- Independent targets (Diff) and navigation during an import ---
@@ -2046,6 +2095,15 @@ export async function checkFileIo(page, r, label, errorsSince) {
     const navLocal = { splitText: await raw(0), splitReadOnly: await textarea(0, 'ta.readOnly'), errors: errorsSince(from).length };
     await nav('diff');
     navLocal.newTextAfterReturn = await raw(1);
+    const localGone = writeFile('nav', 'local-error.txt', 'LOCAL_FILE');
+    await hold(true);
+    await choose(1, localGone);
+    await nav('split');
+    await hold(false);
+    unlinkSync(localGone);
+    await snacks();
+    await release(0);
+    navLocal.lateErrorMessage = (await snacks()).length > 0;
     report('navigation during an import into the new Diff text', navLocal);
 
     // --- Cancelled file dialog (intercepted chooser, opened with a user gesture) ---
@@ -2067,10 +2125,12 @@ export async function checkFileIo(page, r, label, errorsSince) {
       await page.send('Page.setInterceptFileChooserDialog', { enabled: false }).catch(() => {});
     }
     r.check(`${label}: file chooser opened (intercepted) with a user gesture`, opened);
+    const readOnlyWhileOpen = await textarea(0, 'ta.readOnly');
     // No file chosen: no change event; Chromium fires 'cancel' on the input when the native dialog is closed
     await page.eval(`document.querySelector(${json(inputSelector)}).dispatchEvent(new Event('cancel', { bubbles: true })); true`);
     await settle();
     const cancel = {
+      readOnlyWhileOpen,
       text: await raw(0),
       readOnly: await textarea(0, 'ta.readOnly'),
       busy: await textarea(0, `ta.getAttribute('aria-busy') === 'true'`),

@@ -235,25 +235,25 @@
       "pending": { "decisions": ["D8"], "phase": "C3", "paths": ["button"], "reason": "OpenFileButton does not check the extension." }
     }
   ],
-  "scenarioDescription": "Import flows of the integration tests (checkFileIo in tests/e2e/lib/app.mjs, same names). 'current' and 'target' are the observations of the flow; 'pending' { decisions, phase, fields, reason } lists exactly the fields where 'current' still differs from 'target' (none = the flow already meets the contract); 'resolved' explains an observation changed by a correction. 'method': 'real' = real file chooser path / real drop and real reads, 'gated' = real reads whose START is held and released by the test in a fixed order (controlled race simulation, FileReader and Blob read methods wrapped in the page), 'intercepted' = the file chooser is opened with a user gesture and intercepted by CDP (no native dialog). 'readOnly' is the readOnly attribute of the target textarea, 'busy' its aria-busy=\"true\" (the proposed test hook for the visible loading hint D11).",
+  "scenarioDescription": "Import flows of the integration tests (checkFileIo in tests/e2e/lib/app.mjs, same names). 'current' and 'target' are the observations of the flow; 'pending' { decisions, phase, fields, reason } lists exactly the fields where 'current' still differs from 'target' (none = the flow already meets the contract); 'resolved' explains an observation changed by a correction. 'method': 'real' = real file chooser path / real drop and real reads, 'gated' = real reads whose START is held and released by the test in a fixed order (controlled race simulation, FileReader and Blob read methods wrapped in the page), 'intercepted' = the file chooser is opened with a user gesture and intercepted by CDP (no native dialog). 'readOnly' is the readOnly attribute of the target textarea, 'busy' its aria-busy=\"true\" (D11; since C2 together with the visible hint notifications.fileLoading next to the Open File button). 'note' explains a field or flow added later.",
   "scenarios": [
     {
       "name": "same file chosen again",
       "ref": "F3",
       "method": "real",
       "steps": "Choose A (FILE_A + CRLF) on Split, edit the text, choose A again, change A on disk and choose it again, choose B then A, leave the page and come back, choose A again.",
-      "current": { "first": "FILE_A\r\n", "againAfterEdit": "EDITED", "againAfterDiskChange": "EDITED", "otherThenSame": "FILE_A_CHANGED", "afterRemount": "FILE_A_CHANGED" },
+      "current": { "first": "FILE_A\r\n", "againAfterEdit": "FILE_A\r\n", "againAfterDiskChange": "FILE_A_CHANGED", "otherThenSame": "FILE_A_CHANGED", "afterRemount": "FILE_A_CHANGED" },
       "target": { "first": "FILE_A\r\n", "againAfterEdit": "FILE_A\r\n", "againAfterDiskChange": "FILE_A_CHANGED", "otherThenSame": "FILE_A_CHANGED", "afterRemount": "FILE_A_CHANGED" },
-      "pending": { "decisions": ["D2"], "phase": "C2", "fields": ["againAfterEdit", "againAfterDiskChange"], "reason": "The input keeps its value, Chromium fires no change event for the same path." }
+      "resolved": "Paket 11 C2 (D2): the input kept its value, Chromium fired no change for the same path (againAfterEdit and againAfterDiskChange stayed 'EDITED'); OpenFileButton now resets the value after taking the file."
     },
     {
       "name": "read error on the button",
       "ref": "F1",
       "method": "real",
-      "steps": "A path that does not exist is chosen on Split (real change event, the FileReader fails with NotFoundError).",
-      "current": { "text": "TEXT_A", "errorMessage": true, "hookException": false, "readOnly": false },
-      "target": { "text": "TEXT_A", "errorMessage": true, "hookException": false, "readOnly": false },
-      "resolved": "Paket 11 C1 (D13): useSnackbar() was called inside reader.onerror ('Invalid hook call', production: Minified React error #321, no message); it is now called by the component and the error shows notifications.readError. The lock of D10 is checked by the loading-state scenarios (C2)."
+      "steps": "A path that does not exist is chosen on Split (real change event, the FileReader fails with NotFoundError); then a file is created at that path and the same path is chosen again.",
+      "current": { "text": "TEXT_A", "errorMessage": true, "hookException": false, "readOnly": false, "retryLoads": "RETRY" },
+      "target": { "text": "TEXT_A", "errorMessage": true, "hookException": false, "readOnly": false, "retryLoads": "RETRY" },
+      "resolved": "Paket 11 C1 (D13): useSnackbar() was called inside reader.onerror ('Invalid hook call', production: Minified React error #321, no message); it is now called by the component and the error shows notifications.readError. 'retryLoads' was added in C2 (D2: a new choice of the same path after an error; before C2 it fired no change)."
     },
     {
       "name": "read error on the drop",
@@ -266,69 +266,85 @@
       "name": "loading state of the shared target",
       "ref": "F5",
       "method": "gated",
-      "steps": "Choose a file on Split and hold its read; check the textarea, select text, type with real key input, check the file input; release.",
-      "current": { "readOnly": false, "busy": false, "selectable": true, "typingChangesText": true, "fileInputEnabled": true, "text": "LOADED", "readOnlyAfter": false, "busyAfter": false },
-      "target": { "readOnly": true, "busy": true, "selectable": true, "typingChangesText": false, "fileInputEnabled": true, "text": "LOADED", "readOnlyAfter": false, "busyAfter": false },
-      "pending": { "decisions": ["D10", "D11"], "phase": "C2", "fields": ["readOnly", "busy", "typingChangesText"], "reason": "No loading state: the textarea stays editable, typed text is replaced by the file later." }
+      "steps": "Choose a file on Split and hold its read; check the textarea and the loading hint, select and copy text (copy command with a user gesture), type with real key input, check the file input; release.",
+      "current": { "readOnly": true, "busy": true, "selectable": true, "hint": true, "copied": "TEXT", "typingChangesText": false, "fileInputEnabled": true, "text": "LOADED", "readOnlyAfter": false, "busyAfter": false, "hintAfter": false },
+      "target": { "readOnly": true, "busy": true, "selectable": true, "hint": true, "copied": "TEXT", "typingChangesText": false, "fileInputEnabled": true, "text": "LOADED", "readOnlyAfter": false, "busyAfter": false, "hintAfter": false },
+      "resolved": "Paket 11 C2 (D10, D11): there was no loading state (editable, not busy, typed text replaced by the file later); the target textarea is now readOnly with aria-busy and the hint notifications.fileLoading while its import runs. 'hint', 'copied' and 'hintAfter' were added in C2."
     },
     {
       "name": "newer file replaces a running import",
       "ref": "F5",
       "method": "gated",
       "steps": "Choose A, then B on Split (both reads held); release B, then A.",
-      "current": { "afterB": "RACE_B", "afterA": "RACE_A" },
+      "current": { "afterB": "RACE_B", "afterA": "RACE_B" },
       "target": { "afterB": "RACE_B", "afterA": "RACE_B" },
-      "pending": { "decisions": ["D9", "D12"], "phase": "C2", "fields": ["afterA"], "reason": "Every FileReader sets the text when it finishes; the older file A overwrites B." }
+      "resolved": "Paket 11 C2 (D9, D12): every FileReader set the text when it finished, the older A overwrote B; now only the latest import of the target sets the text."
+    },
+    {
+      "name": "older import finishes first",
+      "method": "gated",
+      "steps": "Choose A, then B on Split (both held); release A first, then B.",
+      "current": { "textAfterOlder": "TEXT_A", "readOnlyAfterOlder": true, "busyAfterOlder": true, "text": "RACE_B", "readOnlyAfter": false },
+      "target": { "textAfterOlder": "TEXT_A", "readOnlyAfterOlder": true, "busyAfterOlder": true, "text": "RACE_B", "readOnlyAfter": false },
+      "note": "Added in C2 (D9): the replaced A neither sets its text nor ends the loading state of B."
     },
     {
       "name": "replaced import fails late",
       "ref": "F5",
       "method": "gated",
       "steps": "Choose A, then B on Split (both held); release B; delete A on disk; release A (real NotFoundError).",
-      "current": { "afterA": "RACE_B", "errorMessage": true, "hookException": false },
+      "current": { "afterA": "RACE_B", "errorMessage": false, "hookException": false },
       "target": { "afterA": "RACE_B", "errorMessage": false, "hookException": false },
-      "pending": { "decisions": ["D9"], "phase": "C2", "fields": ["errorMessage"], "reason": "C1 intermediate state: the late error of the replaced import A no longer throws, but still shows the read error message (no latest-import-wins yet); the text of B stays. Target: a replaced import is ignored silently." },
-      "resolved": "Paket 11 C1 (D13): before C1 the late error threw the hook error (F1) and showed no message."
+      "resolved": "Paket 11 C1 (D13): the late error threw the hook error (F1) and showed no message; after C1 it showed the read error message. Paket 11 C2 (D9): a replaced import is ignored silently."
     },
     {
       "name": "button and drop share the Remove target",
       "ref": "F5",
       "method": "gated",
       "steps": "Choose A with the button, then drop B onto the Remove textarea (both held); release B, then A.",
-      "current": { "readOnlyWhileLoading": false, "afterB": "RACE_B", "afterA": "RACE_A" },
+      "current": { "readOnlyWhileLoading": true, "afterB": "RACE_B", "afterA": "RACE_B" },
       "target": { "readOnlyWhileLoading": true, "afterB": "RACE_B", "afterA": "RACE_B" },
-      "pending": { "decisions": ["D9", "D10"], "phase": "C2", "fields": ["readOnlyWhileLoading", "afterA"], "reason": "Button and drop read independently; nothing coordinates the shared target." }
+      "resolved": "Paket 11 C2 (D9, D10): button and drop read independently and A overwrote B; both are now imports of the shared source text (one job sequence, one lock)."
+    },
+    {
+      "name": "drop then button on the Remove target",
+      "method": "gated",
+      "steps": "Drop A onto the Remove textarea, then choose B with the button (both held); release B; delete A on disk; release A (real NotFoundError).",
+      "current": { "readOnlyWhileLoading": true, "afterB": "RACE_B", "afterA": "RACE_B", "errorMessage": false },
+      "target": { "readOnlyWhileLoading": true, "afterB": "RACE_B", "afterA": "RACE_B", "errorMessage": false },
+      "note": "Added in C2 (D9, D12): the reverse order of the shared Remove target; the late error of the replaced drop shows no message."
     },
     {
       "name": "independent Diff targets",
       "method": "gated",
       "steps": "Hold an import into the old Diff text, then one into the new Diff text; release both.",
-      "current": { "oldReadOnly": false, "newReadOnlyWhileOldLoads": false, "newReadOnly": false, "oldText": "OLD_FILE", "newText": "NEW_FILE" },
+      "current": { "oldReadOnly": true, "newReadOnlyWhileOldLoads": false, "newReadOnly": true, "oldText": "OLD_FILE", "newText": "NEW_FILE" },
       "target": { "oldReadOnly": true, "newReadOnlyWhileOldLoads": false, "newReadOnly": true, "oldText": "OLD_FILE", "newText": "NEW_FILE" },
-      "pending": { "decisions": ["D10"], "phase": "C2", "fields": ["oldReadOnly", "newReadOnly"], "reason": "No loading state yet; only the target of an import may be locked." }
+      "resolved": "Paket 11 C2 (D10): there was no lock; now each Diff text is locked only by its own import (the old text is the shared source text, the new text a page-local target)."
     },
     {
       "name": "navigation during an import into the shared text",
       "method": "gated",
       "steps": "Hold an import on Split, go to Sort, check the Sort textarea, release.",
-      "current": { "sortReadOnlyWhileLoading": false, "sortText": "NAV_FILE", "readOnlyAfter": false },
+      "current": { "sortReadOnlyWhileLoading": true, "sortText": "NAV_FILE", "readOnlyAfter": false },
       "target": { "sortReadOnlyWhileLoading": true, "sortText": "NAV_FILE", "readOnlyAfter": false },
-      "pending": { "decisions": ["D10"], "phase": "C2", "fields": ["sortReadOnlyWhileLoading"], "reason": "The shared text is reachable on every page; the lock must follow the target, not the button." }
+      "resolved": "Paket 11 C2 (D10): the import state of the shared text lives in PageList next to sourceText, so the lock follows the text to the next page."
     },
     {
       "name": "navigation during an import into the new Diff text",
       "method": "gated",
-      "steps": "Hold an import into the new Diff text, go to Split, release; then go back to Diff.",
-      "current": { "splitText": "TEXT_A", "splitReadOnly": false, "errors": 0, "newTextAfterReturn": "" },
-      "target": { "splitText": "TEXT_A", "splitReadOnly": false, "errors": 0, "newTextAfterReturn": "" }
+      "steps": "Hold an import into the new Diff text, go to Split, release; then go back to Diff. Again with a file deleted before its read: no message after the page is gone.",
+      "current": { "splitText": "TEXT_A", "splitReadOnly": false, "errors": 0, "newTextAfterReturn": "", "lateErrorMessage": false },
+      "target": { "splitText": "TEXT_A", "splitReadOnly": false, "errors": 0, "newTextAfterReturn": "", "lateErrorMessage": false },
+      "note": "'lateErrorMessage' was added in C2: the import of the unmounted page is disposed (before C2 its error still showed the message of the unmounted button)."
     },
     {
       "name": "cancelled file dialog",
       "method": "intercepted",
       "steps": "Choose A on Split, edit the text, open the file chooser with a user gesture and close it without a file (no change; the cancel event Chromium fires is dispatched by the test), then choose A again.",
-      "current": { "text": "EDITED", "readOnly": false, "busy": false, "sameFileAfterCancel": "EDITED" },
-      "target": { "text": "EDITED", "readOnly": false, "busy": false, "sameFileAfterCancel": "FILE_A" },
-      "pending": { "decisions": ["D2", "D14"], "phase": "C2", "fields": ["sameFileAfterCancel"], "reason": "After a cancel the input still holds A; choosing A again fires no change (F3)." }
+      "current": { "readOnlyWhileOpen": false, "text": "EDITED", "readOnly": false, "busy": false, "sameFileAfterCancel": "FILE_A" },
+      "target": { "readOnlyWhileOpen": false, "text": "EDITED", "readOnly": false, "busy": false, "sameFileAfterCancel": "FILE_A" },
+      "resolved": "Paket 11 C2 (D2, D14): after a cancel the input still held A and choosing A again fired no change; the value is now reset after every choice. 'readOnlyWhileOpen' was added in C2: opening the dialog sets no lock."
     }
   ]
 }

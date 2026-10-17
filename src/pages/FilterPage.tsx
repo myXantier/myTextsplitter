@@ -11,6 +11,7 @@ import { useBackendProcessor } from '../hooks/useBackendProcessor';
 import { useRuntimeSetting } from '../hooks/useSettings';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
+import { FileImport, importingTextareaProps } from '../hooks/useFileImport';
 import useSnackbar from '../hooks/useSnackbar';
 import { ERROR_KEYS, isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import './styles/FilterPageStyle.css';
@@ -18,12 +19,14 @@ import './styles/FilterPageStyle.css';
 interface FilterPageProps {
   sourceText: string;
   setSourceText: (text: string) => void;
+  sourceImport: FileImport;
   visible: boolean;
 }
 
 export default function FilterPage({
   sourceText,
   setSourceText,
+  sourceImport,
   visible,
 }: FilterPageProps) {
   const { t } = useTranslation();
@@ -91,12 +94,13 @@ export default function FilterPage({
                 onClick={() => setSourceText('')}
               />
             </div>
-            <OpenFileButton setFileText={setSourceText} />
+            <OpenFileButton fileImport={sourceImport} />
           </div>
           <div className="content2 flex-column">
             <textarea
               value={sourceText}
               onChange={(e) => setSourceText(e.target.value)}
+              {...importingTextareaProps(sourceImport)}
               placeholder={t('textFilter.sourcePlaceholder')}
             />
           </div>

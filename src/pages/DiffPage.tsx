@@ -8,6 +8,7 @@ import { ProcessingStatus } from './pageComponents/ProcessingStatus';
 import { useBackendProcessor } from '../hooks/useBackendProcessor';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
+import { FileImport, importingTextareaProps, useFileImport } from '../hooks/useFileImport';
 import CopyButton from '../components/CopyButton';
 import { fontSizeToIconSize } from '../utils/helper';
 import useSnackbar from '../hooks/useSnackbar';
@@ -22,6 +23,7 @@ import './styles/DiffPageStyle.css';
 interface DiffPageProps {
   sourceText: string;
   setSourceText: (text: string) => void;
+  sourceImport: FileImport;
   visible: boolean;
 }
 
@@ -42,11 +44,14 @@ const SKIP_REASONS: IntralineSkipReason[] = ['lineTooLong', 'hunkTooLarge', 'bud
 export default function DiffPage({
   sourceText,
   setSourceText,
+  sourceImport,
   visible,
 }: DiffPageProps) {
   const { t } = useTranslation();
   const snackbar = useSnackbar();
   const [newText, setNewText] = useState('');
+  // The new text is a page-local import target: it does not lock the shared source text and ends with the page
+  const newTextImport = useFileImport(setNewText);
   const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
   const [diffData, setDiffData] = useState<DiffData | null>(null);
   const [diffViewType, setDiffViewType] = useState<DiffViewType>('unified');
@@ -257,12 +262,13 @@ export default function DiffPage({
                   onClick={() => setSourceText('')}
                 />
               </div>
-              <OpenFileButton setFileText={setSourceText} />
+              <OpenFileButton fileImport={sourceImport} />
             </div>
             <div className="content2 flex-column">
               <textarea
                 value={sourceText}
                 onChange={(e) => setSourceText(e.target.value)}
+                {...importingTextareaProps(sourceImport)}
                 placeholder={t('textDiff.oldTextPlaceholder')}
               />
             </div>
@@ -282,12 +288,13 @@ export default function DiffPage({
                   onClick={() => setNewText('')}
                 />
               </div>
-              <OpenFileButton setFileText={setNewText} />
+              <OpenFileButton fileImport={newTextImport} />
             </div>
             <div className="content2 flex-column">
               <textarea
                 value={newText}
                 onChange={(e) => setNewText(e.target.value)}
+                {...importingTextareaProps(newTextImport)}
                 placeholder={t('textDiff.newTextPlaceholder')}
               />
             </div>

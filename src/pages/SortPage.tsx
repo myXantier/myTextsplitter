@@ -8,6 +8,7 @@ import CustomSelect from '../components/CustomSelect';
 import CopyButton from '../components/CopyButton';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
+import { FileImport, importingTextareaProps } from '../hooks/useFileImport';
 import { SORT_METHODS, type SortMethod } from '../utils/sortLines';
 import { useBackendProcessor } from '../hooks/useBackendProcessor';
 import { BaseService } from '../services/BaseService';
@@ -19,6 +20,7 @@ import './styles/SortPageStyle.css';
 interface SortPageProps {
   sourceText: string;
   setSourceText: (text: string) => void;
+  sourceImport: FileImport;
   visible?: boolean;
 }
 
@@ -36,7 +38,7 @@ const usesCase = (method: SortMethod) => method.startsWith('alphabetical') || me
 const sameRequest = (a: SortRequest, b: SortRequest) =>
   a.sourceText === b.sourceText && a.sortMethod === b.sortMethod && (!usesCase(a.sortMethod) || a.caseSensitive === b.caseSensitive);
 
-export default function SortPage({ sourceText, setSourceText, visible }: SortPageProps) {
+export default function SortPage({ sourceText, setSourceText, sourceImport, visible }: SortPageProps) {
   const { t } = useTranslation();
   const [sortMethod, setSortMethod] = useState<SortMethod>('alphabetical');
   // Kept while a method without case option is selected, so it applies again after switching back
@@ -148,12 +150,13 @@ export default function SortPage({ sourceText, setSourceText, visible }: SortPag
                 onClick={() => setSourceText('')}
               />
             </div>
-            <OpenFileButton setFileText={setSourceText} />
+            <OpenFileButton fileImport={sourceImport} />
           </div>
           <div className="content2 flex-column">
             <textarea
               value={sourceText}
               onChange={(e) => setSourceText(e.target.value)}
+              {...importingTextareaProps(sourceImport)}
               placeholder={t('sourceText.placeholder')}
             />
           </div>

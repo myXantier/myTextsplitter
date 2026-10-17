@@ -365,9 +365,15 @@ byte count is dropped silently). `scenarios` describe import flows (reselection,
 loading state, navigation, cancelled dialog) as `current` / `target` observations with `pending.fields`.
 
 `tests/unit/file-io-fixtures.test.ts` checks only the fixture data: the format, the current expectations against a model
-of today's code (WHATWG decode with BOM sniffing, button ignores `''`, drop checks `.txt` case-sensitively and 10 MiB),
-the targets against the contract (strict decoding, `.txt` in any case, at most 10 MiB inclusive) and the pending lists.
-Whether the app behaves like this is checked only by `checkFileIo` (below).
+of today's code (WHATWG decode with BOM sniffing, every content read is set also `''` since C1, drop checks `.txt`
+case-sensitively and 10 MiB), the targets against the contract (strict decoding, `.txt` in any case, at most 10 MiB
+inclusive) and the pending lists. Whether the app behaves like this is checked only by `checkFileIo` (below).
+
+`tests/unit/file-import.test.ts` (Paket 11 C2) checks the import jobs of one text target (`src/utils/fileImport.ts`) with
+a controllable FileReader stand-in: latest import wins, a replaced import sets no text, shows no error and does not end
+the loading state of its successor, an empty content is a text, targets are independent, nothing happens after
+`dispose` (unmount) and a new import works after an error. The React binding (`useFileImport`: the shared source text in
+`PageList`, the new Diff text in `DiffPage`; `readOnly` + `aria-busy` + the hint) is checked by `checkFileIo`.
 
 ## Integration tests
 
@@ -437,7 +443,7 @@ same text typed with LF = no difference; Paket 7: a new text with more lines tha
 move keeps both positions and is counted once). Results are read from React's props (`__t.raw`) and from the copied text
 (`__t.captureCopy`), because `textarea.value` also normalizes line breaks to LF.
 
-File import (`checkFileIo`, Paket 11 Phase B; browser and Tauri in Rust mode, once): every byte fixture through the
+File import (`checkFileIo`, Paket 11 Phase B, updated in C1 and C2; browser and Tauri in Rust mode, once): every byte fixture through the
 button (`DOM.setFileInputFiles` with the real file, i.e. the Chromium file chooser path with its real `change` event, one
 path per case) and through the drop (`Input.dispatchDragEvent` with the real file onto the Remove textarea); the same
 path chosen again (F3, no artificial `change`); real read errors (a path that does not exist, a file deleted before its

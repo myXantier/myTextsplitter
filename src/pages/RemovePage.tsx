@@ -11,6 +11,7 @@ import CopyButton from '../components/CopyButton';
 import { useDragAndDrop } from '../hooks/useDragAndDrop';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
+import { FileImport, importingTextareaProps } from '../hooks/useFileImport';
 import useSnackbar from '../hooks/useSnackbar';
 import { ERROR_KEYS, isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import './styles/RemovePageStyle.css';
@@ -18,10 +19,11 @@ import './styles/RemovePageStyle.css';
 interface RemovePageProps {
   sourceText: string;
   setSourceText: (text: string) => void;
+  sourceImport: FileImport;
   visible: boolean;
 }
 
-export default function RemovePage({ sourceText, setSourceText, visible }: RemovePageProps) {
+export default function RemovePage({ sourceText, setSourceText, sourceImport, visible }: RemovePageProps) {
   const { t } = useTranslation();
   const snackbar = useSnackbar();
   const [showResult, setShowResult] = useState(false);
@@ -35,19 +37,9 @@ export default function RemovePage({ sourceText, setSourceText, visible }: Remov
   const [removedLines, setRemovedLines] = useState(0);
   const { removeLines } = useBackendProcessor();
 
-  // File handling
-  const handleFileAccepted = useCallback(
-    (file: File) => {
-      const reader = new FileReader();
-      reader.onload = (e) => setSourceText(e.target?.result as string);
-      reader.onerror = () => snackbar.error(t('notifications.readError'));
-      reader.readAsText(file);
-    },
-    [t, setSourceText]
-  );
-
+  // A dropped file is one more import of the shared source text: same job as the Open File button (latest wins)
   const { isDragging, dragHandlers } = useDragAndDrop({
-    onFileAccepted: handleFileAccepted,
+    onFileAccepted: sourceImport.importFile,
     onError: (message) => snackbar.error(message),
   });
 
@@ -109,13 +101,14 @@ export default function RemovePage({ sourceText, setSourceText, visible }: Remov
                 onClick={() => setSourceText('')}
               />
             </div>
-            <OpenFileButton setFileText={setSourceText} />
+            <OpenFileButton fileImport={sourceImport} />
           </div>
           <div className="content2 flex-column">
             <textarea
               value={sourceText}
               onChange={(e) => setSourceText(e.target.value)}
               {...dragHandlers}
+              {...importingTextareaProps(sourceImport)}
               className={`${isDragging ? 'border-2 border-dashed border-blue-500' : ''}`}
               placeholder={t('removeLines.sourcePlaceholder')}
             />

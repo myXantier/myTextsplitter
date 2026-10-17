@@ -105,6 +105,7 @@ export default {
       saved: 'Datei erfolgreich gespeichert!',
       fileTooLarge: 'Datei ist zu groß. Maximale Größe ist 10MB.',
       readError: 'Fehler beim Lesen der Datei',
+      fileLoading: 'Datei wird geladen …',
       saveError: 'Fehler beim Speichern der Datei',
       copyError: 'Fehler beim Kopieren in die Zwischenablage',
       invalidRegex: 'Ungültiges Regex-Muster',

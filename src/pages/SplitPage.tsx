@@ -18,12 +18,14 @@ import { BaseService } from '../services/BaseService';
 import { ERROR_KEYS, isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
+import { FileImport, importingTextareaProps } from '../hooks/useFileImport';
 import useSnackbar from '../hooks/useSnackbar';
 import './styles/SplitPageStyle.css';
 
 interface SplitPageProps {
   sourceText: string;
   setSourceText: (text: string) => void;
+  sourceImport: FileImport;
   splitResults: string[][];
   setSplitResults: Dispatch<SetStateAction<string[][]>>;
   visible?: boolean;
@@ -34,6 +36,7 @@ const TEST_RUN = false;
 export default function SplitPage({
   sourceText,
   setSourceText,
+  sourceImport,
   splitResults,
   setSplitResults,
   visible,
@@ -182,12 +185,13 @@ export default function SplitPage({
                 onClick={() => setSourceText('')}
               />
             </div>
-            <OpenFileButton setFileText={setSourceText} />
+            <OpenFileButton fileImport={sourceImport} />
           </div>
           <div className="content2 flex-column">
             <textarea
               value={sourceText}
               onChange={(e) => setSourceText(e.target.value)}
+              {...importingTextareaProps(sourceImport)}
               placeholder={t('sourceText.placeholder')}
             />
           </div>

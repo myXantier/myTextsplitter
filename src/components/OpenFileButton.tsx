@@ -1,33 +1,31 @@
-import { useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { FileText } from 'lucide-react';
-import useSnackbar from '../hooks/useSnackbar';
+import { FileImport } from '../hooks/useFileImport';
 import './styles/OpenFileButtonStyle.css';
 
 
 interface OpenFileProps {
-  setFileText: (text: string) => void;
+  /** Import state of the text the file is loaded into (useFileImport). */
+  fileImport: FileImport;
 }
 
-export default function OpenFileButton({ setFileText }: OpenFileProps) {
+export default function OpenFileButton({ fileImport }: OpenFileProps) {
   const { t } = useTranslation();
-  const snackbar = useSnackbar();
   const handleFileOpen = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
+    // Reset after taking the file, so choosing the same file again fires a new change (a cancelled dialog fires none)
+    event.target.value = '';
     if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      // readAsText delivers a string on success; an empty file (or only a BOM) is the valid content ''
-      if (typeof reader.result === 'string') setFileText(reader.result);
-    };
-    // A failed read keeps the current text
-    reader.onerror = () => snackbar.error(t('notifications.readError'));
-    reader.readAsText(file);
+    fileImport.importFile(file);
   };
 
   return (
     <div className="file-upload">
+      {fileImport.loading && (
+        <span className="file-loading" role="status">
+          {t('notifications.fileLoading')}
+        </span>
+      )}
       <label className="file-label">
         <FileText size={16} />
         <span>{t('actions.openFile')}</span>

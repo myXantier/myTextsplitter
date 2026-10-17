@@ -1,5 +1,14 @@
 .file-upload {
   margin-left: auto;
+  display: flex;
+  align-items: center;
+}
+
+.file-loading {
+  margin-right: 10px;
+  color: var(--color-2);
+  font-size: 0.9em;
+  font-style: italic;
 }
 
 .file-label {
