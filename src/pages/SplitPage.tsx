@@ -15,7 +15,7 @@ import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { hasValidPatternLength } from '../utils/regex';
 import { lineFormatOf } from '../utils/lines';
 import { BaseService } from '../services/BaseService';
-import { isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
+import { ERROR_KEYS, isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
 import useSnackbar from '../hooks/useSnackbar';
@@ -124,6 +124,12 @@ export default function SplitPage({
         // The result of a still running older split would no longer match the input
         BaseService.cancelPending('split');
         snackbar.error(t('errors.invalidRegex'));
+        return;
+      }
+      // Paket 10 E4: an empty plain delimiter is invalid input (the engines refuse it too); spaces are allowed
+      if (!useRegex && delimiter === '') {
+        BaseService.cancelPending('split');
+        snackbar.error(t(ERROR_KEYS.emptyDelimiter));
         return;
       }
 

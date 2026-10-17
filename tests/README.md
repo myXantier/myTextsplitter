@@ -47,7 +47,6 @@ Known differences between Rust and JS (unchanged existing behaviour, documented 
 |---|---|---|
 | Regex capture groups | captured text is dropped | every capture becomes an extra column |
 | `\w`, `\W`, `\d`, `\s` | Unicode-aware | ASCII (no `u` flag) |
-| Empty plain delimiter | `""` before and after the characters | only the characters |
 
 The former differences for trailing newlines, empty input and CRLF (`str::lines()` vs. `split('\n')`) no longer exist.
 Further regex split differences (named/non-participating captures, zero-width matches at the line start, `\b`,
@@ -59,9 +58,24 @@ Paket 10 Phase B (contract: `docs/analyse/Paket10-PhaseB-Regexvertrag.md`) exten
 |---|---|
 | `delimiter` | A string or `{ "repeat", "count" }` (long patterns). |
 | `expected*` | Current behaviour; may also be `{ "error": "invalidRegex" }`. |
-| `divergence` | A string (accepted dialect difference) or `{ kind, reason }`: `dialect`, `utf16Damage` (the JS split puts a split position inside a surrogate pair, R2: lone surrogates or a column between the halves), `unvalidatedInput`. A test oracle checks that exactly the cases whose JS split cuts a pair are marked `utf16Damage`. |
+| `divergence` | A string (accepted dialect difference) or `{ kind, reason }`: `dialect`, `utf16Guard` (the JS worker refuses the split with `regexSplitsCharacter`, Rust never cuts a character; required for that error), `utf16Damage` (the JS split still damages a character; only with a pending JS target, none left after C1), `unvalidatedInput`. An independent test oracle (native `matchAll` with match indices and native `split`) checks that exactly the cases whose native JS split would cut a pair are refused or marked. |
 | `target` or `targetRust` + `targetJs`, `pending` | Target of a not yet implemented decision (E3 pattern rule, E4 empty plain delimiter, E5 cut characters, E9 flags `gm` → `g`): columns or `{ error: invalidRegex \| emptyDelimiter \| emptyPattern \| patternTooLong \| regexSplitsCharacter }` (the last JS only). `pending { decisions, phase, engines, reason }`: exactly the listed engines still differ from their target; both runners check it against the real engines, so the suite stays green and a reached target is noticed. |
 | `ref` | Finding of `docs/analyse/Paket10-PhaseA-Regex-Analyse.md`. |
+
+**Paket 10 C1 (implemented, `resolved` in the fixtures):**
+
+- **E4:** an empty plain delimiter is invalid input `emptyDelimiter` (`errors.emptyDelimiter`, de/en) in the JS worker, the
+  main-thread fallback (`SplitInputError` of `splitColumns.ts`), Rust (`TextError::EmptyDelimiter`, IPC kind
+  `emptyDelimiter`, mapped by `fromBackendError`) and the Split page; checked before the text, also for an empty text.
+  Whitespace delimiters stay valid; the empty *regex* pattern is rule E3 (still open).
+- **E5:** the JS regex split refuses (`regexSplitsCharacter`, no partial columns) when an effective split position or a
+  boundary of a participating non-empty capture lies inside a surrogate pair (an empty capture only adds an empty column,
+  e.g. `\uD83D()\uDE00`). Lines with surrogates follow the steps of
+  `RegExp.prototype[Symbol.split]` with one match at a time (an empty match at the previous split end and a match at the
+  line end are skipped like in the native split); captures are located with match indices (flag `d`, only for patterns
+  with groups). Lines without surrogates and well-formed plain delimiters use the native split unchanged. Lone surrogates
+  already in the input are not refused. A seeded test compares the checked split with the native split for 1500 lines ×
+  42 patterns.
 
 The JS side runs every case through `splitColumns.ts`, the real `SplitWorker` module and the service without Web Worker
 (plain splits run in the main thread, a regex is refused: `regexRequiresWorker`, or `invalidRegex` for an invalid, empty
@@ -336,6 +350,10 @@ fixtures above; the rendered diff and word diff by `checkLineEndings` and `check
 Error handling (`checkProcessingErrors` in `tests/e2e/lib/app.mjs`; browser: Web Worker, Tauri: Rust backend and
 JS mode): an invalid regex in Filter/Remove shows exactly one error message and no success message, keeps the
 previous result and ends the processing state; removing all lines is reported as success with an empty result.
+
+Split integrity (`checkSplitIntegrity`, Paket 10 C1; browser: Web Worker, Tauri: Rust backend and JS mode): an empty plain
+delimiter shows the input error, `[😀]` and `(\uD83D)\uDE00` are refused in JS (Rust: whole-emoji split, invalid regex), the
+previous columns and metrics stay, and whole-emoji captures and a plain emoji delimiter work afterwards.
 
 Regex robustness (`checkRegexRobustness`, Paket 5; browser: Web Worker, Tauri: Rust backend and JS mode): a catastrophic
 regex keeps the UI responsive and ends with one error message (JS: worker timeout after ~10 s, Rust: backtracking limit)

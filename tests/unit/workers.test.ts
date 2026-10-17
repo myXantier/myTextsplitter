@@ -156,6 +156,24 @@ test('B22: SplitWorker reports an invalid regex as error', () => {
   assert.equal(messages[0].errorKind, 'invalidInput');
 });
 
+test('Paket 10 E4/E5: SplitWorker refuses an empty plain delimiter and a cut character with one error, no partial columns', () => {
+  for (const [args, error] of [
+    [splitArgs('', ''), 'errors.emptyDelimiter'],
+    [splitArgs('a\n😀b', ''), 'errors.emptyDelimiter'],
+    // The first row is fine, the second one would be cut: the whole job fails
+    [splitArgs('a,b\r\nx😀y', '[😀]', true), 'errors.regexSplitsCharacter'],
+    [splitArgs('a😀b', '(\\uD83D)\\uDE00', true), 'errors.regexSplitsCharacter'],
+  ] as const) {
+    const messages = runWorker('SplitWorker', args);
+    assert.deepEqual(messages.map((m) => ({ success: m.success, errorKind: m.errorKind, error: m.error, result: m.result })), [
+      { success: false, errorKind: 'invalidInput', error, result: null },
+    ]);
+  }
+  // Safe emoji splits keep working
+  const [safe] = runWorker('SplitWorker', splitArgs('a😀b🎉c', '(😀)|🎉', true));
+  assert.deepEqual(safe.result.result, [['a'], ['😀'], ['b'], [''], ['c']]);
+});
+
 test('RemoveWorker: removing all lines is a successful empty TextV2 result', () => {
   const [message] = runWorker('RemoveWorker', removeArgs('a\nab', 'a'));
   assert.equal(message.success, true);

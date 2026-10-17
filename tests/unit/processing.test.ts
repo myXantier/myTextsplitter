@@ -102,6 +102,27 @@ for (const [name, run] of [
   });
 }
 
+test('Paket 10 E4: emptyDelimiter from the Rust split is an invalid-input error and keeps the metrics of the last result', async () => {
+  const service = new SplitService();
+  backend(() => processed(['a', 'b']));
+  await service.invoke(splitArgs('a,b', ','), true);
+  const before = service.getMetrics();
+  backend(() => {
+    throw { kind: 'emptyDelimiter', message: 'the plain delimiter is empty' };
+  });
+  const error = await rejectionOf(() => service.invoke(splitArgs('a😀b', ''), true));
+  assert.deepEqual({ kind: error.kind, message: error.message }, { kind: 'invalidInput', message: 'errors.emptyDelimiter' });
+  assert.deepEqual(service.getMetrics(), before);
+});
+
+test('Paket 10 E4: the JS main-thread split refuses an empty plain delimiter, also for an empty text', async () => {
+  installWindow();
+  for (const text of ['', 'a😀b']) {
+    const error = await rejectionOf(() => new SplitService().invoke(splitArgs(text, ''), false));
+    assert.deepEqual({ kind: error.kind, message: error.message }, { kind: 'invalidInput', message: 'errors.emptyDelimiter' });
+  }
+});
+
 test('B4: regex runtime error from Rust (backtrack limit) is an invalid-input error with its own message', async () => {
   backend(() => {
     throw { kind: 'regexRuntime', message: 'Max limit for backtracking count exceeded' };

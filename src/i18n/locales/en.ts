@@ -120,6 +120,7 @@ export default {
       regexTooComplex: 'Regex pattern is too complex for this text',
       invalidMode: 'Unknown processing mode. Please use one of the offered actions.',
       regexSplitsCharacter: 'The pattern matches only part of a character (e.g. an emoji). The result would be damaged and was not applied.',
+      emptyDelimiter: 'The delimiter must not be empty. Please enter a delimiter (spaces are allowed).',
       diffTooComplex: 'The comparison is too complex (too many reordered lines)',
       regexRequiresWorker: 'Regular expressions cannot be run safely without a Web Worker',
       sortRequiresWorker: 'This text is too large to be sorted without a Web Worker (the page would freeze)',

@@ -10,7 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, sleep } from './lib/cdp.mjs';
-import { SPLIT_CASES, checkCombineState, checkLineEndings, checkSort, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
+import { SPLIT_CASES, checkCombineState, checkSplitIntegrity, checkLineEndings, checkSort, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
@@ -201,6 +201,8 @@ async function testApp(page, url) {
 
   // --- Regex robustness (Paket 5): worker timeout really stops a catastrophic regex, JS dialect, preview ---
   await checkRegexRobustness(page, r, 'JS', errorsSince, 'js');
+  // Paket 10 C1: empty plain delimiter and cut characters on the Split page (Web Worker)
+  await checkSplitIntegrity(page, r, 'JS', errorsSince, 'js');
 
   // --- Line endings (Paket 6): CRLF file with trailing newline through every operation (Web Worker) ---
   await checkLineEndings(page, r, 'JS', errorsSince);

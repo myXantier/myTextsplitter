@@ -46,6 +46,8 @@ pub enum TextError {
     DiffTooComplex(String),
     /// The Filter or Remove mode is not supported (unknown or empty): invalid user input, never a silent default.
     InvalidMode(String),
+    /// The plain (non-regex) split delimiter is empty (Paket 10 E4): invalid user input, never a split into characters.
+    EmptyDelimiter(String),
     /// The processing task itself failed (panic or cancelled task), not the user input.
     Internal(String),
     /// A newer request of the same operation replaced this one before it started (it never ran).
@@ -59,6 +61,7 @@ impl std::fmt::Display for TextError {
             TextError::RegexRuntime(message) => write!(f, "regex runtime error: {message}"),
             TextError::DiffTooComplex(message) => write!(f, "diff too complex: {message}"),
             TextError::InvalidMode(message) => write!(f, "invalid mode: {message}"),
+            TextError::EmptyDelimiter(message) => write!(f, "empty delimiter: {message}"),
             TextError::Internal(message) => write!(f, "internal error: {message}"),
             TextError::Superseded => write!(f, "superseded by a newer request"),
         }
@@ -138,6 +141,10 @@ impl TextProcessor {
         useregex: bool,
         keep_empty_lines: bool,
     ) -> Result<ProcessedText<Vec<String>>, TextError> {
+        // Paket 10 E4: checked before anything else, also for an empty text (an empty regex pattern is rule E3)
+        if !useregex && delimiter.is_empty() {
+            return Err(TextError::EmptyDelimiter("the plain delimiter is empty".into()));
+        }
         let before_mem = memory_stats::memory_stats();
         let start_time = std::time::Instant::now();
 
@@ -460,6 +467,7 @@ mod tests {
             // Same decoding as the frontend (SplitService.invokeBackend)
             Ok(result) => SplitOutcome::Columns(result.result_text.iter().map(|col| col.split('\n').map(String::from).collect()).collect()),
             Err(TextError::InvalidRegex(_)) => SplitOutcome::Error { error: "invalidRegex".into() },
+            Err(TextError::EmptyDelimiter(_)) => SplitOutcome::Error { error: "emptyDelimiter".into() },
             Err(e) => panic!("unexpected split error {e:?}"),
         }
     }
@@ -552,7 +560,7 @@ mod tests {
                 Ok(result) => Expected::Text(result.result_text),
                 Err(TextError::InvalidRegex(_)) => Expected::Error { error: "invalidRegex".into() },
                 Err(TextError::RegexRuntime(_)) => Expected::Error { error: "regexRuntime".into() },
-                Err(e @ (TextError::Internal(_) | TextError::DiffTooComplex(_) | TextError::InvalidMode(_) | TextError::Superseded)) => panic!("{}: {e}", c.name),
+                Err(e @ (TextError::Internal(_) | TextError::DiffTooComplex(_) | TextError::InvalidMode(_) | TextError::EmptyDelimiter(_) | TextError::Superseded)) => panic!("{}: {e}", c.name),
             };
             if &actual != expected {
                 failures.push(format!("{}\n    expected: {:?}\n    actual:   {:?}", c.name, expected, actual));

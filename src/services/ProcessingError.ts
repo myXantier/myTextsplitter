@@ -28,6 +28,8 @@ export const ERROR_KEYS = {
   regexTooComplex: 'errors.regexTooComplex',
   /** A JS regex match would cut a character (surrogate pair) apart: the result would be damaged text. */
   regexSplitsCharacter: 'errors.regexSplitsCharacter',
+  /** A plain (non-regex) split delimiter is empty (Paket 10 E4): never a split into characters. */
+  emptyDelimiter: 'errors.emptyDelimiter',
   /** The Filter or Remove mode is not supported (unknown or empty). */
   invalidMode: 'errors.invalidMode',
   /** A regex cannot be run without Web Worker (it could block the UI thread). */
@@ -69,6 +71,9 @@ export const invalidRegexError = (detail?: string) => new ProcessingError('inval
 /** An unknown or empty Filter/Remove mode: invalid input (Rust `TextError::InvalidMode`), never a silent default. */
 export const invalidModeError = (detail?: string) => new ProcessingError('invalidInput', ERROR_KEYS.invalidMode, detail);
 
+/** An empty plain split delimiter: invalid input (Rust `TextError::EmptyDelimiter`), checked before the text is processed. */
+export const emptyDelimiterError = (detail?: string) => new ProcessingError('invalidInput', ERROR_KEYS.emptyDelimiter, detail);
+
 export const regexSplitsCharacterError = () =>
   new ProcessingError('invalidInput', ERROR_KEYS.regexSplitsCharacter, 'a match boundary lies inside a UTF-16 surrogate pair');
 
@@ -91,6 +96,7 @@ export function fromBackendError(error: unknown): ProcessingError {
     if (kind === 'regexRuntime') return new ProcessingError('invalidInput', ERROR_KEYS.regexTooComplex, detail);
     if (kind === 'diffTooComplex') return new ProcessingError('invalidInput', ERROR_KEYS.diffTooComplex, detail);
     if (kind === 'invalidMode') return invalidModeError(detail);
+    if (kind === 'emptyDelimiter') return emptyDelimiterError(detail);
     // The Rust job slot replaced this request by a newer one before it ran. BaseService reports it as `superseded`
     // when a newer job exists; for the latest job (requests arrived out of order) it stays a visible backend error.
     if (kind === 'superseded') return new ProcessingError('backend', ERROR_KEYS.general, 'superseded by a newer backend request');

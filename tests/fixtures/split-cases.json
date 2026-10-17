@@ -1,5 +1,5 @@
 {
-  "description": "Shared split fixtures for the Rust engine (cargo test) and the JS engine (npm test). Defaults per case: useRegex=false, trimParts=false, keepEmptyLines=true. 'expected' applies to both engines; a case with a known engine difference uses 'expectedRust' + 'expectedJs' and must explain it in 'divergence' ('resolved' documents a former divergence). Rows are the data lines of the shared line model (Paket 6, tests/fixtures/line-endings-cases.json): LF, CRLF and CR are line breaks, a trailing line break adds no row, an empty text has no rows. Every expected result is column-major: expected[column][row]. Paket 10 Phase B: 'delimiter' is a string or { repeat, count }; an expectation can also be { error: invalidRegex }; 'divergence' is a string (accepted dialect difference) or { kind, reason } with kind dialect | utf16Damage (the JS split puts a split position inside a surrogate pair, R2) | unvalidatedInput; 'ref' is a finding of docs/analyse/Paket10-PhaseA-Regex-Analyse.md. The expectations describe the CURRENT behaviour. A not yet implemented decision of Paket 10 (docs/analyse/Paket10-PhaseB-Regexvertrag.md) is stated as 'target' (both engines) or 'targetRust' + 'targetJs': the columns or { error: invalidRegex | emptyDelimiter | emptyPattern | patternTooLong | regexSplitsCharacter (JS only) }, together with 'pending' { decisions, phase, engines, reason }: exactly the engines listed in 'engines' still differ from their target (checked by both runners against the real engines).",
+  "description": "Shared split fixtures for the Rust engine (cargo test) and the JS engine (npm test). Defaults per case: useRegex=false, trimParts=false, keepEmptyLines=true. 'expected' applies to both engines; a case with a known engine difference uses 'expectedRust' + 'expectedJs' and must explain it in 'divergence' ('resolved' documents a former divergence). Rows are the data lines of the shared line model (Paket 6, tests/fixtures/line-endings-cases.json): LF, CRLF and CR are line breaks, a trailing line break adds no row, an empty text has no rows. Every expected result is column-major: expected[column][row]. Paket 10 Phase B: 'delimiter' is a string or { repeat, count }; an expectation can also be { error: invalidRegex | emptyDelimiter } or, JS only, { error: regexSplitsCharacter }; 'divergence' is a string (accepted dialect difference) or { kind, reason } with kind dialect | utf16Guard (Paket 10 C1: the JS worker refuses a split whose split position or capture would lie inside a surrogate pair, Rust never cuts a character; required for regexSplitsCharacter) | utf16Damage (the JS split still damages a character: only with a pending JS target) | unvalidatedInput; 'resolved' explains a corrected expectation (Paket 6 line endings, Paket 10 C1 E4/E5); 'ref' is a finding of docs/analyse/Paket10-PhaseA-Regex-Analyse.md. The expectations describe the CURRENT behaviour. A not yet implemented decision of Paket 10 (docs/analyse/Paket10-PhaseB-Regexvertrag.md) is stated as 'target' (both engines) or 'targetRust' + 'targetJs': the columns or { error: invalidRegex | emptyDelimiter | emptyPattern | patternTooLong | regexSplitsCharacter (JS only) }, together with 'pending' { decisions, phase, engines, reason }: exactly the engines listed in 'engines' still differ from their target (checked by both runners against the real engines).",
   "cases": [
     {
       "name": "b1: column created in a later row is padded for earlier rows",
@@ -361,12 +361,9 @@
       "name": "empty plain delimiter",
       "input": "abc",
       "delimiter": "",
-      "expectedRust": [[""], ["a"], ["b"], ["c"], [""]],
-      "expectedJs": [["a"], ["b"], ["c"]],
-      "divergence": "Empty delimiter: Rust str::split(\"\") yields an empty part before and after the characters, JS split('') yields only the characters.",
+      "expected": { "error": "emptyDelimiter" },
       "ref": "R2",
-      "target": { "error": "emptyDelimiter" },
-      "pending": { "decisions": ["E4"], "phase": "C1", "engines": ["rust", "js"], "reason": "An empty plain delimiter is refused as invalid input in both engines instead of splitting into characters." }
+      "resolved": "Paket 10 C1 (E4): an empty plain delimiter is refused as invalid input in both engines, before the text is processed; it was split into characters (JS: cut emoji into lone surrogates, Rust: extra empty parts)."
     },
     {
       "name": "regex: non-capturing group keeps the columns",
@@ -551,54 +548,41 @@
       "name": "R2/E4: empty plain delimiter on an emoji",
       "input": "😀",
       "delimiter": "",
-      "expectedRust": [[""], ["😀"], [""]],
-      "expectedJs": [["\uD83D"], ["\uDE00"]],
-      "divergence": { "kind": "utf16Damage", "reason": "JS split('') splits between UTF-16 code units: both halves of the emoji become separate columns (lone surrogates)." },
+      "expected": { "error": "emptyDelimiter" },
       "ref": "R2",
-      "target": { "error": "emptyDelimiter" },
-      "pending": { "decisions": ["E4"], "phase": "C1", "engines": ["rust", "js"], "reason": "An empty plain delimiter is refused as invalid input in both engines." }
+      "resolved": "Paket 10 C1 (E4): an empty plain delimiter is refused as invalid input in both engines, before the text is processed; it was split into characters (JS: cut emoji into lone surrogates, Rust: extra empty parts)."
     },
     {
       "name": "R2/E4: empty plain delimiter inside a text with an emoji",
       "input": "a😀b",
       "delimiter": "",
-      "expectedRust": [[""], ["a"], ["😀"], ["b"], [""]],
-      "expectedJs": [["a"], ["\uD83D"], ["\uDE00"], ["b"]],
-      "divergence": { "kind": "utf16Damage", "reason": "JS split('') splits between UTF-16 code units: the emoji is cut into two columns." },
+      "expected": { "error": "emptyDelimiter" },
       "ref": "R2",
-      "target": { "error": "emptyDelimiter" },
-      "pending": { "decisions": ["E4"], "phase": "C1", "engines": ["rust", "js"], "reason": "An empty plain delimiter is refused as invalid input in both engines." }
+      "resolved": "Paket 10 C1 (E4): an empty plain delimiter is refused as invalid input in both engines, before the text is processed; it was split into characters (JS: cut emoji into lone surrogates, Rust: extra empty parts)."
     },
     {
       "name": "R2/E4: empty plain delimiter on several emoji",
       "input": "😀🎉",
       "delimiter": "",
-      "expectedRust": [[""], ["😀"], ["🎉"], [""]],
-      "expectedJs": [["\uD83D"], ["\uDE00"], ["\uD83C"], ["\uDF89"]],
-      "divergence": { "kind": "utf16Damage", "reason": "JS split('') splits between UTF-16 code units: every emoji is cut into two columns." },
+      "expected": { "error": "emptyDelimiter" },
       "ref": "R2",
-      "target": { "error": "emptyDelimiter" },
-      "pending": { "decisions": ["E4"], "phase": "C1", "engines": ["rust", "js"], "reason": "An empty plain delimiter is refused as invalid input in both engines." }
+      "resolved": "Paket 10 C1 (E4): an empty plain delimiter is refused as invalid input in both engines, before the text is processed; it was split into characters (JS: cut emoji into lone surrogates, Rust: extra empty parts)."
     },
     {
       "name": "R2/E4: empty plain delimiter with CRLF lines and an emoji",
       "input": "ab\r\nc😀\r\n",
       "delimiter": "",
-      "expectedRust": [["", ""], ["a", "c"], ["b", "😀"], ["", ""]],
-      "expectedJs": [["a", "c"], ["b", "\uD83D"], ["", "\uDE00"]],
-      "divergence": { "kind": "utf16Damage", "reason": "JS split('') cuts the emoji of the second row into two columns; Rust adds empty parts at the start and end of every row." },
+      "expected": { "error": "emptyDelimiter" },
       "ref": "R2",
-      "target": { "error": "emptyDelimiter" },
-      "pending": { "decisions": ["E4"], "phase": "C1", "engines": ["rust", "js"], "reason": "An empty plain delimiter is refused as invalid input in both engines, whatever the line endings." }
+      "resolved": "Paket 10 C1 (E4): an empty plain delimiter is refused as invalid input in both engines, before the text is processed; it was split into characters (JS: cut emoji into lone surrogates, Rust: extra empty parts)."
     },
     {
       "name": "R2/E4: empty plain delimiter on an empty text",
       "input": "",
       "delimiter": "",
-      "expected": [],
+      "expected": { "error": "emptyDelimiter" },
       "ref": "R2",
-      "target": { "error": "emptyDelimiter" },
-      "pending": { "decisions": ["E4"], "phase": "C1", "engines": ["rust", "js"], "reason": "The delimiter is validated before the text is processed, so an empty text is refused too (same order as an invalid regex)." }
+      "resolved": "Paket 10 C1 (E4): an empty plain delimiter is refused as invalid input in both engines, before the text is processed; it was split into characters (JS: cut emoji into lone surrogates, Rust: extra empty parts)."
     },
     {
       "name": "E4: a non-empty plain delimiter stays supported (emoji)",
@@ -618,12 +602,10 @@
       "delimiter": "(?:)",
       "useRegex": true,
       "expectedRust": [[""], ["😀"], [""]],
-      "expectedJs": [["\uD83D"], ["\uDE00"]],
-      "divergence": { "kind": "utf16Damage", "reason": "The empty JS match between the two code units splits the emoji (lone surrogates); fancy-regex matches only between characters." },
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS RegExp without the u flag works on UTF-16 code units: this split would put a split position or a capture boundary inside a surrogate pair, so the JS worker refuses it (regexSplitsCharacter). Rust matches Unicode scalar values and never cuts a character." },
       "ref": "R2",
-      "targetRust": [[""], ["😀"], [""]],
-      "targetJs": { "error": "regexSplitsCharacter" },
-      "pending": { "decisions": ["E5"], "phase": "C1", "engines": ["js"], "reason": "A split position inside a surrogate pair (also of a zero-width match) is refused in JS; Rust never cuts a character." }
+      "resolved": "Paket 10 C1 (E5): the JS split checks every effective split position and every participating capture against surrogate pairs and refuses the job instead of returning damaged columns (formerly utf16Damage)."
     },
     {
       "name": "R2/E5: empty regex (?:) on ASCII is a dialect difference only",
@@ -661,12 +643,10 @@
       "delimiter": "(?=\\uDE00)",
       "useRegex": true,
       "expectedRust": { "error": "invalidRegex" },
-      "expectedJs": [["a\uD83D"], ["\uDE00b"]],
-      "divergence": { "kind": "utf16Damage", "reason": "JS splits between the two code units of the emoji. fancy-regex rejects \\uDE00 (a surrogate is no Unicode scalar value), a dialect difference." },
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS RegExp without the u flag works on UTF-16 code units: this split would put a split position or a capture boundary inside a surrogate pair, so the JS worker refuses it (regexSplitsCharacter). Rust matches Unicode scalar values and never cuts a character; fancy-regex rejects the surrogate escape (dialect)." },
       "ref": "R2",
-      "targetRust": { "error": "invalidRegex" },
-      "targetJs": { "error": "regexSplitsCharacter" },
-      "pending": { "decisions": ["E5"], "phase": "C1", "engines": ["js"], "reason": "A zero-width split position inside a surrogate pair is refused in JS." }
+      "resolved": "Paket 10 C1 (E5): the JS split checks every effective split position and every participating capture against surrogate pairs and refuses the job instead of returning damaged columns (formerly utf16Damage)."
     },
     {
       "name": "R2/E5: zero-width lookbehind inside a surrogate pair",
@@ -674,12 +654,10 @@
       "delimiter": "(?<=\\uD83D)",
       "useRegex": true,
       "expectedRust": { "error": "invalidRegex" },
-      "expectedJs": [["a\uD83D"], ["\uDE00b"]],
-      "divergence": { "kind": "utf16Damage", "reason": "JS splits between the two code units of the emoji. fancy-regex rejects \\uD83D (a surrogate is no Unicode scalar value), a dialect difference." },
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS RegExp without the u flag works on UTF-16 code units: this split would put a split position or a capture boundary inside a surrogate pair, so the JS worker refuses it (regexSplitsCharacter). Rust matches Unicode scalar values and never cuts a character; fancy-regex rejects the surrogate escape (dialect)." },
       "ref": "R2",
-      "targetRust": { "error": "invalidRegex" },
-      "targetJs": { "error": "regexSplitsCharacter" },
-      "pending": { "decisions": ["E5"], "phase": "C1", "engines": ["js"], "reason": "A zero-width split position inside a surrogate pair is refused in JS." }
+      "resolved": "Paket 10 C1 (E5): the JS split checks every effective split position and every participating capture against surrogate pairs and refuses the job instead of returning damaged columns (formerly utf16Damage)."
     },
     {
       "name": "R2/E5: regex matching the high surrogate",
@@ -687,12 +665,10 @@
       "delimiter": "\\uD83D",
       "useRegex": true,
       "expectedRust": { "error": "invalidRegex" },
-      "expectedJs": [["a"], ["\uDE00b"]],
-      "divergence": { "kind": "utf16Damage", "reason": "The JS match removes the high half of the emoji, the low half stays alone in the next column. fancy-regex rejects \\uD83D." },
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS RegExp without the u flag works on UTF-16 code units: this split would put a split position or a capture boundary inside a surrogate pair, so the JS worker refuses it (regexSplitsCharacter). Rust matches Unicode scalar values and never cuts a character; fancy-regex rejects the surrogate escape (dialect)." },
       "ref": "R2",
-      "targetRust": { "error": "invalidRegex" },
-      "targetJs": { "error": "regexSplitsCharacter" },
-      "pending": { "decisions": ["E5"], "phase": "C1", "engines": ["js"], "reason": "A match that ends inside a surrogate pair is refused in JS." }
+      "resolved": "Paket 10 C1 (E5): the JS split checks every effective split position and every participating capture against surrogate pairs and refuses the job instead of returning damaged columns (formerly utf16Damage)."
     },
     {
       "name": "R2/E5: regex matching the low surrogate",
@@ -700,12 +676,10 @@
       "delimiter": "\\uDE00",
       "useRegex": true,
       "expectedRust": { "error": "invalidRegex" },
-      "expectedJs": [["a\uD83D"], ["b"]],
-      "divergence": { "kind": "utf16Damage", "reason": "The JS match removes the low half of the emoji, the high half stays alone in the first column. fancy-regex rejects \\uDE00." },
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS RegExp without the u flag works on UTF-16 code units: this split would put a split position or a capture boundary inside a surrogate pair, so the JS worker refuses it (regexSplitsCharacter). Rust matches Unicode scalar values and never cuts a character; fancy-regex rejects the surrogate escape (dialect)." },
       "ref": "R2",
-      "targetRust": { "error": "invalidRegex" },
-      "targetJs": { "error": "regexSplitsCharacter" },
-      "pending": { "decisions": ["E5"], "phase": "C1", "engines": ["js"], "reason": "A match that starts inside a surrogate pair is refused in JS." }
+      "resolved": "Paket 10 C1 (E5): the JS split checks every effective split position and every participating capture against surrogate pairs and refuses the job instead of returning damaged columns (formerly utf16Damage)."
     },
     {
       "name": "R2/E5: character class with an emoji matches both halves as two adjacent delimiters",
@@ -713,12 +687,10 @@
       "delimiter": "[😀]",
       "useRegex": true,
       "expectedRust": [["a"], ["b"]],
-      "expectedJs": [["a"], [""], ["b"]],
-      "divergence": { "kind": "utf16Damage", "reason": "Without the u flag [😀] is the class of the two code units: two adjacent matches split inside the emoji and create an empty column that exists only between the halves." },
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS RegExp without the u flag works on UTF-16 code units: this split would put a split position or a capture boundary inside a surrogate pair, so the JS worker refuses it (regexSplitsCharacter). Rust matches Unicode scalar values and never cuts a character." },
       "ref": "R2",
-      "targetRust": [["a"], ["b"]],
-      "targetJs": { "error": "regexSplitsCharacter" },
-      "pending": { "decisions": ["E5"], "phase": "C1", "engines": ["js"], "reason": "Every split position counts, also between two adjacent matches: a position inside a surrogate pair is refused in JS." }
+      "resolved": "Paket 10 C1 (E5): the JS split checks every effective split position and every participating capture against surrogate pairs and refuses the job instead of returning damaged columns (formerly utf16Damage)."
     },
     {
       "name": "R2/E5: character class with an emoji on another emoji with the same high surrogate",
@@ -726,12 +698,10 @@
       "delimiter": "[😀]",
       "useRegex": true,
       "expectedRust": [["a😁b"]],
-      "expectedJs": [["a"], ["\uDE01b"]],
-      "divergence": { "kind": "utf16Damage", "reason": "The JS class matches the shared high half of 😁 (U+1F601): the low half stays alone. fancy-regex does not match 😁 at all." },
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS RegExp without the u flag works on UTF-16 code units: this split would put a split position or a capture boundary inside a surrogate pair, so the JS worker refuses it (regexSplitsCharacter). Rust matches Unicode scalar values and never cuts a character." },
       "ref": "R2",
-      "targetRust": [["a😁b"]],
-      "targetJs": { "error": "regexSplitsCharacter" },
-      "pending": { "decisions": ["E5"], "phase": "C1", "engines": ["js"], "reason": "A match that ends inside a surrogate pair is refused in JS." }
+      "resolved": "Paket 10 C1 (E5): the JS split checks every effective split position and every participating capture against surrogate pairs and refuses the job instead of returning damaged columns (formerly utf16Damage)."
     },
     {
       "name": "R2/E5: capture group with a class of the halves",
@@ -739,12 +709,10 @@
       "delimiter": "([😀])",
       "useRegex": true,
       "expectedRust": [["a"], ["b"]],
-      "expectedJs": [["a"], ["\uD83D"], [""], ["\uDE00"], ["b"]],
-      "divergence": { "kind": "utf16Damage", "reason": "JS split inserts every capture as a column: each half of the emoji becomes its own column (lone surrogates). fancy-regex drops captures (dialect)." },
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS RegExp without the u flag works on UTF-16 code units: this split would put a split position or a capture boundary inside a surrogate pair, so the JS worker refuses it (regexSplitsCharacter). Rust matches Unicode scalar values and never cuts a character." },
       "ref": "R2",
-      "targetRust": [["a"], ["b"]],
-      "targetJs": { "error": "regexSplitsCharacter" },
-      "pending": { "decisions": ["E5"], "phase": "C1", "engines": ["js"], "reason": "Split positions inside a surrogate pair are refused in JS, also when the match is captured." }
+      "resolved": "Paket 10 C1 (E5): the JS split checks every effective split position and every participating capture against surrogate pairs and refuses the job instead of returning damaged columns (formerly utf16Damage)."
     },
     {
       "name": "R2/E5: capture group around the high surrogate",
@@ -752,12 +720,10 @@
       "delimiter": "(\\uD83D)",
       "useRegex": true,
       "expectedRust": { "error": "invalidRegex" },
-      "expectedJs": [["a"], ["\uD83D"], ["\uDE00b"]],
-      "divergence": { "kind": "utf16Damage", "reason": "The captured high half and the remaining low half land in different columns. fancy-regex rejects \\uD83D." },
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS RegExp without the u flag works on UTF-16 code units: this split would put a split position or a capture boundary inside a surrogate pair, so the JS worker refuses it (regexSplitsCharacter). Rust matches Unicode scalar values and never cuts a character; fancy-regex rejects the surrogate escape (dialect)." },
       "ref": "R2",
-      "targetRust": { "error": "invalidRegex" },
-      "targetJs": { "error": "regexSplitsCharacter" },
-      "pending": { "decisions": ["E5"], "phase": "C1", "engines": ["js"], "reason": "A split position inside a surrogate pair is refused in JS, also when the match is captured." }
+      "resolved": "Paket 10 C1 (E5): the JS split checks every effective split position and every participating capture against surrogate pairs and refuses the job instead of returning damaged columns (formerly utf16Damage)."
     },
     {
       "name": "R2/E5: capture group around a whole emoji is a dialect difference only",
@@ -774,12 +740,10 @@
       "delimiter": "(\\uD83D)\\uDE00",
       "useRegex": true,
       "expectedRust": { "error": "invalidRegex" },
-      "expectedJs": [["a"], ["\uD83D"], ["b"]],
-      "divergence": { "kind": "utf16Damage", "reason": "The whole match is the emoji (its start and end are character boundaries), but JS split inserts the capture, which ends inside the surrogate pair: the column holds a lone high surrogate. fancy-regex rejects \\uD83D." },
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS RegExp without the u flag works on UTF-16 code units: this split would put a split position or a capture boundary inside a surrogate pair, so the JS worker refuses it (regexSplitsCharacter). Rust matches Unicode scalar values and never cuts a character; fancy-regex rejects the surrogate escape (dialect)." },
       "ref": "R2",
-      "targetRust": { "error": "invalidRegex" },
-      "targetJs": { "error": "regexSplitsCharacter" },
-      "pending": { "decisions": ["E5"], "phase": "C1", "engines": ["js"], "reason": "A capture boundary inside a surrogate pair is refused in JS, even if the whole match is safe." }
+      "resolved": "Paket 10 C1 (E5): the JS split checks every effective split position and every participating capture against surrogate pairs and refuses the job instead of returning damaged columns (formerly utf16Damage)."
     },
     {
       "name": "R2/E5: capture of the low surrogate inside a match of the whole emoji",
@@ -787,12 +751,10 @@
       "delimiter": "\\uD83D(\\uDE00)",
       "useRegex": true,
       "expectedRust": { "error": "invalidRegex" },
-      "expectedJs": [["a"], ["\uDE00"], ["b"]],
-      "divergence": { "kind": "utf16Damage", "reason": "The whole match is the emoji, but the inserted capture starts inside the surrogate pair: the column holds a lone low surrogate. fancy-regex rejects \\uD83D." },
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS RegExp without the u flag works on UTF-16 code units: this split would put a split position or a capture boundary inside a surrogate pair, so the JS worker refuses it (regexSplitsCharacter). Rust matches Unicode scalar values and never cuts a character; fancy-regex rejects the surrogate escape (dialect)." },
       "ref": "R2",
-      "targetRust": { "error": "invalidRegex" },
-      "targetJs": { "error": "regexSplitsCharacter" },
-      "pending": { "decisions": ["E5"], "phase": "C1", "engines": ["js"], "reason": "A capture boundary inside a surrogate pair is refused in JS, even if the whole match is safe." }
+      "resolved": "Paket 10 C1 (E5): the JS split checks every effective split position and every participating capture against surrogate pairs and refuses the job instead of returning damaged columns (formerly utf16Damage)."
     },
     {
       "name": "R2/E5: two captures split the halves of a match of the whole emoji",
@@ -800,12 +762,10 @@
       "delimiter": "(\\uD83D)(\\uDE00)",
       "useRegex": true,
       "expectedRust": { "error": "invalidRegex" },
-      "expectedJs": [["a"], ["\uD83D"], ["\uDE00"], ["b"]],
-      "divergence": { "kind": "utf16Damage", "reason": "The whole match is the emoji, but the two inserted captures put its halves into two columns (lone surrogates). fancy-regex rejects \\uD83D." },
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS RegExp without the u flag works on UTF-16 code units: this split would put a split position or a capture boundary inside a surrogate pair, so the JS worker refuses it (regexSplitsCharacter). Rust matches Unicode scalar values and never cuts a character; fancy-regex rejects the surrogate escape (dialect)." },
       "ref": "R2",
-      "targetRust": { "error": "invalidRegex" },
-      "targetJs": { "error": "regexSplitsCharacter" },
-      "pending": { "decisions": ["E5"], "phase": "C1", "engines": ["js"], "reason": "Capture boundaries inside a surrogate pair are refused in JS, even if the whole match is safe." }
+      "resolved": "Paket 10 C1 (E5): the JS split checks every effective split position and every participating capture against surrogate pairs and refuses the job instead of returning damaged columns (formerly utf16Damage)."
     },
     {
       "name": "R2/E5: two captures of whole emoji are a dialect difference only",
@@ -817,17 +777,75 @@
       "divergence": "Capture groups: fancy-regex split drops captured text, JS split inserts each capture as an extra column. Every capture holds whole characters."
     },
     {
+      "name": "C1/E5: empty capture inside a match of the whole emoji",
+      "input": "a😀b",
+      "delimiter": "\\uD83D()\\uDE00",
+      "useRegex": true,
+      "expectedRust": { "error": "invalidRegex" },
+      "expectedJs": [["a"], [""], ["b"]],
+      "divergence": "The whole match is the emoji and the empty capture (indices inside the pair) holds no text: JS inserts one empty column, no character is cut. fancy-regex rejects the surrogate escape \\uD83D."
+    },
+    {
+      "name": "C1/E5: empty capture next to a capture of the whole emoji",
+      "input": "a😀b",
+      "delimiter": "(\\uD83D()\\uDE00)",
+      "useRegex": true,
+      "expectedRust": { "error": "invalidRegex" },
+      "expectedJs": [["a"], ["😀"], [""], ["b"]],
+      "divergence": "The outer capture holds the whole emoji, the inner empty capture no text: no character is cut. fancy-regex rejects the surrogate escape \\uD83D."
+    },
+    {
+      "name": "C1/E5: optional emoji capture that does not participate",
+      "input": "a,b😀c",
+      "delimiter": "(😀)?,",
+      "useRegex": true,
+      "expectedRust": [["a"], ["b😀c"]],
+      "expectedJs": [["a"], [""], ["b😀c"]],
+      "divergence": "Capture groups: JS split inserts a non-participating capture as an empty column, fancy-regex drops captures. No character is cut."
+    },
+    {
+      "name": "C1/E5: alternative emoji captures, one participates per match",
+      "input": "a😀b🎉c",
+      "delimiter": "(😀)|(🎉)",
+      "useRegex": true,
+      "expectedRust": [["a"], ["b"], ["c"]],
+      "expectedJs": [["a"], ["😀"], [""], ["b"], [""], ["🎉"], ["c"]],
+      "divergence": "Capture groups: JS split inserts both groups of every match (the other one as an empty column), fancy-regex drops captures. Every capture holds whole characters."
+    },
+    {
+      "name": "C1/E5: emoji capture inside a non-capturing alternative",
+      "input": "a😀b",
+      "delimiter": "(?:x|(😀))",
+      "useRegex": true,
+      "expectedRust": [["a"], ["b"]],
+      "expectedJs": [["a"], ["😀"], ["b"]],
+      "divergence": "Capture groups: fancy-regex split drops captured text, JS split inserts the capture as an extra column. The emoji stays whole."
+    },
+    {
+      "name": "C1/E5: zero-width lookahead before emoji at character boundaries",
+      "input": "😀😀",
+      "delimiter": "(?=😀)",
+      "useRegex": true,
+      "expectedRust": [[""], ["😀"], ["😀"]],
+      "expectedJs": [["😀"], ["😀"]],
+      "divergence": "Empty matches at the start of the line: fancy-regex split yields an empty part there, JS split does not. Every split position is a character boundary."
+    },
+    {
+      "name": "C1/E4: whitespace-only plain delimiter stays allowed",
+      "input": "a b\r\nc d",
+      "delimiter": " ",
+      "expected": [["a", "c"], ["b", "d"]]
+    },
+    {
       "name": "R2/E5: dot as delimiter on an emoji",
       "input": "😀x",
       "delimiter": ".",
       "useRegex": true,
       "expectedRust": [[""], [""], [""]],
-      "expectedJs": [[""], [""], [""], [""]],
-      "divergence": { "kind": "utf16Damage", "reason": "JS . matches each code unit: the split position between the two halves adds a column although no value contains a lone surrogate." },
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS RegExp without the u flag works on UTF-16 code units: this split would put a split position or a capture boundary inside a surrogate pair, so the JS worker refuses it (regexSplitsCharacter). Rust matches Unicode scalar values and never cuts a character." },
       "ref": "R2",
-      "targetRust": [[""], [""], [""]],
-      "targetJs": { "error": "regexSplitsCharacter" },
-      "pending": { "decisions": ["E5"], "phase": "C1", "engines": ["js"], "reason": "The split positions decide, not only the values: a position inside a surrogate pair is refused in JS." }
+      "resolved": "Paket 10 C1 (E5): the JS split checks every effective split position and every participating capture against surrogate pairs and refuses the job instead of returning damaged columns (formerly utf16Damage)."
     },
     {
       "name": "R2/E5: cut emoji in several rows with different line endings",
@@ -835,12 +853,10 @@
       "delimiter": "[😀]",
       "useRegex": true,
       "expectedRust": [["a", "", "d"], ["b", "c", ""]],
-      "expectedJs": [["a", "", "d"], ["", "", ""], ["b", "c", ""]],
-      "divergence": { "kind": "utf16Damage", "reason": "In every row with an emoji the JS class matches both halves separately and adds a column between them; the line endings (CRLF, CR) are not affected." },
+      "expectedJs": { "error": "regexSplitsCharacter" },
+      "divergence": { "kind": "utf16Guard", "reason": "JS RegExp without the u flag works on UTF-16 code units: this split would put a split position or a capture boundary inside a surrogate pair, so the JS worker refuses it (regexSplitsCharacter). Rust matches Unicode scalar values and never cuts a character." },
       "ref": "R2",
-      "targetRust": [["a", "", "d"], ["b", "c", ""]],
-      "targetJs": { "error": "regexSplitsCharacter" },
-      "pending": { "decisions": ["E5"], "phase": "C1", "engines": ["js"], "reason": "One cut row refuses the whole split (no partial result)." }
+      "resolved": "Paket 10 C1 (E5): the JS split checks every effective split position and every participating capture against surrogate pairs and refuses the job instead of returning damaged columns (formerly utf16Damage)."
     },
     {
       "name": "R5/E3: empty regex pattern",

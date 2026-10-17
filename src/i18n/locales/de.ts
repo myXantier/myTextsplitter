@@ -120,6 +120,7 @@ export default {
       regexTooComplex: 'Regulärer Ausdruck ist für diesen Text zu aufwendig',
       invalidMode: 'Unbekannter Verarbeitungsmodus. Bitte eine der angebotenen Aktionen verwenden.',
       regexSplitsCharacter: 'Das Muster trifft nur einen Teil eines Zeichens (z. B. eines Emojis). Das Ergebnis wäre beschädigt und wurde nicht übernommen.',
+      emptyDelimiter: 'Das Trennzeichen darf nicht leer sein. Bitte ein Trennzeichen eingeben (Leerzeichen sind erlaubt).',
       diffTooComplex: 'Der Vergleich ist zu aufwendig (zu viele umgestellte Zeilen)',
       regexRequiresWorker: 'Reguläre Ausdrücke können ohne Web Worker nicht sicher ausgeführt werden',
       sortRequiresWorker: 'Dieser Text ist zu groß, um ohne Web Worker sortiert zu werden (die Seite würde einfrieren)',

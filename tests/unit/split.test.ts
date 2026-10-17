@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { splitLinesToColumns, splitTextToColumns } from '../../src/utils/splitColumns.ts';
+import { SplitInputError, splitLinesToColumns, splitTextToColumns } from '../../src/utils/splitColumns.ts';
 import { splitLines } from '../../src/utils/lines.ts';
 
 const { SplitService } = await import('../../src/services/Services.ts');
@@ -47,9 +47,9 @@ const fixtures: { description: string; cases: SplitCase[] } = JSON.parse(
 );
 
 const CASE_KEYS = ['name', 'input', 'delimiter', 'useRegex', 'trimParts', 'keepEmptyLines', 'expected', 'expectedRust', 'expectedJs', 'divergence', 'resolved', 'ref', 'target', 'targetRust', 'targetJs', 'pending'];
-const DIVERGENCE_KINDS = ['dialect', 'utf16Damage', 'unvalidatedInput'];
-/** Errors of the current engines. */
-const CURRENT_ERRORS = ['invalidRegex'];
+const DIVERGENCE_KINDS = ['dialect', 'utf16Guard', 'utf16Damage', 'unvalidatedInput'];
+/** Errors of the current engines (Paket 10 C1: emptyDelimiter, JS only: regexSplitsCharacter). */
+const CURRENT_ERRORS = ['invalidRegex', 'emptyDelimiter', 'regexSplitsCharacter'];
 /** Errors that only a target may use (Paket 10 decisions); `regexSplitsCharacter` is JS only (Rust never cuts a character). */
 const TARGET_ERRORS = ['invalidRegex', 'emptyDelimiter', 'emptyPattern', 'patternTooLong', 'regexSplitsCharacter'];
 const DECISIONS = ['E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E7', 'E8', 'E9', 'E10', 'E11'];
@@ -103,6 +103,10 @@ function fixtureProblems(file: unknown): string[] {
       }
     } else if (divergence === '') problems.push(`${where}: empty divergence`);
     for (const key of ['ref', 'resolved']) if (c[key] !== undefined && (typeof c[key] !== 'string' || !c[key])) problems.push(`${where}: ${key} must be a non-empty string`);
+    // Only the JS worker refuses a cut character (Rust never cuts one); it always comes with the utf16Guard divergence
+    if ([c.expected, c.expectedRust].some((e) => isError(e) && e.error === 'regexSplitsCharacter')) problems.push(`${where}: regexSplitsCharacter is a JS-only expectation`);
+    const refusedByJs = isError(c.expectedJs) && c.expectedJs.error === 'regexSplitsCharacter';
+    if (refusedByJs !== (isObject(divergence) && divergence.kind === 'utf16Guard')) problems.push(`${where}: expectedJs regexSplitsCharacter requires the divergence kind utf16Guard and vice versa`);
 
     // Targets of not yet implemented decisions
     const sharedTarget = c.target !== undefined;
@@ -149,12 +153,15 @@ const insidePair = (line: string, index: number) => index > 0 && index < line.le
  * - a split position (start or end of a delimiter match, also of an empty match or between two adjacent matches, or between
  *   the characters of an empty plain delimiter) inside a surrogate pair: this can add a column between the halves without
  *   any lone surrogate in the output (e.g. `[😀]`, `.`);
- * - a capture group whose start or end lies inside a surrogate pair: JS split inserts the capture as a column, so a whole
+ * - a non-empty capture group whose start or end lies inside a surrogate pair: JS split inserts the capture as a column
+ *   (an empty capture is an empty column wherever it lies, e.g. `\uD83D()\uDE00`), so a whole
  *   match at character boundaries does not make its captures safe (e.g. `(\uD83D)\uDE00`).
- * As a second, independent check the native `String.prototype.split` output must be well-formed Unicode.
+ * As a second, independent check the native `String.prototype.split` output of a well-formed line must be well-formed.
+ * Lone surrogates already in the line never count as a pair (`insidePair`).
  */
 function jsSplitCutsCharacter(line: string, delimiter: string, useRegex: boolean): boolean {
-  const splitOutputIllFormed = () => line.split(useRegex ? new RegExp(delimiter, 'gm') : delimiter).some((part) => part !== undefined && !part.isWellFormed());
+  // Only for a well-formed line: lone surrogates already in the input are not newly damaged
+  const splitOutputIllFormed = () => line.isWellFormed() && line.split(useRegex ? new RegExp(delimiter, 'gm') : delimiter).some((part) => part !== undefined && !part.isWellFormed());
   if (!useRegex) {
     if (delimiter === '') return Array.from({ length: line.length }, (_, index) => index).some((index) => insidePair(line, index));
     for (let index = line.indexOf(delimiter); index >= 0; index = line.indexOf(delimiter, index + 1)) {
@@ -166,7 +173,7 @@ function jsSplitCutsCharacter(line: string, delimiter: string, useRegex: boolean
   for (const match of line.matchAll(new RegExp(delimiter, 'gmd'))) {
     if (insidePair(line, match.index) || insidePair(line, match.index + match[0].length)) return true;
     for (const span of match.indices!.slice(1)) {
-      if (span && (insidePair(line, span[0]) || insidePair(line, span[1]))) return true;
+      if (span && span[0] !== span[1] && (insidePair(line, span[0]) || insidePair(line, span[1]))) return true;
     }
   }
   return splitOutputIllFormed();
@@ -215,7 +222,7 @@ test('split fixture check rejects malformed entries', () => {
     ['unknown key', { ...valid, expectedTs: [] }],
     ['per-engine without divergence', { ...valid, expected: undefined, expectedRust: [['a']], expectedJs: [['b']] }],
     ['unknown divergence kind', { ...valid, expected: undefined, expectedRust: [['a']], expectedJs: [['b']], divergence: { kind: 'bug', reason: 'r' } }],
-    ['target error as current error', { ...valid, expected: { error: 'emptyDelimiter' } }],
+    ['target-only error as current error', { ...valid, expected: { error: 'emptyPattern' } }],
     ['unknown target error', { ...valid, target: { error: 'timeout' }, pending }],
     ['target without pending', { ...valid, target: { error: 'emptyDelimiter' } }],
     ['pending without target', { ...valid, pending }],
@@ -228,25 +235,39 @@ test('split fixture check rejects malformed entries', () => {
     ['no engines', { ...valid, target: [['b']], pending: { ...pending, engines: [] } }],
     ['utf16Damage without JS target', { ...valid, expected: undefined, expectedRust: [['a']], expectedJs: [['b']], divergence: { kind: 'utf16Damage', reason: 'r' } }],
     ['ragged columns', { ...valid, expected: [['a'], []] }],
+    ['regexSplitsCharacter for Rust', { ...valid, expected: undefined, expectedRust: { error: 'regexSplitsCharacter' }, expectedJs: [['a']], divergence: { kind: 'utf16Guard', reason: 'r' } }],
+    ['shared regexSplitsCharacter', { ...valid, expected: { error: 'regexSplitsCharacter' } }],
+    ['regexSplitsCharacter without utf16Guard', { ...valid, expected: undefined, expectedRust: [['a']], expectedJs: { error: 'regexSplitsCharacter' }, divergence: { kind: 'dialect', reason: 'r' } }],
+    ['utf16Guard without regexSplitsCharacter', { ...valid, expected: undefined, expectedRust: [['a']], expectedJs: [['b']], divergence: { kind: 'utf16Guard', reason: 'r' } }],
     ['delimiter repeat without count', { ...valid, delimiter: { repeat: 'a' } }],
   ];
   for (const [label, entry] of broken) assert.notDeepEqual(check(JSON.parse(JSON.stringify(entry))), [], label);
 });
 
-test('split fixtures: utf16Damage marks exactly the cases whose JS split cuts a surrogate pair (R2)', () => {
+test('split fixtures: exactly the cases whose native JS split cuts a surrogate pair are refused (E5) or marked as damage', () => {
+  let refused = 0;
   for (const c of fixtures.cases) {
-    if (isError(jsExpectation(c))) continue; // no split happens
+    const expected = jsExpectation(c);
+    // An invalid regex or an empty plain delimiter is refused before any split happens
+    if (isError(expected) && expected.error !== 'regexSplitsCharacter') continue;
     const cuts = splitLines(c.input).lines.some((line) => jsSplitCutsCharacter(line, delimiterOf(c.delimiter), c.useRegex ?? false));
+    const refusedByJs = isError(expected);
     const marked = typeof c.divergence === 'object' && c.divergence.kind === 'utf16Damage';
-    assert.equal(cuts, marked, c.name);
+    assert.equal(cuts, refusedByJs || marked, c.name);
+    if (refusedByJs) refused++;
   }
+  assert.ok(refused >= 14, `${refused} refused cases`);
 });
 
 test('split fixtures cover the Paket 10 Phase A reproductions and decisions', () => {
   const refs = new Set(fixtures.cases.map((c) => c.ref).filter(Boolean));
   for (const ref of ['R2', 'R5', 'R7']) assert.ok(refs.has(ref), `missing ${ref}`);
   const decisions = new Set(fixtures.cases.flatMap((c) => c.pending?.decisions ?? []));
-  for (const decision of ['E3', 'E4', 'E5', 'E9']) assert.ok(decisions.has(decision), `missing ${decision}`);
+  // Still open: E3 (pattern rule, C2) and E9 (split flags, C2); E4 and E5 are implemented (Paket 10 C1)
+  assert.deepEqual([...decisions].sort(), ['E3', 'E9']);
+  const resolved = fixtures.cases.filter((c) => c.resolved?.startsWith('Paket 10 C1'));
+  assert.ok(resolved.filter((c) => isError(c.expected) && c.expected.error === 'emptyDelimiter').length >= 6, 'E4 cases');
+  assert.ok(resolved.filter((c) => isError(c.expectedJs) && c.expectedJs.error === 'regexSplitsCharacter').length >= 14, 'E5 cases');
 });
 
 for (const c of fixtures.cases) {
@@ -254,8 +275,9 @@ for (const c of fixtures.cases) {
     const expected = jsExpectation(c);
     const run = () => splitTextToColumns(c.input, delimiterOf(c.delimiter), optionsOf(c));
     if (isError(expected)) {
-      // `splitTextToColumns` throws the engine's SyntaxError; the worker reports it as invalidRegex
-      assert.throws(run, SyntaxError);
+      // `splitTextToColumns` throws the engine's SyntaxError or a SplitInputError; the worker reports them as invalid input
+      if (expected.error === 'invalidRegex') assert.throws(run, SyntaxError);
+      else assert.throws(run, (error: unknown) => error instanceof SplitInputError && error.reason === expected.error);
       return;
     }
     const result = run();
@@ -282,6 +304,103 @@ test('split (JS): combining columns row by row keeps rows aligned', () => {
 
 test('split (JS): invalid regex throws', () => {
   assert.throws(() => splitTextToColumns('a', '([a-', { useRegex: true, trimParts: false, keepEmptyLines: true }), SyntaxError);
+});
+
+// --- Paket 10 C1 (E5): the checked split is the native split, refused exactly where the independent oracle finds a cut ---
+
+const regexSplit = { useRegex: true, trimParts: false, keepEmptyLines: true };
+const plainSplit = { useRegex: false, trimParts: false, keepEmptyLines: true };
+/** Parts of one line as `splitLinesToColumns` returns them (one row), or the reason of a refusal. */
+function partsOf(line: string, delimiter: string, options: typeof regexSplit): string[] | string {
+  try {
+    return splitLinesToColumns([line], delimiter, options).map((column) => column[0]);
+  } catch (error) {
+    if (error instanceof SplitInputError) return error.reason;
+    throw error;
+  }
+}
+
+test('split (JS): checked regex split equals the native split or is refused exactly where the oracle finds a cut', () => {
+  const PATTERNS = [
+    '.', ',', '😀', '[😀]', '(😀)', '(😀)|(🎉)', '(😀)?,', '(?:x|(😀))', '(\\uD83D)\\uDE00', '\\uD83D(\\uDE00)', '(\\uD83D)(\\uDE00)',
+    '\\uD83D', '\\uDE00', '(?:)', 'x*', '(?=😀)', '(?<=😀)', '(?=\\uDE00)', '(?<=\\uD83D)', '$', '^', '\\b', 'a|', '(a)|(b)', '(,)',
+    '😀|🎉', '[^a]', '..', '(.)', '(?=a)', '😀*', '(😀)*', '[\\uD800-\\uDBFF]', '[\\uDC00-\\uDFFF]+', '\\u2028', '(?:😀|a)+',
+    '\\uD83D()\\uDE00', '(\\uD83D()\\uDE00)', '()', '(😀)()', '.()', '\\uD83D(x)?\\uDE00',
+  ];
+  const ALPHABET = ['a', 'b', ',', 'x', '😀', '😁', '🎉', ' ', '\uD83D', '\uDE00'];
+  let seed = 0x2f6e2b1;
+  const random = () => ((seed ^= seed << 13), (seed ^= seed >>> 17), (seed ^= seed << 5), (seed >>> 0) / 2 ** 32);
+  let refused = 0;
+  let checked = 0;
+  for (let n = 0; n < 1500; n++) {
+    const line = Array.from({ length: 1 + Math.floor(random() * 8) }, () => ALPHABET[Math.floor(random() * ALPHABET.length)]).join('');
+    for (const pattern of PATTERNS) {
+      const actual = partsOf(line, pattern, regexSplit);
+      if (jsSplitCutsCharacter(line, pattern, true)) {
+        assert.equal(actual, 'regexSplitsCharacter', `${JSON.stringify(line)} ${pattern}`);
+        refused++;
+      } else {
+        assert.deepEqual(actual, line.split(new RegExp(pattern, 'gm')).map((part) => part ?? ''), `${JSON.stringify(line)} ${pattern}`);
+      }
+      checked++;
+    }
+  }
+  assert.ok(refused > 1000 && checked - refused > 10000, `${refused} refused of ${checked}`);
+});
+
+test('split (JS): empty captures are no cut, non-empty captures and effective split positions inside a pair are', () => {
+  // An empty capture inside a removed emoji only adds an empty column (its indices [2, 2] lie inside the pair)
+  assert.deepEqual(partsOf('a😀b', '\\uD83D()\\uDE00', regexSplit), ['a', '', 'b']);
+  assert.deepEqual(partsOf('a😀b', '(\\uD83D()\\uDE00)', regexSplit), ['a', '😀', '', 'b']);
+  // Non-empty captures of one half and a zero-width split inside the pair stay refused
+  for (const pattern of ['(\\uD83D)\\uDE00', '\\uD83D(\\uDE00)', '(\\uD83D)(\\uDE00)', '(?=\\uDE00)']) {
+    assert.equal(partsOf('a😀b', pattern, regexSplit), 'regexSplitsCharacter', pattern);
+  }
+  // Whole-emoji captures and optional captures that do not participate are unchanged
+  assert.deepEqual(partsOf('a😀b', '(😀)', regexSplit), ['a', '😀', 'b']);
+  assert.deepEqual(partsOf('a😀🎉b', '(😀)(🎉)', regexSplit), ['a', '😀', '🎉', 'b']);
+  assert.deepEqual(partsOf('a,b😀c', '(😀)?,', regexSplit), ['a', '', 'b😀c']);
+  assert.deepEqual(partsOf('a😀b', '\\uD83D(x)?\\uDE00', regexSplit), ['a', '', 'b']);
+  // The oracle agrees
+  assert.equal(jsSplitCutsCharacter('a😀b', '\\uD83D()\\uDE00', true), false);
+  assert.equal(jsSplitCutsCharacter('a😀b', '(\\uD83D()\\uDE00)', true), false);
+  assert.equal(jsSplitCutsCharacter('a😀b', '(\\uD83D)\\uDE00', true), true);
+});
+
+test('split (JS): no checked split outputs a lone surrogate for a well-formed line', () => {
+  for (const line of ['a😀b', '😀😁🎉', 'x😀,😁y', '😀']) {
+    for (const pattern of ['.', '(.)', '[😀]', '([😀])', '(\\uD83D)\\uDE00', '(?:)', 'x*', '\\uDE00', '(😀)', '😀']) {
+      const parts = partsOf(line, pattern, regexSplit);
+      if (Array.isArray(parts)) assert.ok(parts.every((part) => part.isWellFormed()), `${line} ${pattern}: ${JSON.stringify(parts)}`);
+    }
+  }
+});
+
+test('split (JS): lone surrogates already in the input are not refused (not newly damaged)', () => {
+  assert.deepEqual(partsOf('a\uD83D,b', ',', plainSplit), ['a\uD83D', 'b']);
+  assert.deepEqual(partsOf('a\uD83D,b', '(\\uD83D),', regexSplit), ['a', '\uD83D', 'b']);
+  assert.deepEqual(partsOf('\uDE00x\uDE00', 'x', regexSplit), ['\uDE00', '\uDE00']);
+  // A valid pair next to a lone half is still protected
+  assert.equal(partsOf('\uDE00😀', '.', regexSplit), 'regexSplitsCharacter');
+  assert.equal(partsOf('\uD83D😀', '\\uD83D', regexSplit), 'regexSplitsCharacter');
+});
+
+test('split (JS): a plain delimiter is only checked when it holds a lone surrogate', () => {
+  // A well-formed delimiter can never start or end inside a pair
+  assert.deepEqual(partsOf('a😀b😀c', '😀', plainSplit), ['a', 'b', 'c']);
+  // A delimiter that is half a character (e.g. pasted) would cut it
+  assert.equal(partsOf('a😀b', '\uD83D', plainSplit), 'regexSplitsCharacter');
+  assert.equal(partsOf('a😀b', '\uDE00b', plainSplit), 'regexSplitsCharacter');
+  assert.deepEqual(partsOf('a\uD83Db', '\uD83D', plainSplit), ['a', 'b']);
+});
+
+test('split (JS, E4): an empty plain delimiter is refused before any line, also for no lines; spaces are allowed', () => {
+  for (const lines of [[], [''], ['abc'], ['😀']]) {
+    assert.throws(() => splitLinesToColumns(lines, '', plainSplit), (error: unknown) => error instanceof SplitInputError && error.reason === 'emptyDelimiter');
+  }
+  assert.deepEqual(splitLinesToColumns(['a b'], ' ', plainSplit), [['a'], ['b']]);
+  // The empty regex pattern is rule E3 (Phase C2): unchanged
+  assert.deepEqual(splitLinesToColumns(['ab'], '', regexSplit), [['a'], ['b']]);
 });
 
 // --- The real SplitWorker module (in-process, `self` stand-in) ---
@@ -328,15 +447,23 @@ for (const c of fixtures.cases) {
   test(`split service without Web Worker: ${c.name}`, async () => {
     const run = () => new SplitService().invoke(splitArgs(c), false);
     if (!c.useRegex) {
+      const expected = jsExpectation(c);
+      if (isError(expected)) {
+        // E4: the main-thread fallback refuses an empty plain delimiter like the worker
+        const error = await rejectionOf(run);
+        assert.deepEqual({ kind: error.kind, message: error.message }, { kind: 'invalidInput', message: ERROR_KEYS[expected.error as keyof typeof ERROR_KEYS] });
+        return;
+      }
       const result = await run();
-      assert.deepEqual({ type: result.type, result: result.result }, { type: 'ColumnList', result: jsExpectation(c) });
+      assert.deepEqual({ type: result.type, result: result.result }, { type: 'ColumnList', result: expected });
       return;
     }
     // A regex never runs in the UI thread. The compile check there (`compileUserRegex`) also refuses an empty or too
     // long pattern as invalidRegex, which the worker does not check (R5)
     const error = await rejectionOf(run);
     const pattern = delimiterOf(c.delimiter);
-    const refusedPattern = isError(jsExpectation(c)) || !pattern || pattern.length > MAX_PATTERN_LENGTH;
+    const expected = jsExpectation(c);
+    const refusedPattern = (isError(expected) && expected.error === 'invalidRegex') || !pattern || pattern.length > MAX_PATTERN_LENGTH;
     assert.deepEqual(
       { kind: error.kind, message: error.message },
       refusedPattern ? { kind: 'invalidInput', message: ERROR_KEYS.invalidRegex } : { kind: 'worker', message: ERROR_KEYS.regexRequiresWorker }

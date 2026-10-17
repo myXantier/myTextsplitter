@@ -439,6 +439,96 @@ export async function checkRegexRobustness(page, r, label, errorsSince, engine) 
 }
 
 /**
+ * Split data integrity (Paket 10 C1) on the real Split page in the current engine (`engine`: 'js' worker or 'rust'):
+ * an empty plain delimiter is refused (E4), a regex split that would cut an emoji is refused in JS (E5; Rust never cuts a
+ * character and rejects surrogate escapes), no damaged or partial result is applied, the previous result and metrics stay,
+ * and safe emoji delimiters and a later valid split work.
+ */
+export async function checkSplitIntegrity(page, r, label, errorsSince, engine) {
+  const exceptionsSince = (n) => errorsSince(n).filter((l) => l.kind === 'exception');
+  const regexCheckbox = `[...__t.page().querySelectorAll('.input-box')].find(e => /regex/i.test(e.innerText)).querySelector('input')`;
+  const setRegex = (on) => page.eval(`${regexCheckbox}.checked !== ${on} && ${regexCheckbox}.click(); true`);
+  const setText = async (value) => {
+    await page.eval(`__t.set(__t.textareas()[0], ${JSON.stringify(value)}); true`);
+    await sleepMs(150);
+  };
+  const setSeparator = async (value) => {
+    await page.eval(`__t.set(__t.page().querySelector('.form-add-render input'), ${JSON.stringify(value)}); true`);
+    await sleepMs(150);
+  };
+  const state = () => page.eval(`({ columns: __t.columns(), metrics: __t.page().querySelector('.metrics-group')?.innerText ?? null })`);
+  const split = `__t.page().querySelector('button[title="Split text"]').click()`;
+  /** Splits and waits for the first snackbar (all snackbars shown meanwhile) */
+  const splitForSnacks = async () => {
+    await page.eval(`__t.watchSnacks(); ${split}; true`);
+    await page.waitFor(`__t.snackLog.length > 0`, 8000);
+    await sleepMs(300);
+    return page.eval('__t.takeSnacks()');
+  };
+  /** Splits and waits until the columns equal `expected`; returns the error snackbars */
+  const splitForColumns = async (expected) => {
+    await page.eval(`__t.watchSnacks(); ${split}; true`);
+    const ok = await page.waitFor(`JSON.stringify(__t.columns()) === ${JSON.stringify(JSON.stringify(expected))}`, 8000);
+    await sleepMs(200);
+    return { ok, errors: (await page.eval('__t.takeSnacks()')).filter((s) => s.startsWith('error')) };
+  };
+  const EMPTY_DELIMITER = /Trennzeichen darf nicht leer|delimiter must not be empty/i;
+  const CUT_CHARACTER = /Teil eines Zeichens|part of a character/i;
+
+  await page.eval(`__t.nav('split'); true`);
+  await sleepMs(200);
+  await setRegex(false);
+  let n = page.logs.length;
+  await setText('a😀b,c\nd🎉e,f');
+  await setSeparator(',');
+  let outcome = await splitForColumns([['a😀b', 'd🎉e'], ['c', 'f']]);
+  r.check(`${label}: Split with emoji in the values`, outcome.ok && outcome.errors.length === 0, JSON.stringify(await state()));
+  const before = await state();
+
+  // E4: empty plain delimiter
+  await setSeparator('');
+  let snacks = await splitForSnacks();
+  r.check(`${label}: Split with an empty plain delimiter -> one input error`, snacks.length === 1 && snacks[0].startsWith('error') && EMPTY_DELIMITER.test(snacks[0]), JSON.stringify(snacks));
+  r.check(`${label}: empty delimiter -> previous result and metrics kept`, JSON.stringify(await state()) === JSON.stringify(before), JSON.stringify(await state()));
+
+  // E5: a regex that matches the halves of the emoji separately ([😀] without u flag) and a capture of one half
+  await setRegex(true);
+  await setText('a😀b');
+  await setSeparator('[😀]');
+  if (engine === 'js') {
+    snacks = await splitForSnacks();
+    r.check(`${label}: regex [😀] would cut the emoji -> one input error`, snacks.length === 1 && snacks[0].startsWith('error') && CUT_CHARACTER.test(snacks[0]), JSON.stringify(snacks));
+    r.check(`${label}: cut character -> no damaged or partial result, metrics kept`, JSON.stringify(await state()) === JSON.stringify(before), JSON.stringify(await state()));
+    await setSeparator('(\\uD83D)\\uDE00');
+    snacks = await splitForSnacks();
+    r.check(`${label}: capture of one surrogate half -> one input error`, snacks.length === 1 && CUT_CHARACTER.test(snacks[0]), JSON.stringify(snacks));
+    r.check(`${label}: capture of one surrogate half -> previous result kept`, JSON.stringify(await state()) === JSON.stringify(before), JSON.stringify(await state()));
+  } else {
+    // Rust matches Unicode scalar values: the class holds the emoji, nothing is cut
+    outcome = await splitForColumns([['a'], ['b']]);
+    r.check(`${label}: regex [😀] splits at the whole emoji (Rust)`, outcome.ok && outcome.errors.length === 0, JSON.stringify(await state()));
+    await setSeparator('(\\uD83D)\\uDE00');
+    snacks = await splitForSnacks();
+    r.check(`${label}: surrogate escape is an invalid regex in Rust`, snacks.length === 1 && /^error: .*(regex|regul)/i.test(snacks[0]), JSON.stringify(snacks));
+  }
+
+  // Safe emoji splits after the errors
+  await setSeparator('(😀)');
+  outcome = await splitForColumns(engine === 'js' ? [['a'], ['😀'], ['b']] : [['a'], ['b']]);
+  r.check(`${label}: regex with a whole-emoji capture works after an error`, outcome.ok && outcome.errors.length === 0, JSON.stringify(await state()));
+  await setRegex(false);
+  await setText('x😀y\nz');
+  await setSeparator('😀');
+  outcome = await splitForColumns([['x', 'z'], ['y', '']]);
+  r.check(`${label}: plain emoji delimiter works`, outcome.ok && outcome.errors.length === 0, JSON.stringify(await state()));
+  r.check(`${label}: split integrity checks without exceptions`, exceptionsSince(n).length === 0, JSON.stringify(exceptionsSince(n)));
+
+  // The source text is shared by the pages: leave a harmless one and the usual separator
+  await setText('a_b');
+  await setSeparator('_');
+}
+
+/**
  * Combine state (Paket 6 follow-up) in the current processing mode (Rust: `combine_columns`, JS: frontend): adding a
  * column is a new state even if the combined text is '' or unchanged; undo/redo restore the used columns.
  */

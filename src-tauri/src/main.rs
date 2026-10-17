@@ -339,6 +339,20 @@ mod tests {
     }
 
     #[test]
+    fn split_command_reports_an_empty_plain_delimiter_as_empty_delimiter() {
+        let _serial = serial();
+        use tauri::async_runtime::block_on;
+        // Paket 10 E4: also for an empty text; the frontend maps the kind to `invalidInput` / `errors.emptyDelimiter`
+        for text in ["a😀b", ""] {
+            let error = ipc_error(block_on(process_text_block(text.into(), "".into(), false, false, true)));
+            assert_eq!(error["kind"], "emptyDelimiter", "{error}");
+        }
+        // Whitespace is a valid delimiter; the empty regex pattern is rule E3 (unchanged)
+        assert_eq!(block_on(process_text_block("a b".into(), " ".into(), false, false, true)).unwrap().result_text, vec!["a", "b"]);
+        assert!(block_on(process_text_block("ab".into(), "".into(), false, true, true)).is_ok());
+    }
+
+    #[test]
     fn text_commands_report_backtrack_limit_as_regex_runtime_error() {
         let _serial = serial();
         let text = "ab".repeat(40);
