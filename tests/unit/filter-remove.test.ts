@@ -1,8 +1,8 @@
 // Filter/Remove golden fixtures (Paket 8): `tests/fixtures/filter-remove-cases.json`, also run by the Rust engine
 // (`cargo test`, src-tauri/src/text_processor.rs). Phase B characterized the behaviour, Phase C1 corrected the
 // duplicate trim output, the whitespace set and cut surrogate pairs in the JS Filter. The JS side runs the real worker
-// modules (in-process, `self` stand-in), the Remove main-thread fallback, the service path without Web Worker
-// (`invoke(args, false)` in Node) and, separately marked, the Filter main-thread implementation that `invoke` never reaches.
+// modules (in-process, `self` stand-in), the Remove main-thread fallback and the service path without Web Worker
+// (`invoke(args, false)` in Node). The Filter has no main-thread implementation (Paket 10 C6, E10): it is refused there.
 // Paket 10 Phase B: targets of not yet implemented decisions (`target` + `pending`) and the pattern preview of the Filter
 // page (`preview`: current segments of the real MatchPreviewWorker, its target, checked against the JS Filter verdict).
 import { installWindow, disableWorkerCleanupInterval, rejectionOf } from './helpers/setup.ts';
@@ -46,7 +46,6 @@ interface Case<O, E> {
   expected?: E;
   expectedRust?: E;
   expectedJs?: E;
-  expectedJsUnreachableMainThread?: E;
   divergence?: { kind: string; reason: string };
   openQuestion?: string;
   resolved?: string;
@@ -66,7 +65,7 @@ interface Fixtures {
   remove: RemoveCase[];
 }
 
-const CASE_KEYS = ['name', 'ref', 'input', 'pattern', 'options', 'expected', 'expectedRust', 'expectedJs', 'expectedJsUnreachableMainThread', 'divergence', 'openQuestion', 'resolved', 'target', 'pending', 'preview'];
+const CASE_KEYS = ['name', 'ref', 'input', 'pattern', 'options', 'expected', 'expectedRust', 'expectedJs', 'divergence', 'openQuestion', 'resolved', 'target', 'pending', 'preview'];
 /** Errors a target may use (the current errors without the JS-only regexSplitsCharacter). */
 const TARGET_ERROR_KINDS = ['invalidRegex', 'regexRuntime', 'invalidMode', 'patternEmpty', 'patternTooLong'];
 /** Paket 10 C2: a match that cuts a character in every Filter mode is a preview error; C3: the pattern errors of E3 */
@@ -242,10 +241,6 @@ function fixtureProblems(fixtures: unknown): string[] {
       if (isErrorOf(c.expectedJs, JS_FILTER_ERROR) !== (isObject(divergence) && divergence.kind === 'utf16Guard')) {
         problems.push(`${where}: expectedJs ${JS_FILTER_ERROR} requires the divergence kind utf16Guard and vice versa`);
       }
-      if (c.expectedJsUnreachableMainThread !== undefined) {
-        if (section !== 'filter') problems.push(`${where}: expectedJsUnreachableMainThread is only for the Filter`);
-        else if (typeof c.expectedJsUnreachableMainThread !== 'string') problems.push(`${where}: expectedJsUnreachableMainThread must be a text`);
-      }
       for (const key of ['ref', 'openQuestion', 'resolved']) if (c[key] !== undefined && (typeof c[key] !== 'string' || !c[key])) problems.push(`${where}: ${key} must be a non-empty string`);
       // A resolved (corrected) case has one shared expectation
       if (c.resolved !== undefined && !shared) problems.push(`${where}: a resolved case uses expected`);
@@ -298,6 +293,8 @@ test('filter/remove fixture check rejects malformed entries', () => {
     ['invalid pattern repeat', { ...valid, pattern: { repeat: 'a' } }],
     ['empty resolved note', { ...valid, resolved: '' }],
     ['resolved with per-engine expectations', { ...valid, expected: undefined, expectedRust: 'a', expectedJs: 'b', divergence: { kind: 'dialect', reason: 'r' }, resolved: 'r' }],
+    // Paket 10 C6 (E10): there is no main-thread Filter any more
+    ['main-thread Filter expectation', { ...valid, expectedJsUnreachableMainThread: 'a' }],
   ];
   for (const [label, entry] of broken) {
     const cleaned = JSON.parse(JSON.stringify(entry)); // drops `undefined` keys like the JSON file would
@@ -385,6 +382,35 @@ function assertPendingJs(c: { name: string; target?: unknown; pending?: { engine
 }
 
 const patternOf = (pattern: Pattern) => (typeof pattern === 'string' ? pattern : pattern.repeat.repeat(pattern.count));
+
+/**
+ * Number of executions of a RegExp with the source of `pattern` (exec, test, match, matchAll, replace, search, split)
+ * while `run` runs: the user regex must never run in the main thread. Compiling is not counted.
+ */
+async function userRegexRuns(pattern: string, run: () => Promise<void>): Promise<number> {
+  let source: string | null = null;
+  try {
+    source = new RegExp(pattern).source;
+  } catch {
+    // An invalid pattern cannot run at all
+  }
+  const proto = RegExp.prototype as any;
+  const keys = ['exec', 'test', Symbol.match, Symbol.matchAll, Symbol.replace, Symbol.search, Symbol.split];
+  const originals = keys.map((key) => proto[key]);
+  let runs = 0;
+  keys.forEach((key, i) => {
+    proto[key] = function (this: RegExp, ...args: unknown[]) {
+      if (source !== null && this.source === source) runs++;
+      return originals[i].apply(this, args);
+    };
+  });
+  try {
+    await run();
+  } finally {
+    keys.forEach((key, i) => (proto[key] = originals[i]));
+  }
+  return runs;
+}
 const filterArgs = (c: { input: string; pattern: Pattern; options: FilterOptions }): FilterConfig => ({
   sourceText: c.input,
   mainParam: patternOf(c.pattern),
@@ -465,23 +491,42 @@ for (const c of fixtures.filter) {
   }
 
   // Without Web Worker (Node) the Filter never runs its regex in the main thread: only the mode check (service) and
-  // compiling can fail
+  // compiling can fail, then it is refused (keep and remove)
   test(`filter service without Web Worker: ${c.name}`, async () => {
-    const error = await rejectionOf(() => new FilterService().invoke(filterArgs(c), false));
+    let error: any;
+    const runs = await userRegexRuns(patternOf(c.pattern), async () => {
+      error = await rejectionOf(() => new FilterService().invoke(filterArgs(c), false));
+    });
     // Mode first (service check), then the pattern rule and the syntax (compiling): the same errors as the worker
     if (typeof expected === 'object' && expected.error !== JS_FILTER_ERROR) assertInputError(error.kind, error.message, expected.error, c.name);
     else assert.deepEqual({ kind: error.kind, message: error.message }, { kind: 'worker', message: ERROR_KEYS.regexRequiresWorker });
+    assert.equal(runs, 0, 'no user regex runs in the main thread');
   });
 
-  if (c.expectedJsUnreachableMainThread !== undefined) {
-    // Characterization only: `invoke` never reaches this implementation (see the service test above)
-    test(`filter main thread (unreachable, not a product path): ${c.name}`, async () => {
-      const result = await (new FilterService() as any).frontendInMainThread(filterArgs(c));
-      assert.equal(result.type, 'Text');
-      assertFilterText(result.result, c.expectedJsUnreachableMainThread as string, 'unreachable main thread');
+  // Paket 10 C6 (E10): the former main-thread Filter is gone; a direct call cannot run its old semantics
+  test(`filter main thread is refused, also when called directly: ${c.name}`, async () => {
+    let error: any;
+    const runs = await userRegexRuns(patternOf(c.pattern), async () => {
+      error = await rejectionOf(() => (new FilterService() as any).frontendInMainThread(filterArgs(c)));
     });
-  }
+    assert.deepEqual({ kind: error.kind, message: error.message }, { kind: 'worker', message: ERROR_KEYS.regexRequiresWorker });
+    assert.equal(runs, 0, 'no regex at all');
+  });
 }
+
+test('filter: the main-thread regex spy counts the runs of the user regex (control for the refusal tests)', async () => {
+  // The worker module runs in this thread in the tests: its runs are counted, other regexes are not
+  const keep = await userRegexRuns('\\d', async () => {
+    runWorker('filter', filterArgs({ input: 'a1\nb2', pattern: '\\d', options: { mode: 'keep', caseSensitive: true, splitMatches: false } }));
+  });
+  const remove = await userRegexRuns('\\d', async () => {
+    runWorker('filter', filterArgs({ input: 'a1\nb2', pattern: '\\d', options: { mode: 'remove', caseSensitive: true, splitMatches: false } }));
+  });
+  const other = await userRegexRuns('\\d', async () => {
+    'x'.replace(/x/g, 'y');
+  });
+  assert.ok(keep > 0 && remove > 0 && other === 0, `${keep} ${remove} ${other}`);
+});
 
 test('filter: Rust expectations of refused JS results are well-formed Unicode', () => {
   const cases = fixtures.filter.filter((c) => c.divergence?.kind === 'utf16Guard');

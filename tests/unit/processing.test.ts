@@ -342,10 +342,20 @@ test('B24: diff delivers the same Diff document in backend and main-thread mode'
 
 // --- Main-thread fallback (no Web Worker) ---
 
-test('fallback: the main-thread filter implementation returns an empty Text result for removed lines', async () => {
-  // Not reachable through `invoke` without Web Worker (Filter always runs a regex), kept as implementation
-  const result = await (new FilterService() as any).frontendInMainThread(filterArgs('apple', 'x'));
+test('fallback: the Filter has no main-thread implementation, keep and remove are refused (Paket 10 C6, E10)', async () => {
+  installWindow();
+  for (const mode of ['keep', 'remove']) {
+    // Through `invoke` and directly: never an (empty) result of the former implementation, never a regex run
+    for (const run of [() => new FilterService().invoke(filterArgs('apple', 'x', mode), false), () => (new FilterService() as any).frontendInMainThread(filterArgs('apple', 'x', mode))]) {
+      const error = await rejectionOf(run);
+      assert.deepEqual({ kind: error.kind, message: error.message }, { kind: 'worker', message: 'errors.regexRequiresWorker' }, mode);
+    }
+  }
+  // A later valid job works (backend path)
+  backend(() => processed(''));
+  const result = await new FilterService().invoke(filterArgs('apple', 'x'), true);
   assert.deepEqual({ type: result.type, result: result.result }, { type: 'Text', result: '' });
+  assertNoSecretLogged();
 });
 
 // --- Paket 5: no unprotected regex in the UI thread ---

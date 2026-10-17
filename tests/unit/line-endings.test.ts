@@ -115,7 +115,7 @@ for (const c of splitFixtures.cases) {
   });
 }
 
-// --- Filter (worker; the main-thread Filter is not reachable with a regex, see FilterService) ---
+// --- Filter (worker; there is no main-thread Filter, Paket 10 C6: it is refused, see FilterService) ---
 
 for (const c of fixtures.filter) {
   test(`filter worker: ${c.name}`, () => {
@@ -123,10 +123,21 @@ for (const c of fixtures.filter) {
   });
 }
 
-test('filter main-thread implementation uses the line format of the input', async () => {
+test('filter worker uses the line format of the input (keep and remove, CRLF with trailing newline)', () => {
+  // Formerly checked on the main-thread Filter, which is gone (Paket 10 C6, E10): the Filter runs in the worker or in Rust
+  assert.equal(runWorker('filter', filterArgs({ input: 'a1\r\nb2\r\n', pattern: '\\d', mode: 'remove' })), 'a\r\nb\r\n');
+  assert.equal(runWorker('filter', filterArgs({ input: 'a1\rb2\r', pattern: '\\d', mode: 'keep' })), '1\r2\r');
+});
+
+test('filter service without Web Worker refuses the Filter instead of running it in the main thread', async () => {
   const service = new FilterService() as any;
-  const result = await service.frontendInMainThread(filterArgs({ input: 'a1\r\nb2\r\n', pattern: '\\d', mode: 'remove' }));
-  assert.equal(result.result, 'a\r\nb\r\n');
+  for (const mode of ['keep', 'remove']) {
+    const args = filterArgs({ input: 'a1\r\nb2\r\n', pattern: '\\d', mode });
+    for (const run of [() => service.invoke(args, false), () => service.frontendInMainThread(args)]) {
+      const error = await run().then(() => null, (e: any) => e);
+      assert.deepEqual({ kind: error?.kind, message: error?.message }, { kind: 'worker', message: 'errors.regexRequiresWorker' }, mode);
+    }
+  }
 });
 
 // --- Remove (worker and main-thread fallback) ---

@@ -149,15 +149,18 @@ Semantics fixed in C1:
 | `expected` | Same result in both engines. Filter: the text or `{ "error": "invalidRegex" \| "regexRuntime" \| "invalidMode" \| "patternEmpty" \| "patternTooLong" }`. Remove: `{ "text", "removedLines" }` or `{ "error" }`. |
 | `expectedRust` + `expectedJs` + `divergence` | Different current results; `divergence.kind` is `dialect` (accepted, Paket 5), `utf16Guard`, `suspectedBug`, `inconsistentDefinition` or `unvalidatedInput`, with a `reason`. |
 | `{ "error": "regexSplitsCharacter" }` | JS Filter only, always with `utf16Guard`: Rust processes valid Unicode, the JS worker refuses a result with a cut character. Every successful JS result is checked to be well-formed Unicode. |
-| `expectedJsUnreachableMainThread` | `FilterService.frontendInMainThread`, which `invoke` never reaches. Tested separately, **not a product path**. |
 | `ref`, `openQuestion` | Case id in the Phase A report; open product decision for identical behaviour. |
 | `resolved` | Why a correction changed the expectation (only with a shared `expected`). |
 | `target` + `pending` | Paket 10: result of a not yet implemented decision in both engines (none left in these fixtures after C3). `pending { decisions, phase, engines, reason }`: exactly the listed engines still differ from the target (checked against the real engines in both runners). |
 | `preview` | Paket 10, Filter only, JS only: the pattern preview (`MatchPreviewWorker`, `buildMatchPreview`; it knows `caseSensitive` and `splitMatches`, not the mode). `segments` = rows `[text, match, …, text]` per line with a non-empty highlight, or `{ "error": "invalidRegex" \| "regexSplitsCharacter" }`; `keepSplitCutsCharacter: true` = some highlights join two halves of a character, so only "keep" with split matches refuses them (C2, E1); `resolved` = why C2 changed the expectation; `target` + `pending { decisions, phase, reason }` = a still open preview decision (E3); `note` = intended difference to the Filter result (E2). Rows never contain a lone surrogate and rebuild their input line; with the mode of the case the preview judgement gives exactly the JS Filter verdict (cut in every mode = refused; joined halves = refused only by keep with split matches). The preview worker runs for every Filter case (complete, without omissions, line numbers and match count checked). |
 
 JS paths per case: the real worker module; for Remove also `frontendInMainThread`; and the service without Web Worker
-(`invoke(args, false)` in Node): Filter always refuses (`regexRequiresWorker`, or `invalidRegex`), Remove runs
-duplicates and literal search in the main thread and refuses regex jobs. Both runners reject malformed entries
+(`invoke(args, false)` in Node): Filter always refuses (the mode, pattern and syntax errors of the worker, otherwise
+`regexRequiresWorker`), Remove runs duplicates and literal search in the main thread and refuses regex jobs. Paket 10 C6
+(E10): the Filter has no main-thread implementation (the former one with outdated rules and the field
+`expectedJsUnreachableMainThread` are gone); `FilterService.frontendInMainThread` refuses with `regexRequiresWorker`, also
+when called directly, and a RegExp spy checks that the user regex never runs in the main thread (with a positive control
+on the worker module). Both runners reject malformed entries
 (missing options, unknown keys, inconsistent expectations).
 
 ## Sort contract fixtures (`tests/fixtures/sort-cases.json`, Paket 9)

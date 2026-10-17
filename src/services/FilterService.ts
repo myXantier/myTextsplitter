@@ -1,7 +1,5 @@
 import { BaseService, type JobOutcome, type JobRegex } from './BaseService';
-import { compileUserRegex } from '../utils/regex';
-import { joinLines, splitLines } from '../utils/lines';
-import { assertBackendResult, createResult } from './ProcessingError';
+import { ERROR_KEYS, ProcessingError, assertBackendResult, createResult } from './ProcessingError';
 import { assertFilterMode } from '../utils/textModes';
 
 export class FilterService extends BaseService {
@@ -38,26 +36,13 @@ export class FilterService extends BaseService {
     return { pattern: mainParam, flags: configParams.caseSensitive ? 'g' : 'gi' };
   }
 
-  /** Not reachable through `invoke` (Filter always runs a regex, see `regexOf`); kept as JS implementation. */
-  protected async frontendInMainThread(args: FilterConfig): Promise<myResult> {
-    const { sourceText, mainParam, configParams } = args;
-    const { caseSensitive, filterMode, splitMatches } = configParams;
-
-    const regex = compileUserRegex(mainParam, caseSensitive ? 'g' : 'gi');
-
-    const { lines, ...format } = splitLines(sourceText);
-    const processedLines = lines.map((line) => {
-      if (!line.trim()) return line;
-
-      if (filterMode === 'remove') {
-        return line.replace(regex, '');
-      } else {
-        const matches = [...line.matchAll(regex)].map((m) => m[0]);
-        if (!matches.length) return '';
-        return splitMatches ? matches.join(format.lineEnding) : matches.join('');
-      }
-    });
-
-    return createResult('Text', joinLines(processedLines, format));
+  /**
+   * Paket 10 E10: the Filter has no JS main-thread implementation (it always runs a user regex, which cannot be stopped
+   * in the UI thread). `invoke` never gets here: without Web Worker `BaseService.assertMainThreadAllowed` reports the
+   * mode, pattern and syntax errors and then `regexRequiresWorker`. A direct call is refused with `regexRequiresWorker`
+   * and runs no regex (no former Filter semantics); the Filter runs in the FilterWorker or in Rust.
+   */
+  protected async frontendInMainThread(_args: FilterConfig): Promise<myResult> {
+    throw new ProcessingError('worker', ERROR_KEYS.regexRequiresWorker, `${this.type}: no Web Worker available`);
   }
 }
