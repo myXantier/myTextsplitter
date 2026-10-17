@@ -300,8 +300,22 @@ Chrome/WebView2 125+, Node 23+; older runtimes: `invalidRegex`): the JS result m
   `regexRuntime` -> "too complex". All text commands are `async` (sync Tauri commands run on the main thread); Split,
   Filter, Remove and Diff run on the blocking pool (`spawn_blocking`) through a `JobSlot` per operation (`job_slot.rs`): at
   most one running and one waiting job, waiting happens in the async command (no blocked thread). A newer request
-  replaces the waiting one, which never runs and drops its input (`superseded`). A running regex cannot be stopped.
-  A panicking job is `internal` (backend error) and does not block later jobs.
+  replaces the waiting one, which never runs and drops its input (`superseded`). A panicking job is `internal` (backend
+  error) and does not block later jobs.
+- **Rust regex budget and supersede (Paket 10 C5B, E6):** a running user regex job (Split with regex, Filter keep/remove,
+  Remove containing/notContaining with regex) has a cooperative time budget from its execution start (Split and Filter
+  10 s, Remove 12 s) and the supersede signal of its `JobControl`: a newer request of the same operation marks the running
+  job, a job never signals a newer one. Checks (`Checkpoint` in `text_processor.rs`, `RegexBudget` in `job_slot.rs`) run
+  before and after compiling, around every line, before and after every single search step (`split`/`find_iter` items,
+  `is_match`) and before the result; Filter remove streams `find_iter` instead of `try_replacen` (same text, checked
+  against it). Budget: `regexRuntime` -> "too complex"; superseded: `superseded`, hidden when a newer job exists. No partial
+  result, metrics kept. **No hard limit:** a single running search or compile cannot be interrupted, the job ends at the
+  first check after it (measured: 3.3 s over the budget for a quadratic lookahead on 80,000 characters, 66 s for a
+  10,000-character literal on 1 MB). `BaseService.cancelPending` alone does not reach Rust: such a job ends at its budget
+  or when a newer request of the same operation arrives. Plain splits, plain Remove, duplicates and Diff never check
+  (no new limit). Tests: `regex_jobs_fail_at_every_checkpoint_without_a_partial_result` and the other E6 tests in
+  `text_processor.rs` (counted checks, no timing), the supersede/budget tests in `job_slot.rs` (channels, one small real
+  budget), `processing.test.ts` (frontend mapping, metrics).
 - **JS:** user regexes only run in Web Workers. The timeout calls `Worker.terminate()` immediately, which really stops a
   running regex (`worker-termination.test.ts` runs the real worker module in a `worker_threads` thread). A terminated
   worker is never reused; only the latest job per type is delivered (older ones end as `superseded` and are not shown).
@@ -322,8 +336,8 @@ Chrome/WebView2 125+, Node 23+; older runtimes: `invalidRegex`): the JS result m
 - **Validation** happens in the engine that runs the pattern (no JS pre-validation in Rust mode). The pattern preview of
   the Filter page always uses JS in its own worker; in Rust mode it says so, and a pattern JS rejects shows a note.
 - **Known limits (Paket 10, decided for Phase C):** the backtracking limit applies to one search, not to a job
-  (`backtrack_limit_applies_per_search_not_per_job`); one search of the linear engine cannot be interrupted either (measured
-  up to about a minute for a 10,000-character literal on a 1 MB line). Details: `docs/analyse/Paket10-PhaseB-Regexvertrag.md`.
+  (`backtrack_limit_applies_per_search_not_per_job`); the job budget of C5B is checked between searches only, and one
+  search cannot be interrupted (measured up to about a minute for a 10,000-character literal on a 1 MB line). Details: `docs/analyse/Paket10-PhaseB-Regexvertrag.md`.
 - **Pattern preview (Paket 10 C2):** `buildMatchPreview` (`src/utils/matchPreview.ts`) builds the answer `MatchPreview`
   `{ rows: [{ line, segments, elided, restOmitted }], matches, complete, keepSplitCutsCharacter }` with the limits
   `PREVIEW_LIMITS`, enforced while it is built (no match list): 1,000 highlights per row (the rest of the line is cut,

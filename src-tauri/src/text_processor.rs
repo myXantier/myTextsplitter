@@ -74,6 +74,27 @@ impl std::fmt::Display for TextError {
     }
 }
 
+/// Paket 10 E6: cooperative check of a running user regex job (time budget, superseded by a newer job).
+///
+/// Called before and after compiling, before and after every single regex search step and around every line, and
+/// once more before the result is returned: a failing check ends the job with its error and no (partial) result.
+/// **It cannot interrupt a running search:** one call into fancy-regex or the `regex` crate runs to its end, so a job
+/// ends at the first check after it (a single search can take seconds on long lines). Only the regex paths check;
+/// plain splits, plain Remove and duplicates never do. The production implementation is `job_slot::RegexBudget`.
+pub trait Checkpoint {
+    fn check(&self) -> Result<(), TextError>;
+}
+
+/// No limit: direct library calls, the fixtures and every caller without a job.
+#[cfg_attr(not(test), allow(dead_code))]
+pub struct NoCheck;
+
+impl Checkpoint for NoCheck {
+    fn check(&self) -> Result<(), TextError> {
+        Ok(())
+    }
+}
+
 /// Backtracking limit of fancy-regex per match attempt (= its default, set explicitly to make it visible).
 ///
 /// This is a step limit, **not a time limit**: it only applies to patterns that need the backtracking VM
@@ -122,6 +143,46 @@ fn regex_runtime_error(e: fancy_regex::Error) -> TextError {
     TextError::RegexRuntime(e.to_string())
 }
 
+/// `compile_regex` between two checks (a compile cannot be interrupted either: its end is checked).
+fn compile_checked(pattern: &str, case_insensitive: bool, check: &dyn Checkpoint) -> Result<Regex, TextError> {
+    check.check()?;
+    let regex = compile_regex(pattern, case_insensitive)?;
+    check.check()?;
+    Ok(regex)
+}
+
+/// The non-empty and empty matches of `regex` in `line` one search step at a time, with a check before and after
+/// every step (`find_iter` runs one search per item). Stops at the first runtime error or failed check.
+fn for_each_match<'t>(regex: &Regex, line: &'t str, check: &dyn Checkpoint, mut each: impl FnMut(fancy_regex::Match<'t>)) -> Result<(), TextError> {
+    let mut matches = regex.find_iter(line);
+    loop {
+        check.check()?;
+        let Some(found) = matches.next() else { return Ok(()) };
+        let found = found.map_err(regex_runtime_error)?;
+        check.check()?;
+        each(found);
+    }
+}
+
+/// `regex.try_replacen(line, 0, "")` as a checked stream (Paket 10 E6): removes every match of `find_iter`, exactly like
+/// the fast path of fancy-regex for a replacement without capture references (text before each match, then the rest;
+/// no match = the line itself). Keeps no list of matches.
+fn remove_matches<'t>(regex: &Regex, line: &'t str, check: &dyn Checkpoint) -> Result<std::borrow::Cow<'t, str>, TextError> {
+    let mut rest: Option<String> = None;
+    let mut last = 0;
+    for_each_match(regex, line, check, |found| {
+        rest.get_or_insert_with(|| String::with_capacity(line.len())).push_str(&line[last..found.start()]);
+        last = found.end();
+    })?;
+    Ok(match rest {
+        None => std::borrow::Cow::Borrowed(line),
+        Some(mut rest) => {
+            rest.push_str(&line[last..]);
+            std::borrow::Cow::Owned(rest)
+        }
+    })
+}
+
 /// Supported Filter and Remove modes, the same lists as the JS engine (`src/utils/textModes.ts`).
 const FILTER_MODES: [&str; 2] = ["keep", "remove"];
 const REMOVE_MODES: [&str; 3] = ["duplicates", "containing", "notContaining"];
@@ -160,12 +221,26 @@ impl TextProcessor {
     /// line break adds no row. `keep_empty_lines == false` skips lines that are completely empty. Whitespace-only
     /// lines are not empty and are always kept. The columns are joined with `\n` only for the transport to the
     /// frontend (`SplitService` splits them again); values never contain a line break.
+    // Entry without a job (fixtures, tests, direct library calls); the commands use the checked variant
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn process_text_block_to_column_strings(
         text: &str,
         delimiter: &str,
         trimparts: bool,
         useregex: bool,
         keep_empty_lines: bool,
+    ) -> Result<ProcessedText<Vec<String>>, TextError> {
+        Self::process_text_block_checked(text, delimiter, trimparts, useregex, keep_empty_lines, &NoCheck)
+    }
+
+    /// `process_text_block_to_column_strings` with the checks of a running job (Paket 10 E6, only for a regex split).
+    pub fn process_text_block_checked(
+        text: &str,
+        delimiter: &str,
+        trimparts: bool,
+        useregex: bool,
+        keep_empty_lines: bool,
+        check: &dyn Checkpoint,
     ) -> Result<ProcessedText<Vec<String>>, TextError> {
         // Paket 10 E4: checked before anything else, also for an empty text (a regex pattern: rule E3 in `compile_regex`)
         if !useregex && delimiter.is_empty() {
@@ -175,7 +250,7 @@ impl TextProcessor {
         let start_time = std::time::Instant::now();
 
         let regex = if useregex {
-            Some(compile_regex(delimiter, false)?)
+            Some(compile_checked(delimiter, false, check)?)
         } else {
             None
         };
@@ -189,8 +264,18 @@ impl TextProcessor {
             }
 
             let parts: Vec<&str> = if let Some(ref reg) = regex {
-                // Stop at the first runtime error: fancy-regex keeps yielding the same error (endless parts)
-                reg.split(line).collect::<Result<Vec<_>, _>>().map_err(regex_runtime_error)?
+                // One search per item of the split iterator, checked before and after each; stop at the first runtime
+                // error: fancy-regex keeps yielding the same error (endless parts)
+                check.check()?;
+                let mut parts = Vec::new();
+                let mut items = reg.split(line);
+                loop {
+                    check.check()?;
+                    let Some(part) = items.next() else { break };
+                    parts.push(part.map_err(regex_runtime_error)?);
+                    check.check()?;
+                }
+                parts
             } else {
                 line.split(delimiter).collect::<Vec<_>>()
             };
@@ -211,11 +296,18 @@ impl TextProcessor {
                 col.push(String::new());
             }
             rows += 1;
+            if regex.is_some() {
+                check.check()?;
+            }
+        }
+        // A last search that began within the budget but returned after it is no successful job (plain splits: no check)
+        if regex.is_some() {
+            check.check()?;
         }
 
         let execution_time = start_time.elapsed().as_secs_f64() * 1000.0;
         let metrics = get_backend_metrics(execution_time, before_mem);
-        
+
         Ok(ProcessedText {
             result_text: columns.into_iter().map(|col| col.join("\n")).collect(),
             removed_lines: 0,
@@ -270,6 +362,8 @@ impl TextProcessor {
     }
 
     
+    // Entry without a job (fixtures, tests, direct library calls); the commands use the checked variant
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn filter_text_internal(
         text: &str,
         pattern: &str,
@@ -277,49 +371,39 @@ impl TextProcessor {
         casesensitive: bool,
         splitmatches: bool,
     ) -> Result<ProcessedText<String>, TextError> {
+        Self::filter_text_checked(text, pattern, filter_mode, casesensitive, splitmatches, &NoCheck)
+    }
+
+    /// `filter_text_internal` with the checks of a running job (Paket 10 E6).
+    pub fn filter_text_checked(
+        text: &str,
+        pattern: &str,
+        filter_mode: &str,
+        casesensitive: bool,
+        splitmatches: bool,
+        check: &dyn Checkpoint,
+    ) -> Result<ProcessedText<String>, TextError> {
         check_mode("filter", filter_mode, &FILTER_MODES)?;
         let before_mem = memory_stats::memory_stats();
         let start_time = std::time::Instant::now();
 
-        let regex = compile_regex(pattern, !casesensitive)?;
+        let regex = compile_checked(pattern, !casesensitive, check)?;
 
         // Runtime errors are returned instead of panicking (`replace_all`) or looping forever
         // (`find_iter` keeps yielding the same error, `filter_map(Result::ok)` never ended).
         // Shared line model: the result keeps the line ending and the trailing newline of the input
         let TextLines { lines, format } = split_lines(text);
+        let separator = if splitmatches { format.line_ending.as_str() } else { "" };
         let mut processed_lines: Vec<String> = Vec::new();
         for line in lines {
-            // Blank = only Unicode `White_Space` (`str::trim`, `char::is_whitespace`): U+0085 is whitespace, U+FEFF is not.
-            // Same set as the JS engine (`src/utils/diff/whitespace.ts`).
-            let is_blank = |text: &str| text.trim().is_empty();
-
-            if filter_mode == "remove" {
-                // Paket 8 C2: only a line from which a match actually removed text may disappear, and only if the rest
-                // is blank. A line without removed text (no match, only zero-width matches) stays unchanged, also an
-                // empty or whitespace-only line. Removing text always shortens the line, so "unchanged" = equal text.
-                let rest = regex.try_replacen(line, 0, "").map_err(regex_runtime_error)?;
-                if rest == line {
-                    processed_lines.push(line.to_string());
-                } else if !is_blank(&rest) {
-                    processed_lines.push(rest.into_owned());
-                }
-                continue;
+            check.check()?;
+            if let Some(kept) = Self::filter_line(&regex, line, filter_mode == "remove", separator, check)? {
+                processed_lines.push(kept);
             }
-
-            if is_blank(line) {
-                continue;
-            }
-            let processed = regex
-                .find_iter(line)
-                .map(|m| m.map(|m| m.as_str()))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(regex_runtime_error)?
-                .join(if splitmatches { format.line_ending.as_str() } else { "" });
-
-            if !processed.is_empty() {
-                processed_lines.push(processed);
-            }
+            check.check()?;
         }
+        // A last search that began within the budget but returned after it is no successful job
+        check.check()?;
 
         let execution_time = start_time.elapsed().as_secs_f64() * 1000.0;
         let metrics = get_backend_metrics(execution_time, before_mem);
@@ -331,8 +415,40 @@ impl TextProcessor {
         })
     }
 
+    /// One Filter line: `None` = the line is dropped. Every regex search step is checked (`for_each_match`).
+    fn filter_line(regex: &Regex, line: &str, remove: bool, separator: &str, check: &dyn Checkpoint) -> Result<Option<String>, TextError> {
+        // Blank = only Unicode `White_Space` (`str::trim`, `char::is_whitespace`): U+0085 is whitespace, U+FEFF is not.
+        // Same set as the JS engine (`src/utils/diff/whitespace.ts`).
+        let is_blank = |text: &str| text.trim().is_empty();
+
+        if remove {
+            // Paket 8 C2: only a line from which a match actually removed text may disappear, and only if the rest
+            // is blank. A line without removed text (no match, only zero-width matches) stays unchanged, also an
+            // empty or whitespace-only line. Removing text always shortens the line, so "unchanged" = equal text.
+            // `remove_matches` = `try_replacen(line, 0, "")` with a check per search step (Paket 10 E6).
+            let rest = remove_matches(regex, line, check)?;
+            return Ok(if rest == line {
+                Some(line.to_string())
+            } else if !is_blank(&rest) {
+                Some(rest.into_owned())
+            } else {
+                None
+            });
+        }
+
+        if is_blank(line) {
+            return Ok(None);
+        }
+        let mut matches = Vec::new();
+        for_each_match(regex, line, check, |found| matches.push(found.as_str()))?;
+        let processed = matches.join(separator);
+        Ok((!processed.is_empty()).then_some(processed))
+    }
+
     /// Diese Funktion entfernt Zeilen aus dem Text, entweder durch Duplikate oder durch Übereinstimmungen mit einem Muster (entweder mit regulären Ausdrücken oder normaler Textsuche).
     /// Wenn der Modus duplicates gewählt wird, werden doppelte Zeilen basierend auf einem Schlüssel (der ggf. bei Bedarf auf Kleinbuchstaben reduziert wird) entfernt.
+    // Entry without a job (fixtures, tests, direct library calls); the commands use the checked variant
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn remove_lines_internal(
         text: &str,
         pattern: &str,
@@ -340,6 +456,20 @@ impl TextProcessor {
         casesensitive: bool,
         useregex: bool,
         trimparts: bool,
+    ) -> Result<ProcessedText<String>, TextError> {
+        Self::remove_lines_checked(text, pattern, removemode, casesensitive, useregex, trimparts, &NoCheck)
+    }
+
+    /// `remove_lines_internal` with the checks of a running job (Paket 10 E6): only containing/notContaining with a
+    /// regex check; duplicates and the plain search never do.
+    pub fn remove_lines_checked(
+        text: &str,
+        pattern: &str,
+        removemode: &str,
+        casesensitive: bool,
+        useregex: bool,
+        trimparts: bool,
+        check: &dyn Checkpoint,
     ) -> Result<ProcessedText<String>, TextError> {
         check_mode("remove", removemode, &REMOVE_MODES)?;
         // Shared line model: a trailing newline is no line; the result keeps the line ending and the trailing newline
@@ -374,9 +504,15 @@ impl TextProcessor {
         } else {
             // B4: an invalid regex is an error result (was `unwrap()` -> panic); a runtime error while matching
             // is an error too (was silently treated as "no match")
-            let matcher: Box<dyn Fn(&str) -> Result<bool, TextError>> = if useregex {
-                let regex = compile_regex(pattern, !casesensitive)?;
-                Box::new(move |line| regex.is_match(line).map_err(regex_runtime_error))
+            let matcher: Box<dyn Fn(&str) -> Result<bool, TextError> + '_> = if useregex {
+                let regex = compile_checked(pattern, !casesensitive, check)?;
+                // One search per line (`is_match`), checked right before and after it
+                Box::new(move |line| {
+                    check.check()?;
+                    let matched = regex.is_match(line).map_err(regex_runtime_error)?;
+                    check.check()?;
+                    Ok(matched)
+                })
             } else {
                 Box::new(move |line| {
                     let processed_line = if casesensitive {
@@ -400,6 +536,10 @@ impl TextProcessor {
                 if (removemode == "containing" && !matched) || (removemode != "containing" && matched) {
                     kept.push(line.to_string());
                 }
+            }
+            // A last search that began within the budget but returned after it is no successful job
+            if useregex {
+                check.check()?;
             }
             kept
         };
@@ -833,6 +973,145 @@ mod tests {
         assert!(matches!(compile_regex(&")".repeat(10_001), false), Err(TextError::PatternTooLong(_))));
         let syntax = compile_regex(&format!("{})", "a".repeat(9_999)), true);
         assert!(matches!(&syntax, Err(TextError::InvalidRegex(message)) if message.contains("position 9999")), "{syntax:?}");
+    }
+
+    // --- Paket 10 E6: cooperative checks of a running regex job (deterministic: counted checks, no timing) ---
+
+    /// Counts the checks and fails the check with index `fail_at` (0-based) and every later one, like a passed deadline.
+    struct CountingCheck {
+        calls: std::cell::Cell<usize>,
+        fail_at: usize,
+        error: TextError,
+    }
+
+    impl CountingCheck {
+        fn failing_at(fail_at: usize, error: TextError) -> Self {
+            CountingCheck { calls: std::cell::Cell::new(0), fail_at, error }
+        }
+        fn never() -> Self {
+            Self::failing_at(usize::MAX, TextError::Internal("unused".into()))
+        }
+    }
+
+    impl Checkpoint for CountingCheck {
+        fn check(&self) -> Result<(), TextError> {
+            let index = self.calls.get();
+            self.calls.set(index + 1);
+            if index >= self.fail_at {
+                Err(self.error.clone())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    const REGEX_JOBS: [&str; 4] = ["split", "filter keep", "filter remove", "remove containing"];
+
+    /// One of the four regex jobs (`REGEX_JOBS`) with its own checkpoint: the result as text, or the error.
+    fn regex_job(job: &str, text: &str, pattern: &str, check: &dyn Checkpoint) -> Result<String, TextError> {
+        match job {
+            "split" => TextProcessor::process_text_block_checked(text, pattern, false, true, true, check).map(|r| r.result_text.join("|")),
+            "filter keep" => TextProcessor::filter_text_checked(text, pattern, "keep", true, false, check).map(|r| r.result_text),
+            "filter remove" => TextProcessor::filter_text_checked(text, pattern, "remove", true, false, check).map(|r| r.result_text),
+            _ => TextProcessor::remove_lines_checked(text, pattern, "containing", true, true, false, check).map(|r| format!("{} {}", r.result_text, r.removed_lines)),
+        }
+    }
+
+    /// Number of checks of one job that never fails.
+    fn checks_of(job: &str, text: &str, pattern: &str) -> usize {
+        let counted = CountingCheck::never();
+        let _ = regex_job(job, text, pattern, &counted);
+        counted.calls.get()
+    }
+
+    #[test]
+    fn regex_jobs_fail_at_every_checkpoint_without_a_partial_result() {
+        // Several lines with several matches each: every check (before/after compile, around every line and every search
+        // step, before the result) ends the job with exactly its error, never with a result
+        let text = "a1b22c\n\nx 3 y\r\n44";
+        let pattern = r"\d+";
+        for name in REGEX_JOBS {
+            let counted = CountingCheck::never();
+            let result = regex_job(name, text, pattern, &counted);
+            assert_eq!(result, regex_job(name, text, pattern, &NoCheck), "{name}: the checks do not change the result");
+            assert!(result.is_ok(), "{name}: {result:?}");
+            let checks = counted.calls.get();
+            assert!(checks >= 10, "{name}: {checks} checks");
+            for fail_at in 0..checks {
+                for error in [TextError::RegexRuntime("time budget of 1 ms for the regex job exceeded".into()), TextError::Superseded] {
+                    let check = CountingCheck::failing_at(fail_at, error.clone());
+                    assert_eq!(regex_job(name, text, pattern, &check), Err(error), "{name}: check {fail_at} of {checks}");
+                }
+            }
+            // The last check comes after the last search step: a search that returned after the deadline is no success
+            let last = CountingCheck::failing_at(checks - 1, TextError::Superseded);
+            assert_eq!(regex_job(name, text, pattern, &last), Err(TextError::Superseded), "{name}: final check");
+        }
+    }
+
+    #[test]
+    fn regex_jobs_check_before_and_after_compiling_and_between_search_steps_of_one_line() {
+        // One line, 1 vs. 3 matches: every further search step is checked before and after (2 more checks each)
+        for name in ["split", "filter keep", "filter remove"] {
+            let (one, three) = (checks_of(name, "xa", "a"), checks_of(name, "xaxaxa", "a"));
+            assert_eq!(three, one + 4, "{name}: {three} vs {one} checks");
+        }
+        // Remove: one search (`is_match`) per line, checked before and after it
+        assert_eq!(checks_of("remove containing", "xa\nxa\nxa", "a"), checks_of("remove containing", "xa", "a") + 4);
+        // The first check comes before compiling (a failing first check reports no syntax error), the second after it
+        for name in REGEX_JOBS {
+            let before = CountingCheck::failing_at(0, TextError::Superseded);
+            assert_eq!(regex_job(name, "a", "([a-", &before), Err(TextError::Superseded), "{name}");
+            let after = CountingCheck::failing_at(1, TextError::Superseded);
+            assert!(matches!(regex_job(name, "a", "([a-", &after), Err(TextError::InvalidRegex(_))), "{name}: syntax error between the two checks");
+            let after = CountingCheck::failing_at(1, TextError::Superseded);
+            assert_eq!(regex_job(name, "a", "a", &after), Err(TextError::Superseded), "{name}: check after compiling");
+        }
+    }
+
+    #[test]
+    fn plain_split_plain_remove_and_duplicates_never_check() {
+        // A check that always fails (a passed budget) does not affect the operations without a user regex
+        let failing = CountingCheck::failing_at(0, TextError::RegexRuntime("time budget exceeded".into()));
+        let text = "a,b\nb,a\na,b";
+        assert_eq!(TextProcessor::process_text_block_checked(text, ",", false, false, true, &failing).unwrap().result_text, vec!["a\nb\na", "b\na\nb"]);
+        assert_eq!(TextProcessor::remove_lines_checked(text, "b,a", "containing", true, false, false, &failing).unwrap().result_text, "a,b\na,b");
+        assert_eq!(TextProcessor::remove_lines_checked(text, "([a-", "duplicates", true, true, false, &failing).unwrap().result_text, "a,b\nb,a");
+        assert_eq!(failing.calls.get(), 0, "no check at all");
+        // Mode and pattern errors come first, unchanged
+        assert!(matches!(TextProcessor::filter_text_checked("a", "a", "bogus", true, false, &failing), Err(TextError::InvalidMode(_))));
+        assert!(matches!(TextProcessor::process_text_block_checked("a", "", false, false, true, &failing), Err(TextError::EmptyDelimiter(_))));
+    }
+
+    #[test]
+    fn backtrack_limit_error_is_unchanged_with_checks() {
+        let text = "ab".repeat(40);
+        let counted = CountingCheck::never();
+        let result = TextProcessor::filter_text_checked(&text, "(a|b|ab)*(?=c)", "keep", true, false, &counted);
+        assert!(matches!(&result, Err(TextError::RegexRuntime(message)) if message.contains("backtracking")), "{result:?}");
+    }
+
+    #[test]
+    fn checked_filter_remove_equals_try_replacen() {
+        // `remove_matches` replaces `try_replacen(line, 0, "")`: same text for every pattern and line (no match, only
+        // zero-width matches, adjacent and repeated matches, lookaround, emoji, whitespace, empty lines)
+        let patterns = [
+            "x", "a", "a+", "a*", "", "(?=a)", "(?<=a)", "\\b", "^", "$", "^a", "a$", "ab|a", "(a)(b)?", "(?<=a)b", "a(?=b)", "\\s+",
+            "\\s*", "[^a]", ".", ".*", "😀", "[😀a]", "(?:a|b)+?", "(a|aa)+", "\\p{Zs}", "(?i)A", "(\\w)\\1",
+        ];
+        let lines = [
+            "", " ", "\u{85}", "\u{feff}", "a", "aa", "aaa", "ab", "abab", "ba", "a b a", "  a  ", "😀a😀", "a\u{2028}a", "xyz", "aab aab", "\u{3000}a",
+        ];
+        for pattern in patterns {
+            let regex = build_regex(pattern).unwrap();
+            for line in lines {
+                let expected = regex.try_replacen(line, 0, "").unwrap();
+                let actual = remove_matches(&regex, line, &NoCheck).unwrap();
+                assert_eq!(actual, expected, "{pattern:?} on {line:?}");
+                // Unchanged lines stay borrowed in both (Paket 8 C2 compares with the line)
+                assert_eq!(matches!(actual, std::borrow::Cow::Borrowed(_)), matches!(expected, std::borrow::Cow::Borrowed(_)), "{pattern:?} on {line:?}");
+            }
+        }
     }
 
     #[test]

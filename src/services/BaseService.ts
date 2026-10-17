@@ -127,8 +127,9 @@ export abstract class BaseService implements IBaseService {
   }
 
   /**
-   * Stops the running job of `type`: a worker job is terminated, a backend job (cannot be stopped) has its late
-   * result discarded. Its promise rejects as `superseded`.
+   * Stops the running job of `type`: a worker job is terminated, a backend job has its late result discarded. Its
+   * promise rejects as `superseded`. This does not reach Rust: a running Rust regex job ends at its time budget or when
+   * a newer request of the same operation arrives (Paket 10 E6).
    */
   public static cancelPending(type: WorkerType): void {
     BaseService.latestJobIds.set(type, ++BaseService.jobCounter);
@@ -191,7 +192,8 @@ export abstract class BaseService implements IBaseService {
    * `ProcessingError`. There is no automatic fallback to another processing path: errors are reported as they are.
    *
    * Only the latest job per type is delivered: when a newer job of the same type starts, an older worker job is
-   * terminated and an older backend job (Rust cannot be stopped) has its late result or error discarded; both
+   * terminated and an older backend job has its late result or error discarded (a running Rust regex job also ends at its
+   * next check with `superseded`, Paket 10 E6); both
    * reject with `superseded`. Results and metrics of a superseded job are never applied.
    */
   async invoke(args: BaseConfig, tryBackend?: boolean): Promise<myResult> {

@@ -191,6 +191,32 @@ test('Paket 10 E3: fromBackendError keeps the Rust detail of a pattern error', a
   assert.deepEqual({ kind: error.kind, message: error.message, detail: error.detail }, { kind: 'invalidInput', message: 'errors.patternTooLong', detail: 'the regex pattern has 10002 UTF-16 code units (at most 10000)' });
 });
 
+// --- Paket 10 E6: the cooperative Rust time budget of a regex job (TextError::RegexRuntime) ---
+
+for (const [name, service, args] of [
+  ['split', () => new SplitService(), splitArgs('a', '(a|aa)+(?=c)', true)],
+  ['filter', () => new FilterService(), filterArgs('a', '(a|aa)+(?=c)')],
+  ['remove', () => new RemoveService(), removeArgs('a', '(a|aa)+(?=c)', 'containing', true)],
+] as const) {
+  test(`Paket 10 E6: an exceeded Rust budget of the ${name} regex job is errors.regexTooComplex, no result, metrics kept, a later job works`, async () => {
+    const instance = service();
+    backend(() => processed(name === 'split' ? ['a'] : 'a'));
+    await instance.invoke(args as never, true);
+    const before = instance.getMetrics();
+    backend(() => {
+      throw { kind: 'regexRuntime', message: 'time budget of 10000 ms for the regex job exceeded' };
+    });
+    const error = await rejectionOf(() => instance.invoke(args as never, true));
+    assert.deepEqual(
+      { kind: error.kind, message: error.message, detail: error.detail },
+      { kind: 'invalidInput', message: 'errors.regexTooComplex', detail: 'time budget of 10000 ms for the regex job exceeded' }
+    );
+    assert.deepEqual(instance.getMetrics(), before, 'metrics of the last result');
+    backend(() => processed(name === 'split' ? ['b'] : 'b'));
+    assert.ok(await instance.invoke(args as never, true));
+  });
+}
+
 test('B4: regex runtime error from Rust (backtrack limit) is an invalid-input error with its own message', async () => {
   backend(() => {
     throw { kind: 'regexRuntime', message: 'Max limit for backtracking count exceeded' };

@@ -122,7 +122,8 @@ export function fromBackendError(error: unknown): ProcessingError {
     if (kind === 'invalidMode') return invalidModeError(detail);
     if (kind === 'emptyDelimiter') return emptyDelimiterError(detail);
     if (kind === 'patternEmpty' || kind === 'patternTooLong') return new ProcessingError('invalidInput', ERROR_KEYS[kind], detail);
-    // The Rust job slot replaced this request by a newer one before it ran. BaseService reports it as `superseded`
+    // The Rust job slot replaced this request by a newer one before it ran, or stopped it while it ran (Paket 10 E6,
+    // regex jobs). The budget of a regex job arrives as `regexRuntime` ("too complex"). BaseService reports it as `superseded`
     // when a newer job exists; for the latest job (requests arrived out of order) it stays a visible backend error.
     if (kind === 'superseded') return new ProcessingError('backend', ERROR_KEYS.general, 'superseded by a newer backend request');
     return new ProcessingError('backend', ERROR_KEYS.general, detail ?? String(kind));
