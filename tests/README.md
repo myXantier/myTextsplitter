@@ -352,6 +352,23 @@ Chrome/WebView2 125+, Node 23+; older runtimes: `invalidRegex`): the JS result m
   `regex.test.ts` (Unicode cases, line endings, complete and limited previews with the omitted text), `workers.test.ts`
   (worker answer, limits at full size, splitMatches change, timeout); sizes and UI costs: `node tests/bench/preview-baseline.mjs`.
 
+## File import fixtures (`tests/fixtures/file-io-cases.json`, Paket 11)
+
+Real files for the two import paths: the "Open File" button (`OpenFileButton`, every page) and the drop onto the Remove
+textarea. Contract D1–D14: `docs/analyse/Paket11-PhaseB-Datei-IO-Vertrag.md`; findings F1–F15: the Phase A report and the
+contract. Per case: `file` (name), `bytes` (hex) or `generate` (byte count of a deterministic ASCII text, written at run
+time), the CURRENT result `expected` or `expectedButton` + `expectedDrop` (`{ text }`, `{ generatedText }`, `{ unchanged }`
+= previous text kept without a message, `{ rejected, message? }` = previous text kept with an error message), and for an
+open decision `target` + `pending { decisions, phase, paths }` (exactly the paths still differing). `divergence
+{ kind: "chromiumFileReader", whatwg }` marks a Chromium result that differs from the WHATWG decode (F15: an odd UTF-16
+byte count is dropped silently). `scenarios` describe import flows (reselection, read errors, overlapping imports,
+loading state, navigation, cancelled dialog) as `current` / `target` observations with `pending.fields`.
+
+`tests/unit/file-io-fixtures.test.ts` checks only the fixture data: the format, the current expectations against a model
+of today's code (WHATWG decode with BOM sniffing, button ignores `''`, drop checks `.txt` case-sensitively and 10 MiB),
+the targets against the contract (strict decoding, `.txt` in any case, at most 10 MiB inclusive) and the pending lists.
+Whether the app behaves like this is checked only by `checkFileIo` (below).
+
 ## Integration tests
 
 They drive the **real application** and are not part of `npm test`.
@@ -419,6 +436,23 @@ trailing newline are imported through "Open File" (typing into a textarea turns 
 same text typed with LF = no difference; Paket 7: a new text with more lines than the old one keeps every line, and a
 move keeps both positions and is counted once). Results are read from React's props (`__t.raw`) and from the copied text
 (`__t.captureCopy`), because `textarea.value` also normalizes line breaks to LF.
+
+File import (`checkFileIo`, Paket 11 Phase B; browser and Tauri in Rust mode, once): every byte fixture through the
+button (`DOM.setFileInputFiles` with the real file, i.e. the Chromium file chooser path with its real `change` event, one
+path per case) and through the drop (`Input.dispatchDragEvent` with the real file onto the Remove textarea); the same
+path chosen again (F3, no artificial `change`); real read errors (a path that does not exist, a file deleted before its
+read starts); overlapping imports, the loading state and navigation as a **controlled simulation**: the FileReader and
+Blob read methods are wrapped in the page and the start of a read is held and released in a fixed order, then the
+browser really reads (no fixed sleeps, completion is counted); typing uses real key input (`Input.insertText`); the
+cancelled dialog uses an intercepted file chooser (`Page.setInterceptFileChooserDialog`, opened with a user gesture).
+The checks expect the current behaviour; a pending target is named in the check label. The uncaught hook error of a
+failed button read (F1) is expected until Phase C1, but only as the log entries recorded while the two F1 scenarios run
+("read error on the button", "replaced import fails late"): `checkFileIo` returns them as `provokedErrors`, and its own
+error check and the final error check of the Tauri main window exclude exactly these entries (`withoutExpected` in
+`tests/e2e/lib/harness.mjs`, by identity, never by text). Any other hook error fails the run;
+`tests/unit/e2e-error-classification.test.ts` checks this classification. **Limit:** in Tauri the CDP drag enters the renderer
+after wry's native drop handling, so it does not show whether a real Explorer drop arrives (F8 stays unconfirmed, manual
+check). Native file dialogs are not automated.
 
 The Tauri test switches "Keep Empty Lines" explicitly, because an existing `settings.json` may still
 contain `showEmptyLines: false` (the default before the option was wired to Split).

@@ -83,6 +83,14 @@ export async function attach(port, pick = (t) => t.type === 'page', timeout = 15
 
   const page = {
     logs,
+    /** Raw CDP command (e.g. DOM.setFileInputFiles, Input.dispatchDragEvent). */
+    send,
+    /** Calls `fn(params)` for every CDP event `method`; returns the function that stops listening. */
+    on(method, fn) {
+      const listener = (m) => m.method === method && fn(m.params);
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
     async goto(url) {
       const loaded = waitForLoad();
       await send('Page.navigate', { url });

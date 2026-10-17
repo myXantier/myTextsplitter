@@ -18,6 +18,20 @@ export function errorsIn(logs, from = 0) {
     .filter((l) => !KNOWN_CONSOLE_ERRORS.some((re) => re.test(l.text)));
 }
 
+/**
+ * Errors of `errorsIn` logged in `logs[from, to)` whose text matches `pattern`: the errors a check provokes on purpose. The
+ * result holds the log entries themselves, so `withoutExpected` excludes exactly them, not an equal text logged elsewhere.
+ */
+export function expectedErrorsIn(logs, from, to, pattern) {
+  return errorsIn(logs.slice(0, to), from).filter((l) => pattern.test(l.text));
+}
+
+/** `errors` without the entries in `expected` (compared by identity, never by text). */
+export function withoutExpected(errors, expected) {
+  const known = new Set(expected);
+  return errors.filter((l) => !known.has(l));
+}
+
 export const formatLogs = (entries) => JSON.stringify(entries.map((e) => `${e.kind}: ${e.text.slice(0, 180)}`));
 
 // --- Reporting ---

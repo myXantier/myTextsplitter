@@ -11,11 +11,12 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, listTargets, sleep } from './lib/cdp.mjs';
-import { SPLIT_CASES, checkCombineState, checkSplitIntegrity, checkMatchPreview, checkPatternRule, checkSplitFlags, checkLineEndings, checkSort, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
+import { SPLIT_CASES, checkCombineState, checkFileIo, checkSplitIntegrity, checkMatchPreview, checkPatternRule, checkSplitFlags, checkLineEndings, checkSort, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
   errorsIn,
+  withoutExpected,
   formatLogs,
   freePort,
   onCleanup,
@@ -179,6 +180,9 @@ async function firstRun() {
   await checkCombineState(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
   // Paket 9 C2: Sort has no Rust command, it runs the TypeScript sort in the sort worker also in Rust mode
   await checkSort(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
+  // Paket 11 Phase B: file import in the WebView2 (independent of the processing mode, so once); the drop is the CDP drag
+  // into the renderer, not the native OS drop (see tests/README.md)
+  const fileIo = await checkFileIo(main, r, 'Tauri', (from) => errorsIn(main.logs, from));
   await main.eval(`__t.nav('split'); true`);
   await sleep(200);
 
@@ -238,8 +242,9 @@ async function firstRun() {
   await main.eval(tauriCall('plugin:window|unminimize', { label: 'main' }));
   await sleep(600);
 
-  // The worker timeout provoked by checkRegexRobustness (JS mode) is logged as error on purpose
-  const unexpected = errorsIn(main.logs).filter((l) => !/Verarbeitung fehlgeschlagen: timeout .*worker \(filter\)/.test(l.text));
+  // The worker timeout provoked by checkRegexRobustness (JS mode) is logged as error on purpose; so are the hook errors of
+  // the two F1 scenarios of checkFileIo (Paket 11, until Phase C1), excluded as exactly these log entries
+  const unexpected = withoutExpected(errorsIn(main.logs), fileIo.provokedErrors).filter((l) => !/Verarbeitung fehlgeschlagen: timeout .*worker \(filter\)/.test(l.text));
   r.check('No errors in main window', unexpected.length === 0, formatLogs(unexpected));
 
   // Close via title bar -> Rust writes the settings file and exits
