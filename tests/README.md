@@ -467,9 +467,15 @@ move) and confirmed with `elementFromPoint`; no app style is changed, a missing 
 with the covering elements; a valid drop is checked while error messages cover a part of the textarea. The checks expect the current behaviour; a
 pending target is named in the check label. No error is expected: since
 Paket 11 C1 a failed button read shows `notifications.readError` without a React hook error (F1), and any logged error,
-also a hook error, fails `checkFileIo` and the final error check of the Tauri main window. **Limit:** in Tauri the CDP drag enters the renderer
-after wry's native drop handling, so it does not show whether a real Explorer drop arrives (F8 stays unconfirmed, manual
-check). Native file dialogs are not automated.
+also a hook error, fails `checkFileIo` and the final error check of the Tauri main window. File drop guard (Paket 11 C4B, `src/utils/fileDropGuard.ts`, unit test `tests/unit/file-drop-guard.test.ts`): a real file
+dragged onto the header of Remove, onto the Split text field and onto a result column ends without drop, without
+navigation (CDP page events, URL, page helpers still present), without read and without message; a text drag is
+left alone (the textarea inserts it); the result columns are still reordered by an in-page drag (real Chromium drag:
+`Input.setInterceptDrags`, mouse press and move, the intercepted drag data dropped on the target column). A page that
+stops answering after a file drop (navigated to the file) fails the run instead of hanging. **Limit:** CDP drags enter
+the renderer, after the native OS drop target. Since C4B the main window has `dragDropEnabled: false` (WebView2 handles
+Explorer drops itself, F8 confirmed manually before), but whether a real Explorer drop and a native in-page drag work
+in the Windows app is shown only by the manual Windows test. Native file dialogs are not automated.
 
 The Tauri test switches "Keep Empty Lines" explicitly, because an existing `settings.json` may still
 contain `showEmptyLines: false` (the default before the option was wired to Split).

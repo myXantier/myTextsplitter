@@ -1754,6 +1754,11 @@ const FILE_READ_GATE_INSTALL = `(() => {
     __t.dropCount = 0;
     // Capture: the Remove drop handler stops the propagation; the timer runs after the handler
     window.addEventListener('drop', () => setTimeout(() => __t.dropCount++, 0), true);
+    // A drag that ends without a drop (operation 'none') ends with dragleave; registered after the app's file drop
+    // guard (window capture), so the dragover state shows whether the guard cancelled it
+    __t.dragLeaveCount = 0;
+    window.addEventListener('dragleave', () => setTimeout(() => __t.dragLeaveCount++, 0), true);
+    window.addEventListener('dragover', (e) => { __t.lastDragOver = { cancelled: e.defaultPrevented, dropEffect: e.dataTransfer?.dropEffect ?? null }; }, true);
   }
   window.__fileGen = (n) => ${JSON.stringify(FILE_IO.generator.line)}.repeat(Math.ceil(n / ${FILE_IO.generator.line.length})).slice(0, n);
   return true;
@@ -1825,16 +1830,18 @@ export async function checkFileIo(page, r, label, errorsSince) {
    * change the layout). The point avoids these boxes (with a margin) and `elementFromPoint` must hit the textarea.
    * Throws with the covering elements when no such point exists; the app styles are never changed.
    */
-  const dropPoint = async (index) => {
-    const found = await page.eval(`(() => { const ta = __t.textareas()[${index}]; ta.scrollIntoView({ block: 'center' });
+  const dropPoint = (index) => freePoint(`__t.textareas()[${index}]`);
+  /** The same for any element (`expr` evaluates to it in the page); a point on a child of the element counts. */
+  const freePoint = async (expr) => {
+    const found = await page.eval(`(() => { const ta = ${expr}; ta.scrollIntoView({ block: 'center' });
       const r = ta.getBoundingClientRect(); const pad = 16;
       const boxes = [...document.querySelectorAll('.snackbar-container')].map((c) => c.getBoundingClientRect()).filter((b) => b.width && b.height);
       const free = (x, y) => !boxes.some((b) => x > b.left - pad && x < b.right + pad && y > b.top - pad && y < b.bottom + pad);
       for (let y = Math.round(r.bottom - 12); y > r.top + 4; y -= 12)
         for (let x = Math.round(r.left + 12); x < r.right - 4; x += 24)
-          if (free(x, y) && document.elementFromPoint(x, y) === ta) return { x, y };
+          if (free(x, y) && ta.contains(document.elementFromPoint(x, y))) return { x, y };
       const center = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
-      return { error: 'no free drop point on the textarea ' + JSON.stringify({ textarea: [r.left, r.top, r.right, r.bottom],
+      return { error: 'no free drop point on ' + (ta.className || ta.tagName) + ' ' + JSON.stringify({ target: [r.left, r.top, r.right, r.bottom],
         snackbarBoxes: boxes.map((b) => [b.left, b.top, b.right, b.bottom]), atCenter: center?.className || center?.tagName }) };
     })()`);
     if (found.error) throw new Error(found.error);
@@ -1936,6 +1943,98 @@ export async function checkFileIo(page, r, label, errorsSince) {
         covered && visible > 0 && underMessage.text === 'DROPPED_UNDER_MESSAGE' && underMessage.messages.length === 0,
         json({ refusals, covered, visible, ...underMessage })
       );
+    }
+
+    // --- C4B: the file drop guard (CDP drags in the renderer; the native Windows Explorer drop is a manual test) ---
+    if (dropAvailable) {
+      const navigations = [];
+      const offs = ['Page.frameRequestedNavigation', 'Page.frameStartedLoading', 'Page.frameNavigated'].map((m) => page.on(m, () => navigations.push(m)));
+      /** Drags a real file to a viewport point that is no drop zone: the drag must end without drop and without navigation. */
+      const dragFileToPoint = async (point, label) => {
+        const file = writeFile('guard', `${label}.txt`, 'GUARD_FILE');
+        const before = await page.eval(`({ drops: __t.dropCount, leaves: __t.dragLeaveCount, reads: __t.reads.started, url: location.href })`);
+        navigations.length = 0;
+        const data = { items: [], files: [file], dragOperationsMask: 1 };
+        for (const type of ['dragEnter', 'dragOver', 'drop']) await page.send('Input.dispatchDragEvent', { type, ...point, data });
+        const ended = await page.waitFor(`__t.dragLeaveCount > ${before.leaves} || __t.dropCount > ${before.drops}`, 5000);
+        await frame();
+        const after = await page.eval(`({ drops: __t.dropCount, reads: __t.reads.started, url: location.href, helpers: !!window.__t, dragOver: __t.lastDragOver })`);
+        return {
+          ended,
+          dropDelivered: after.drops > before.drops,
+          guardCancelledDragOver: after.dragOver?.cancelled === true && after.dragOver?.dropEffect === 'none',
+          navigated: navigations.length > 0 || !after.helpers || after.url !== before.url,
+          fileRead: after.reads > before.reads,
+        };
+      };
+      // Without the guard the page navigates to the file and the CDP session stops answering: fail clearly, never hang
+      const dragFileTo = (point, label) =>
+        Promise.race([
+          dragFileToPoint(point, label),
+          new Promise((_, reject) => setTimeout(() => reject(new Error(`file drop guard: the page did not answer after the file drop (${label}): navigated to the file?`)), 15000)),
+        ]);
+      const pointOf = (selector) => freePoint(`document.querySelector(${json(selector)})`);
+      const ignored = { ended: true, dropDelivered: false, guardCancelledDragOver: true, navigated: false, fileRead: false };
+
+      // Outside the drop zone on Remove (the header) and on another page (the Split text field)
+      await nav('remove');
+      await setText(0, PREV);
+      await snacks();
+      const header = await dragFileTo(await pointOf('header.header'), 'header');
+      const headerState = { ...header, text: await raw(0), messages: (await snacks()).length };
+      r.check(`${label}: a file dropped outside the Remove drop zone is ignored (no drop, no navigation, no read)`,
+        json(headerState) === json({ ...ignored, text: PREV, messages: 0 }), json(headerState));
+      await nav('split');
+      await setText(0, PREV);
+      const other = await dragFileTo(await pointOf('.app-container-column:not(.hide-page) textarea'), 'other-page');
+      const otherState = { ...other, text: await raw(0), messages: (await snacks()).length };
+      r.check(`${label}: a file dropped on another page is ignored`, json(otherState) === json({ ...ignored, text: PREV, messages: 0 }), json(otherState));
+
+      // On a split result column (its own drop handler would move the first column, finding B16)
+      const columns = [['a'], ['b'], ['c']];
+      await splitAndRead(page, 'a,b,c', ',', columns);
+      const onColumn = await dragFileTo(await pointOf('.app-container-column:not(.hide-page) .result-column'), 'column');
+      const columnState = { ...onColumn, columns: await page.eval('__t.columns()') };
+      r.check(`${label}: a file dropped on a result column is ignored (columns unchanged)`, json(columnState) === json({ ...ignored, columns }), json(columnState));
+
+      // A text drag is no file drag: the guard leaves it alone and the textarea inserts the text natively
+      await setText(0, 'start ');
+      const at = await pointOf('.app-container-column:not(.hide-page) textarea');
+      const textData = { items: [{ mimeType: 'text/plain', data: 'dragged' }], dragOperationsMask: 1 };
+      for (const type of ['dragEnter', 'dragOver', 'drop']) await page.send('Input.dispatchDragEvent', { type, ...at, data: textData });
+      const inserted = await page.waitFor(`(__t.raw(__t.textareas()[0]) || '').includes('dragged')`, 5000);
+      const textDragOver = await page.eval('__t.lastDragOver');
+      r.check(`${label}: a text drag is not treated as a file drag (guard inactive, text inserted)`,
+        inserted && textDragOver?.cancelled === false, json({ inserted, textDragOver, text: await raw(0) }));
+
+      // In-page drag of the result columns (real Chromium drag: dragstart in the page, intercepted, then dropped)
+      await splitAndRead(page, 'a,b,c', ',', columns);
+      const colPoint = (i) => page.eval(`(() => { const el = __t.page().querySelectorAll('.result-column .result-header h2')[${i}]; el.scrollIntoView({ block: 'center' });
+        const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`);
+      const from = await colPoint(0);
+      await page.send('Input.setInterceptDrags', { enabled: true });
+      let dragData = null;
+      try {
+        const intercepted = new Promise((resolve) => {
+          const off = page.on('Input.dragIntercepted', (p) => (off(), resolve(p.data)));
+          setTimeout(() => (off(), resolve(null)), 5000);
+        });
+        await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...from, button: 'left', buttons: 1, clickCount: 1 });
+        const to = await colPoint(2);
+        for (let s = 1; s <= 5; s++) await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: from.x + ((to.x - from.x) * s) / 5, y: from.y + ((to.y - from.y) * s) / 5, button: 'left', buttons: 1 });
+        dragData = await intercepted;
+      } finally {
+        await page.send('Input.setInterceptDrags', { enabled: false }).catch(() => {});
+      }
+      const to = await colPoint(2);
+      if (dragData) for (const type of ['dragEnter', 'dragOver', 'drop']) await page.send('Input.dispatchDragEvent', { type, ...to, data: dragData });
+      await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...to, button: 'left', buttons: 0, clickCount: 1 });
+      const moved = await page.waitFor(`JSON.stringify(__t.columns()) === ${json(json([['b'], ['c'], ['a']]))}`, 5000);
+      r.check(`${label}: the result columns can still be reordered by drag and drop (in-page drag, no file)`,
+        !!dragData && moved, json({ intercepted: !!dragData, types: dragData?.items?.map((i) => i.mimeType), columns: await page.eval('__t.columns()') }));
+      offs.forEach((off) => off());
+      // The usual separator for the following checks
+      await page.eval(`__t.set(__t.page().querySelector('.form-add-render input'), '_'); true`);
     }
 
     const report = (name, observed) => {

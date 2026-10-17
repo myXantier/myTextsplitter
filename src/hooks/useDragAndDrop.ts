@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, DragEvent } from 'react';
+import { FILE_DROP_ZONE_ATTRIBUTE } from '../utils/fileDropGuard';
 
 interface DragAndDropHandlers {
   /** A file was dropped; its extension, size and content are checked by the import (Paket 11 C3, same as the button). */
@@ -58,6 +59,8 @@ export function useDragAndDrop({ onFileAccepted, onNoFile }: DragAndDropHandlers
   return {
     isDragging,
     dragHandlers: {
+      // Marks the element as a file drop zone: the app-wide file drop guard leaves its drops alone
+      [FILE_DROP_ZONE_ATTRIBUTE]: true,
       onDragOver: handleDragOver,
       onDragLeave: handleDragLeave,
       onDrop: handleDrop

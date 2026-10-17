@@ -7,6 +7,7 @@ import { getOsName } from './utils/osName';
 import { useSettings } from './hooks/useSettings';
 import { PageKey } from './config/pages';
 import { getAppWindow, listenSafely, disableWebFunctions, shouldDisableWebFunctions } from './platform/platform';
+import { installFileDropGuard } from './utils/fileDropGuard';
 
 const osType = getOsName();
 
@@ -94,6 +95,9 @@ export default function App() {
       console.warn('⚠️ Could not set window title:', err);
     }
   }
+
+  // Files dropped outside a file drop zone are ignored (no navigation to the file, no foreign drop target)
+  useEffect(() => installFileDropGuard(window), []);
 
   // Prevent context menu and shortcuts (desktop only)
   useEffect(() => {
