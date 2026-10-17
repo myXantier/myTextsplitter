@@ -10,7 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, sleep } from './lib/cdp.mjs';
-import { SPLIT_CASES, checkCombineState, checkSplitIntegrity, checkMatchPreview, checkLineEndings, checkSort, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
+import { SPLIT_CASES, checkCombineState, checkSplitIntegrity, checkMatchPreview, checkPatternRule, checkLineEndings, checkSort, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
@@ -205,6 +205,8 @@ async function testApp(page, url) {
   await checkSplitIntegrity(page, r, 'JS', errorsSince, 'js');
   // Paket 10 C2: pattern preview (Unicode, split matches, limits)
   await checkMatchPreview(page, r, 'JS', errorsSince, 'js');
+  // Paket 10 C3 (E3): the regex pattern rule on the Split, Filter and Remove pages
+  await checkPatternRule(page, r, 'JS', errorsSince, 'js');
 
   // --- Line endings (Paket 6): CRLF file with trailing newline through every operation (Web Worker) ---
   await checkLineEndings(page, r, 'JS', errorsSince);

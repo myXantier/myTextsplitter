@@ -246,8 +246,8 @@ export abstract class BaseService implements IBaseService {
 
   /**
    * Without Web Worker the job would run in the UI thread, where a user regex cannot be stopped (a timer in the same
-   * thread does not run while the regex runs). Such jobs are refused: an invalid pattern as `invalidRegex`
-   * (compiling is safe), a valid one as `regexRequiresWorker`. Jobs without regex are not affected.
+   * thread does not run while the regex runs). Such jobs are refused: an empty or too long pattern as `patternEmpty` /
+   * `patternTooLong`, an invalid one as `invalidRegex` (compiling is safe), a valid one as `regexRequiresWorker`. Jobs without regex are not affected.
    */
   private assertMainThreadAllowed(args: BaseConfig) {
     const regex = this.regexOf(args);

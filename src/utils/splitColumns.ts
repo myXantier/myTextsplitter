@@ -1,7 +1,8 @@
 // Split logic of the JS engine (Web Worker and main-thread fallback).
-// Only imports the line model, so it can be unit-tested with plain Node (`npm test`).
+// Only imports the line model and the pattern rule, so it can be unit-tested with plain Node (`npm test`).
 // Shared fixtures with the Rust engine: tests/fixtures/split-cases.json
 import { splitLines } from './lines.ts';
+import { patternProblem, type PatternProblem } from './regexPattern.ts';
 
 export interface SplitOptions {
   trimParts: boolean;
@@ -14,19 +15,27 @@ export interface SplitOptions {
  * Invalid split input found by `splitLinesToColumns` (the worker and the main-thread fallback report it as
  * `invalidInput` with the message key of `reason`). Never a partial result.
  * - `emptyDelimiter`: an empty plain delimiter (Paket 10 E4), checked before any line is processed.
+ * - `patternEmpty` / `patternTooLong`: an empty or too long regex pattern (Paket 10 E3), checked before it is compiled.
  * - `regexSplitsCharacter`: a regex split would cut a surrogate pair apart (Paket 10 E5).
  */
 export class SplitInputError extends Error {
-  readonly reason: 'emptyDelimiter' | 'regexSplitsCharacter';
+  readonly reason: 'emptyDelimiter' | 'regexSplitsCharacter' | PatternProblem;
 
   constructor(reason: SplitInputError['reason']) {
-    super(reason === 'emptyDelimiter' ? 'the plain delimiter is empty' : 'a split position or capture lies inside a UTF-16 surrogate pair');
+    super(SPLIT_INPUT_MESSAGES[reason]);
     this.name = 'SplitInputError';
     this.reason = reason;
   }
 }
 
 const SURROGATE = /[\uD800-\uDFFF]/;
+const SPLIT_INPUT_MESSAGES: Record<SplitInputError['reason'], string> = {
+  emptyDelimiter: 'the plain delimiter is empty',
+  patternEmpty: 'the regex pattern is empty',
+  patternTooLong: 'the regex pattern is too long',
+  regexSplitsCharacter: 'a split position or capture lies inside a UTF-16 surrogate pair',
+};
+
 const isHighSurrogate = (unit: number) => unit >= 0xd800 && unit <= 0xdbff;
 const isLowSurrogate = (unit: number) => unit >= 0xdc00 && unit <= 0xdfff;
 
@@ -113,13 +122,15 @@ function assertPlainSplitKeepsCharacters(line: string, delimiter: string) {
  * Splits every line into parts; `columns[i][row]` is the i-th part of input row `row`.
  * `lines` are data lines of the shared line model (`splitLines`): without terminators, no row for a trailing newline.
  * Each processed row is represented exactly once in every column (missing parts are `''`).
- * Throws a `SyntaxError` for an invalid regex and a `SplitInputError` for an empty plain delimiter or a split that would
- * cut a character (surrogate pair); both before any result is returned.
+ * Throws a `SyntaxError` for an invalid regex and a `SplitInputError` for an empty plain delimiter, an empty or too long
+ * regex pattern or a split that would cut a character (surrogate pair); all before any result is returned.
  */
 export function splitLinesToColumns(lines: string[], delimiter: string, options: SplitOptions): string[][] {
   const { trimParts, useRegex, keepEmptyLines } = options;
-  // Paket 10 E4: checked first, also for an empty text (an empty regex pattern is a separate rule, E3)
+  // Paket 10 E4/E3: checked first, also for an empty text; the regex pattern rule before the pattern is compiled
   if (!useRegex && delimiter === '') throw new SplitInputError('emptyDelimiter');
+  const problem = useRegex ? patternProblem(delimiter) : null;
+  if (problem) throw new SplitInputError(problem);
   const regex = useRegex ? new RegExp(delimiter, 'gm') : null;
   /** The same regex with match indices, only built for lines with surrogates */
   let checkedRegex: RegExp | null = null;

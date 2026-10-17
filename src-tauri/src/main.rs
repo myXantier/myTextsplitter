@@ -347,9 +347,50 @@ mod tests {
             let error = ipc_error(block_on(process_text_block(text.into(), "".into(), false, false, true)));
             assert_eq!(error["kind"], "emptyDelimiter", "{error}");
         }
-        // Whitespace is a valid delimiter; the empty regex pattern is rule E3 (unchanged)
+        // Whitespace is a valid delimiter; the empty regex pattern is rule E3 (`patternEmpty`, Paket 10 C3)
         assert_eq!(block_on(process_text_block("a b".into(), " ".into(), false, false, true)).unwrap().result_text, vec!["a", "b"]);
-        assert!(block_on(process_text_block("ab".into(), "".into(), false, true, true)).is_ok());
+        assert_eq!(ipc_error(block_on(process_text_block("ab".into(), "".into(), false, true, true)))["kind"], "patternEmpty");
+    }
+
+    #[test]
+    fn text_commands_report_the_regex_pattern_rule_as_pattern_errors() {
+        let _serial = serial();
+        use tauri::async_runtime::block_on;
+        let too_long = "a".repeat(10_001);
+        // Paket 10 E3: the same kinds for every command that compiles a user regex, also for an empty text;
+        // the frontend maps them to `invalidInput` / `errors.patternEmpty` / `errors.patternTooLong`
+        for text in ["a", ""] {
+            for (pattern, kind) in [("", "patternEmpty"), (too_long.as_str(), "patternTooLong")] {
+                for error in [
+                    ipc_error(block_on(process_text_block(text.into(), pattern.into(), false, true, true))),
+                    ipc_error(block_on(filter_text(text.into(), pattern.into(), "keep".into(), true, false))),
+                    ipc_error(block_on(filter_text(text.into(), pattern.into(), "remove".into(), false, false))),
+                    ipc_error(block_on(remove_lines(text.into(), pattern.into(), "containing".into(), true, true, false))),
+                    ipc_error(block_on(remove_lines(text.into(), pattern.into(), "notContaining".into(), false, true, false))),
+                ] {
+                    assert_eq!(error["kind"], kind, "{error}");
+                    assert!(error["message"].as_str().is_some_and(|m| !m.is_empty()), "{error}");
+                }
+            }
+        }
+        let error = ipc_error(block_on(filter_text("a".into(), "😀".repeat(5_001), "keep".into(), true, false)));
+        assert_eq!((error["kind"].as_str(), error["message"].as_str()), (Some("patternTooLong"), Some("the regex pattern has 10002 UTF-16 code units (at most 10000)")));
+        // The mode is checked first
+        assert_eq!(ipc_error(block_on(filter_text("a".into(), "".into(), "bogus".into(), true, false)))["kind"], "invalidMode");
+        assert_eq!(ipc_error(block_on(remove_lines("a".into(), too_long.clone(), "bogus".into(), true, true, false)))["kind"], "invalidMode");
+        // Not a regex pattern: duplicates ignore it, a plain search term and a plain delimiter are not limited
+        for pattern in ["", "([a-", too_long.as_str()] {
+            let removed = block_on(remove_lines("x\nx".into(), pattern.into(), "duplicates".into(), true, true, false)).unwrap();
+            assert_eq!((removed.result_text.as_str(), removed.removed_lines), ("x", 1), "duplicates with {:?}", &pattern[..pattern.len().min(8)]);
+        }
+        let plain = block_on(remove_lines(format!("b\n{too_long}"), too_long.clone(), "containing".into(), true, false, false)).unwrap();
+        assert_eq!((plain.result_text.as_str(), plain.removed_lines), ("b", 1));
+        let split = block_on(process_text_block(format!("x{too_long}y"), too_long.clone(), false, false, true)).unwrap();
+        assert_eq!(split.result_text, vec!["x", "y"]);
+        // A syntax error within the limit keeps the fancy-regex message; a later valid job works
+        let error = ipc_error(block_on(filter_text("a".into(), format!("{})", "a".repeat(9_999)), "keep".into(), true, false)));
+        assert_eq!(error["kind"], "invalidRegex", "{error}");
+        assert_eq!(block_on(filter_text("ab".into(), "b".into(), "keep".into(), true, false)).unwrap().result_text, "b");
     }
 
     #[test]
@@ -394,5 +435,9 @@ mod tests {
         assert_eq!(superseded["kind"], "superseded", "{superseded}");
         let internal = ipc_error::<()>(Err(TextError::Internal("text processing job panicked".into())));
         assert_eq!((internal["kind"].as_str(), internal["message"].as_str()), (Some("internal"), Some("text processing job panicked")));
+        for (error, kind) in [(TextError::PatternEmpty("m".into()), "patternEmpty"), (TextError::PatternTooLong("m".into()), "patternTooLong")] {
+            let value = ipc_error::<()>(Err(error));
+            assert_eq!((value["kind"].as_str(), value["message"].as_str()), (Some(kind), Some("m")));
+        }
     }
 }

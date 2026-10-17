@@ -1,5 +1,5 @@
 {
-  "description": "Shared split fixtures for the Rust engine (cargo test) and the JS engine (npm test). Defaults per case: useRegex=false, trimParts=false, keepEmptyLines=true. 'expected' applies to both engines; a case with a known engine difference uses 'expectedRust' + 'expectedJs' and must explain it in 'divergence' ('resolved' documents a former divergence). Rows are the data lines of the shared line model (Paket 6, tests/fixtures/line-endings-cases.json): LF, CRLF and CR are line breaks, a trailing line break adds no row, an empty text has no rows. Every expected result is column-major: expected[column][row]. Paket 10 Phase B: 'delimiter' is a string or { repeat, count }; an expectation can also be { error: invalidRegex | emptyDelimiter } or, JS only, { error: regexSplitsCharacter }; 'divergence' is a string (accepted dialect difference) or { kind, reason } with kind dialect | utf16Guard (Paket 10 C1: the JS worker refuses a split whose split position or capture would lie inside a surrogate pair, Rust never cuts a character; required for regexSplitsCharacter) | utf16Damage (the JS split still damages a character: only with a pending JS target) | unvalidatedInput; 'resolved' explains a corrected expectation (Paket 6 line endings, Paket 10 C1 E4/E5); 'ref' is a finding of docs/analyse/Paket10-PhaseA-Regex-Analyse.md. The expectations describe the CURRENT behaviour. A not yet implemented decision of Paket 10 (docs/analyse/Paket10-PhaseB-Regexvertrag.md) is stated as 'target' (both engines) or 'targetRust' + 'targetJs': the columns or { error: invalidRegex | emptyDelimiter | emptyPattern | patternTooLong | regexSplitsCharacter (JS only) }, together with 'pending' { decisions, phase, engines, reason }: exactly the engines listed in 'engines' still differ from their target (checked by both runners against the real engines).",
+  "description": "Shared split fixtures for the Rust engine (cargo test) and the JS engine (npm test). Defaults per case: useRegex=false, trimParts=false, keepEmptyLines=true. 'expected' applies to both engines; a case with a known engine difference uses 'expectedRust' + 'expectedJs' and must explain it in 'divergence' ('resolved' documents a former divergence). Rows are the data lines of the shared line model (Paket 6, tests/fixtures/line-endings-cases.json): LF, CRLF and CR are line breaks, a trailing line break adds no row, an empty text has no rows. Every expected result is column-major: expected[column][row]. Paket 10 Phase B: 'delimiter' is a string or { repeat, count }; an expectation can also be { error: invalidRegex | emptyDelimiter | patternEmpty | patternTooLong } (Paket 10 C3, E3: an empty regex pattern or one of more than 10000 UTF-16 code units, refused by both engines before compiling and before the text; a plain delimiter is not limited) or, JS only, { error: regexSplitsCharacter }; 'divergence' is a string (accepted dialect difference) or { kind, reason } with kind dialect | utf16Guard (Paket 10 C1: the JS worker refuses a split whose split position or capture would lie inside a surrogate pair, Rust never cuts a character; required for regexSplitsCharacter) | utf16Damage (the JS split still damages a character: only with a pending JS target) | unvalidatedInput; 'resolved' explains a corrected expectation (Paket 6 line endings, Paket 10 C1 E4/E5); 'ref' is a finding of docs/analyse/Paket10-PhaseA-Regex-Analyse.md. The expectations describe the CURRENT behaviour. A not yet implemented decision of Paket 10 (docs/analyse/Paket10-PhaseB-Regexvertrag.md) is stated as 'target' (both engines) or 'targetRust' + 'targetJs': the columns or { error: invalidRegex | emptyDelimiter | patternEmpty | patternTooLong | regexSplitsCharacter (JS only) }, together with 'pending' { decisions, phase, engines, reason }: exactly the engines listed in 'engines' still differ from their target (checked by both runners against the real engines).",
   "cases": [
     {
       "name": "b1: column created in a later row is padded for earlier rows",
@@ -863,22 +863,18 @@
       "input": "abc",
       "delimiter": "",
       "useRegex": true,
-      "expectedRust": [[""], ["a"], ["b"], ["c"], [""]],
-      "expectedJs": [["a"], ["b"], ["c"]],
-      "divergence": { "kind": "unvalidatedInput", "reason": "Neither the JS worker nor Rust checks the empty pattern: both split between every character (with the usual empty parts in Rust). Only SplitPage and the main-thread path refuse it." },
+      "expected": { "error": "patternEmpty" },
       "ref": "R5",
-      "target": { "error": "emptyPattern" },
-      "pending": { "decisions": ["E3"], "phase": "C2", "engines": ["rust", "js"], "reason": "An empty regex pattern is refused with its own error in the worker and in Rust." }
+      "resolved": "Paket 10 C3 (E3): an empty regex pattern is refused as patternEmpty in both engines (JS workers and main-thread check, Rust), before it is compiled and also for an empty text; formerly JS invalidRegex or no check, and Rust ran the pattern."
     },
     {
       "name": "R5/E3: empty regex pattern on an empty text",
       "input": "",
       "delimiter": "",
       "useRegex": true,
-      "expected": [],
+      "expected": { "error": "patternEmpty" },
       "ref": "R5",
-      "target": { "error": "emptyPattern" },
-      "pending": { "decisions": ["E3"], "phase": "C2", "engines": ["rust", "js"], "reason": "The pattern is validated before the text is processed." }
+      "resolved": "Paket 10 C3 (E3): an empty regex pattern is refused as patternEmpty in both engines (JS workers and main-thread check, Rust), before it is compiled and also for an empty text; formerly JS invalidRegex or no check, and Rust ran the pattern."
     },
     {
       "name": "R5/E3: whitespace-only regex pattern stays allowed",
@@ -906,10 +902,9 @@
       "input": "x",
       "delimiter": { "repeat": "a", "count": 10001 },
       "useRegex": true,
-      "expected": [["x"]],
+      "expected": { "error": "patternTooLong" },
       "ref": "R5",
-      "target": { "error": "patternTooLong" },
-      "pending": { "decisions": ["E3"], "phase": "C2", "engines": ["rust", "js"], "reason": "The worker and Rust refuse a regex pattern longer than 10000 UTF-16 code units (SplitPage already does)." }
+      "resolved": "Paket 10 C3 (E3): a regex pattern longer than 10000 UTF-16 code units (JS pattern.length, Rust encode_utf16().count()) is refused as patternTooLong in both engines, before it is compiled and also for an empty text; formerly JS invalidRegex or no check, and Rust ran the pattern."
     },
     {
       "name": "R5/E3: emoji regex pattern of 10000 UTF-16 code units (5000 code points, 20000 UTF-8 bytes) is allowed",
@@ -923,10 +918,44 @@
       "input": "x",
       "delimiter": { "repeat": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀a", "count": 73 },
       "useRegex": true,
-      "expected": [["x"]],
+      "expected": { "error": "patternTooLong" },
       "ref": "R5",
-      "target": { "error": "patternTooLong" },
-      "pending": { "decisions": ["E3"], "phase": "C2", "engines": ["rust", "js"], "reason": "The limit counts UTF-16 code units in both engines (Rust: encode_utf16().count()), not code points or UTF-8 bytes." }
+      "resolved": "Paket 10 C3 (E3): a regex pattern longer than 10000 UTF-16 code units (JS pattern.length, Rust encode_utf16().count()) is refused as patternTooLong in both engines, before it is compiled and also for an empty text; formerly JS invalidRegex or no check, and Rust ran the pattern."
+    },
+    {
+      "name": "E3: emoji regex pattern of 5001 code points (10002 UTF-16 code units) is too long",
+      "input": "x",
+      "delimiter": { "repeat": "😀", "count": 5001 },
+      "useRegex": true,
+      "expected": { "error": "patternTooLong" }
+    },
+    {
+      "name": "E3: emoji and ASCII regex pattern of exactly 10000 UTF-16 code units is allowed",
+      "input": "x",
+      "delimiter": { "repeat": "😀aa", "count": 2500 },
+      "useRegex": true,
+      "expected": [["x"]]
+    },
+    {
+      "name": "E3: invalid regex syntax of exactly 10000 UTF-16 code units stays invalidRegex",
+      "input": "x",
+      "delimiter": { "repeat": "a)", "count": 5000 },
+      "useRegex": true,
+      "expected": { "error": "invalidRegex" }
+    },
+    {
+      "name": "E3: the length is checked before the syntax",
+      "input": "x",
+      "delimiter": { "repeat": ")", "count": 10001 },
+      "useRegex": true,
+      "expected": { "error": "patternTooLong" }
+    },
+    {
+      "name": "E3: whitespace-only regex pattern on an empty text is allowed",
+      "input": "",
+      "delimiter": " ",
+      "useRegex": true,
+      "expected": []
     },
     {
       "name": "R5: invalid regex on an empty text is still an error",

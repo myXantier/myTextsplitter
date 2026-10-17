@@ -12,7 +12,7 @@ import { useDragAndDrop } from '../hooks/useDragAndDrop';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
 import useSnackbar from '../hooks/useSnackbar';
-import { isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
+import { ERROR_KEYS, isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import './styles/RemovePageStyle.css';
 
 interface RemovePageProps {
@@ -59,8 +59,10 @@ export default function RemovePage({ sourceText, setSourceText, visible }: Remov
         return;
       }
 
+      // Duplicates ignore the pattern. Paket 10 E3: an empty regex pattern has its own message (the engines refuse it
+      // too; a too long one is reported by the engine, a plain search term is not limited)
       if (removeMode !== 'duplicates' && !options.pattern) {
-        snackbar.error(t('removeLines.enterPattern'));
+        snackbar.error(t(options.useRegex ? ERROR_KEYS.patternEmpty : 'removeLines.enterPattern'));
         return;
       }
 

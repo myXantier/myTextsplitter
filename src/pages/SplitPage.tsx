@@ -12,7 +12,7 @@ import { useBackendProcessor } from '../hooks/useBackendProcessor';
 import { useRuntimeSetting, usePermanentSetting, setRuntimeSetting, setPermanentSetting } from '../hooks/useSettings';
 import { useCombineHistoryStore } from '../hooks/useCombineHistoryStore';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
-import { hasValidPatternLength } from '../utils/regex';
+import { patternProblem } from '../utils/regexPattern';
 import { lineFormatOf } from '../utils/lines';
 import { BaseService } from '../services/BaseService';
 import { ERROR_KEYS, isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
@@ -118,12 +118,14 @@ export default function SplitPage({
     try {
       const delimiter = separator;
 
-      // Only the engine-neutral limits here: the syntax is checked by the engine that runs the split
-      // (Rust: fancy-regex, JS: RegExp in the worker), so Rust-only patterns like `(?i)` are not rejected
-      if (useRegex && !hasValidPatternLength(delimiter)) {
+      // Only the engine-neutral pattern rule here (Paket 10 E3, the engines check it too): the syntax is checked by the
+      // engine that runs the split (Rust: fancy-regex, JS: RegExp in the worker), so Rust-only patterns like `(?i)` are
+      // not rejected
+      const problem = useRegex ? patternProblem(delimiter) : null;
+      if (problem) {
         // The result of a still running older split would no longer match the input
         BaseService.cancelPending('split');
-        snackbar.error(t('errors.invalidRegex'));
+        snackbar.error(t(ERROR_KEYS[problem]));
         return;
       }
       // Paket 10 E4: an empty plain delimiter is invalid input (the engines refuse it too); spaces are allowed

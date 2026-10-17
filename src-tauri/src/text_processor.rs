@@ -48,6 +48,10 @@ pub enum TextError {
     InvalidMode(String),
     /// The plain (non-regex) split delimiter is empty (Paket 10 E4): invalid user input, never a split into characters.
     EmptyDelimiter(String),
+    /// The regex pattern is empty (Paket 10 E3; a pattern of spaces is allowed).
+    PatternEmpty(String),
+    /// The regex pattern is longer than `MAX_PATTERN_LENGTH` UTF-16 code units (Paket 10 E3).
+    PatternTooLong(String),
     /// The processing task itself failed (panic or cancelled task), not the user input.
     Internal(String),
     /// A newer request of the same operation replaced this one before it started (it never ran).
@@ -62,6 +66,8 @@ impl std::fmt::Display for TextError {
             TextError::DiffTooComplex(message) => write!(f, "diff too complex: {message}"),
             TextError::InvalidMode(message) => write!(f, "invalid mode: {message}"),
             TextError::EmptyDelimiter(message) => write!(f, "empty delimiter: {message}"),
+            TextError::PatternEmpty(message) => write!(f, "empty pattern: {message}"),
+            TextError::PatternTooLong(message) => write!(f, "pattern too long: {message}"),
             TextError::Internal(message) => write!(f, "internal error: {message}"),
             TextError::Superseded => write!(f, "superseded by a newer request"),
         }
@@ -76,13 +82,33 @@ impl std::fmt::Display for TextError {
 /// number of lines and matches. A running command cannot be stopped from the outside.
 pub const REGEX_BACKTRACK_LIMIT: usize = 1_000_000;
 
+/// Longest allowed regex pattern in UTF-16 code units, the same limit and unit as the JS engine
+/// (`MAX_PATTERN_LENGTH` in `src/utils/regexPattern.ts`, measured with `pattern.length`).
+pub const MAX_PATTERN_LENGTH: usize = 10_000;
+
+/// Paket 10 E3: the engine-neutral rule for a user regex pattern, checked before it is compiled. An empty pattern is
+/// `TextError::PatternEmpty` (a pattern of spaces is allowed), one of more than `MAX_PATTERN_LENGTH` UTF-16 code units
+/// `TextError::PatternTooLong` (not bytes or chars: an emoji counts 2, like in JS). No syntax check.
+fn check_pattern(pattern: &str) -> Result<(), TextError> {
+    if pattern.is_empty() {
+        return Err(TextError::PatternEmpty("the regex pattern is empty".into()));
+    }
+    let units = pattern.encode_utf16().count();
+    if units > MAX_PATTERN_LENGTH {
+        return Err(TextError::PatternTooLong(format!("the regex pattern has {units} UTF-16 code units (at most {MAX_PATTERN_LENGTH})")));
+    }
+    Ok(())
+}
+
 fn build_regex(pattern: &str) -> Result<Regex, fancy_regex::Error> {
     RegexBuilder::new(pattern).backtrack_limit(REGEX_BACKTRACK_LIMIT).build()
 }
 
-/// Compiles a user pattern. Case-insensitive matching uses an `(?i)` prefix: `RegexBuilder::case_insensitive`
-/// is not equivalent in fancy-regex 0.14 (it ignores lookaround/atomic groups and cannot be overridden by `(?-i)`).
+/// Compiles a user pattern after the pattern rule (`check_pattern`). Case-insensitive matching uses an `(?i)` prefix:
+/// `RegexBuilder::case_insensitive` is not equivalent in fancy-regex 0.14 (it ignores lookaround/atomic groups and
+/// cannot be overridden by `(?-i)`). Every user regex of the text commands is compiled here.
 fn compile_regex(pattern: &str, case_insensitive: bool) -> Result<Regex, TextError> {
+    check_pattern(pattern)?;
     if !case_insensitive {
         return build_regex(pattern).map_err(|e| TextError::InvalidRegex(e.to_string()));
     }
@@ -141,7 +167,7 @@ impl TextProcessor {
         useregex: bool,
         keep_empty_lines: bool,
     ) -> Result<ProcessedText<Vec<String>>, TextError> {
-        // Paket 10 E4: checked before anything else, also for an empty text (an empty regex pattern is rule E3)
+        // Paket 10 E4: checked before anything else, also for an empty text (a regex pattern: rule E3 in `compile_regex`)
         if !useregex && delimiter.is_empty() {
             return Err(TextError::EmptyDelimiter("the plain delimiter is empty".into()));
         }
@@ -468,6 +494,8 @@ mod tests {
             Ok(result) => SplitOutcome::Columns(result.result_text.iter().map(|col| col.split('\n').map(String::from).collect()).collect()),
             Err(TextError::InvalidRegex(_)) => SplitOutcome::Error { error: "invalidRegex".into() },
             Err(TextError::EmptyDelimiter(_)) => SplitOutcome::Error { error: "emptyDelimiter".into() },
+            Err(TextError::PatternEmpty(_)) => SplitOutcome::Error { error: "patternEmpty".into() },
+            Err(TextError::PatternTooLong(_)) => SplitOutcome::Error { error: "patternTooLong".into() },
             Err(e) => panic!("unexpected split error {e:?}"),
         }
     }
@@ -560,7 +588,7 @@ mod tests {
                 Ok(result) => Expected::Text(result.result_text),
                 Err(TextError::InvalidRegex(_)) => Expected::Error { error: "invalidRegex".into() },
                 Err(TextError::RegexRuntime(_)) => Expected::Error { error: "regexRuntime".into() },
-                Err(e @ (TextError::Internal(_) | TextError::DiffTooComplex(_) | TextError::InvalidMode(_) | TextError::EmptyDelimiter(_) | TextError::Superseded)) => panic!("{}: {e}", c.name),
+                Err(e @ (TextError::Internal(_) | TextError::DiffTooComplex(_) | TextError::InvalidMode(_) | TextError::EmptyDelimiter(_) | TextError::PatternEmpty(_) | TextError::PatternTooLong(_) | TextError::Superseded)) => panic!("{}: {e}", c.name),
             };
             if &actual != expected {
                 failures.push(format!("{}\n    expected: {:?}\n    actual:   {:?}", c.name, expected, actual));
@@ -771,6 +799,40 @@ mod tests {
             let result = TextProcessor::filter_text_internal("a", "([a-", mode, true, false);
             assert!(matches!(result, Err(TextError::InvalidRegex(_))), "{mode}: {result:?}");
         }
+    }
+
+    #[test]
+    fn pattern_rule_counts_utf16_code_units_before_compiling() {
+        // Paket 10 E3: the same limit and unit as JS `pattern.length` (an emoji counts 2), not bytes or chars
+        let rule = |pattern: &str| match check_pattern(pattern) {
+            Ok(()) => "ok",
+            Err(TextError::PatternEmpty(_)) => "patternEmpty",
+            Err(TextError::PatternTooLong(_)) => "patternTooLong",
+            Err(other) => panic!("{other:?}"),
+        };
+        let cases = [
+            (String::new(), "patternEmpty"),
+            (" ".into(), "ok"),
+            ("a".repeat(9_999), "ok"),
+            ("a".repeat(10_000), "ok"),
+            ("a".repeat(10_001), "patternTooLong"),
+            ("😀".repeat(5_000), "ok"),
+            ("😀".repeat(5_001), "patternTooLong"),
+            ("😀".repeat(4_999) + "aa", "ok"),
+            ("😀".repeat(4_999) + "aaa", "patternTooLong"),
+            // 10,000 chars but 20,000 code units / 40,000 bytes
+            ("😀".repeat(10_000), "patternTooLong"),
+        ];
+        for (pattern, expected) in &cases {
+            assert_eq!(rule(pattern), *expected, "{} UTF-16 code units", pattern.encode_utf16().count());
+        }
+        // The limit applies to the user pattern, not to the `(?i)` prefix of case-insensitive matching
+        assert!(compile_regex(&"a".repeat(10_000), true).is_ok());
+        // Before the syntax: a too long invalid pattern is a length error, an invalid one within the limit keeps its
+        // message with the position in the user pattern (not shifted by the `(?i)` prefix)
+        assert!(matches!(compile_regex(&")".repeat(10_001), false), Err(TextError::PatternTooLong(_))));
+        let syntax = compile_regex(&format!("{})", "a".repeat(9_999)), true);
+        assert!(matches!(&syntax, Err(TextError::InvalidRegex(message)) if message.contains("position 9999")), "{syntax:?}");
     }
 
     #[test]
@@ -1059,23 +1121,23 @@ mod tests {
                 TextError::InvalidRegex(_) => "invalidRegex".into(),
                 TextError::RegexRuntime(_) => "regexRuntime".into(),
                 TextError::InvalidMode(_) => "invalidMode".into(),
+                TextError::PatternEmpty(_) => "patternEmpty".into(),
+                TextError::PatternTooLong(_) => "patternTooLong".into(),
                 other => format!("unexpected error {other:?}"),
             }
         }
 
         fn expected_error(map: &Map<String, Value>) -> Result<String, String> {
             match map.get("error").and_then(Value::as_str) {
-                Some(kind @ ("invalidRegex" | "regexRuntime" | "invalidMode")) if map.len() == 1 => Ok(kind.into()),
+                Some(kind @ ("invalidRegex" | "regexRuntime" | "invalidMode" | "patternEmpty" | "patternTooLong")) if map.len() == 1 => Ok(kind.into()),
                 _ => Err(format!("invalid error expectation {}", Value::Object(map.clone()))),
             }
         }
 
-        /// A target may also use the errors of Paket 10 E3 (own errors for an empty or too long regex pattern).
+        /// A target of a not yet implemented decision has the form of an expectation (Paket 10 C3: the E3 pattern errors
+        /// are current errors now).
         fn parse_target<X>(value: &Value, parse: fn(&Value) -> Result<Result<X, String>, String>) -> Result<Result<X, String>, String> {
-            match value.get("error").and_then(Value::as_str) {
-                Some(kind @ ("emptyPattern" | "patternTooLong")) if value.as_object().is_some_and(|map| map.len() == 1) => Ok(Err(kind.into())),
-                _ => parse(value),
-            }
+            parse(value)
         }
 
         /// Rust and shared expectations; `regexSplitsCharacter` is a JS-only error (Rust never cuts a character).

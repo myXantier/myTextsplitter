@@ -57,9 +57,9 @@ Paket 10 Phase B (contract: `docs/analyse/Paket10-PhaseB-Regexvertrag.md`) exten
 | Field | Meaning |
 |---|---|
 | `delimiter` | A string or `{ "repeat", "count" }` (long patterns). |
-| `expected*` | Current behaviour; may also be `{ "error": "invalidRegex" }`. |
+| `expected*` | Current behaviour; may also be `{ "error": "invalidRegex" \| "emptyDelimiter" \| "patternEmpty" \| "patternTooLong" }` (and, JS only, `regexSplitsCharacter`). |
 | `divergence` | A string (accepted dialect difference) or `{ kind, reason }`: `dialect`, `utf16Guard` (the JS worker refuses the split with `regexSplitsCharacter`, Rust never cuts a character; required for that error), `utf16Damage` (the JS split still damages a character; only with a pending JS target, none left after C1), `unvalidatedInput`. An independent test oracle (native `matchAll` with match indices and native `split`) checks that exactly the cases whose native JS split would cut a pair are refused or marked. |
-| `target` or `targetRust` + `targetJs`, `pending` | Target of a not yet implemented decision (E3 pattern rule, E4 empty plain delimiter, E5 cut characters, E9 flags `gm` → `g`): columns or `{ error: invalidRegex \| emptyDelimiter \| emptyPattern \| patternTooLong \| regexSplitsCharacter }` (the last JS only). `pending { decisions, phase, engines, reason }`: exactly the listed engines still differ from their target; both runners check it against the real engines, so the suite stays green and a reached target is noticed. |
+| `target` or `targetRust` + `targetJs`, `pending` | Target of a not yet implemented decision (only E9 flags `gm` → `g` is left; E3/E4/E5 are implemented): columns or `{ error: invalidRegex \| emptyDelimiter \| patternEmpty \| patternTooLong \| regexSplitsCharacter }` (the last JS only). `pending { decisions, phase, engines, reason }`: exactly the listed engines still differ from their target; both runners check it against the real engines, so the suite stays green and a reached target is noticed. |
 | `ref` | Finding of `docs/analyse/Paket10-PhaseA-Regex-Analyse.md`. |
 
 **Paket 10 C1 (implemented, `resolved` in the fixtures):**
@@ -67,7 +67,7 @@ Paket 10 Phase B (contract: `docs/analyse/Paket10-PhaseB-Regexvertrag.md`) exten
 - **E4:** an empty plain delimiter is invalid input `emptyDelimiter` (`errors.emptyDelimiter`, de/en) in the JS worker, the
   main-thread fallback (`SplitInputError` of `splitColumns.ts`), Rust (`TextError::EmptyDelimiter`, IPC kind
   `emptyDelimiter`, mapped by `fromBackendError`) and the Split page; checked before the text, also for an empty text.
-  Whitespace delimiters stay valid; the empty *regex* pattern is rule E3 (still open).
+  Whitespace delimiters stay valid; the empty *regex* pattern is rule E3 (Paket 10 C3, below).
 - **E5:** the JS regex split refuses (`regexSplitsCharacter`, no partial columns) when an effective split position or a
   boundary of a participating non-empty capture lies inside a surrogate pair (an empty capture only adds an empty column,
   e.g. `\uD83D()\uDE00`). Lines with surrogates follow the steps of
@@ -139,13 +139,13 @@ Semantics fixed in C1:
 |---|---|
 | `options` | Always complete, no defaults. Filter: `mode`, `caseSensitive`, `splitMatches`. Remove: `removeMode`, `caseSensitive`, `useRegex`, `trimParts`. |
 | `pattern` | A string, or `{ "repeat": "a", "count": 10001 }` for long patterns. |
-| `expected` | Same result in both engines. Filter: the text or `{ "error": "invalidRegex" \| "regexRuntime" }`. Remove: `{ "text", "removedLines" }` or `{ "error" }`. |
+| `expected` | Same result in both engines. Filter: the text or `{ "error": "invalidRegex" \| "regexRuntime" \| "invalidMode" \| "patternEmpty" \| "patternTooLong" }`. Remove: `{ "text", "removedLines" }` or `{ "error" }`. |
 | `expectedRust` + `expectedJs` + `divergence` | Different current results; `divergence.kind` is `dialect` (accepted, Paket 5), `utf16Guard`, `suspectedBug`, `inconsistentDefinition` or `unvalidatedInput`, with a `reason`. |
 | `{ "error": "regexSplitsCharacter" }` | JS Filter only, always with `utf16Guard`: Rust processes valid Unicode, the JS worker refuses a result with a cut character. Every successful JS result is checked to be well-formed Unicode. |
 | `expectedJsUnreachableMainThread` | `FilterService.frontendInMainThread`, which `invoke` never reaches. Tested separately, **not a product path**. |
 | `ref`, `openQuestion` | Case id in the Phase A report; open product decision for identical behaviour. |
 | `resolved` | Why a correction changed the expectation (only with a shared `expected`). |
-| `target` + `pending` | Paket 10: result of a not yet implemented decision in both engines, may use `{ "error": "emptyPattern" \| "patternTooLong" }` (E3). `pending { decisions, phase, engines, reason }`: exactly the listed engines still differ from the target (checked against the real engines in both runners). |
+| `target` + `pending` | Paket 10: result of a not yet implemented decision in both engines (none left in these fixtures after C3). `pending { decisions, phase, engines, reason }`: exactly the listed engines still differ from the target (checked against the real engines in both runners). |
 | `preview` | Paket 10, Filter only, JS only: the pattern preview (`MatchPreviewWorker`, `buildMatchPreview`; it knows `caseSensitive` and `splitMatches`, not the mode). `segments` = rows `[text, match, …, text]` per line with a non-empty highlight, or `{ "error": "invalidRegex" \| "regexSplitsCharacter" }`; `keepSplitCutsCharacter: true` = some highlights join two halves of a character, so only "keep" with split matches refuses them (C2, E1); `resolved` = why C2 changed the expectation; `target` + `pending { decisions, phase, reason }` = a still open preview decision (E3); `note` = intended difference to the Filter result (E2). Rows never contain a lone surrogate and rebuild their input line; with the mode of the case the preview judgement gives exactly the JS Filter verdict (cut in every mode = refused; joined halves = refused only by keep with split matches). The preview worker runs for every Filter case (complete, without omissions, line numbers and match count checked). |
 
 JS paths per case: the real worker module; for Remove also `frontendInMainThread`; and the service without Web Worker
@@ -301,8 +301,17 @@ Chrome/WebView2 125+, Node 23+; older runtimes: `invalidRegex`): the JS result m
 - **Latest job wins** (Rust and JS): result and metrics of a superseded job are never applied, also not on the same
   service instance; it changes no loading state and shows no message. The global processing state ends only when no
   other operation type is still running (`src/hooks/runningOperations.ts`).
-- **No Web Worker** (main-thread fallback): jobs with a user regex are refused (`errors.regexRequiresWorker`, an invalid
-  pattern still reports `invalidRegex`); jobs without regex still run there.
+- **No Web Worker** (main-thread fallback): jobs with a user regex are refused (`errors.regexRequiresWorker`; an empty or
+  too long pattern still reports `patternEmpty` / `patternTooLong`, an invalid one `invalidRegex`); jobs without regex still run there.
+- **Regex pattern rule (Paket 10 C3, E3):** every user regex (Split with regex, Filter, Remove containing/notContaining
+  with regex, pattern preview) must not be empty (spaces are allowed) and may have at most 10,000 UTF-16 code units
+  (`MAX_PATTERN_LENGTH`, `src/utils/regexPattern.ts`; JS `pattern.length`, Rust `encode_utf16().count()` in `check_pattern`,
+  `src-tauri/src/text_processor.rs`). Checked after the mode and before compiling, also for an empty text; errors
+  `patternEmpty` / `patternTooLong` (`invalidInput`, IPC kinds of the same name, `errors.*` de/en), never `invalidRegex`.
+  Not checked: plain delimiters (only `emptyDelimiter`), plain Remove search terms, the duplicates mode. Tests: the shared
+  fixtures (boundaries 9,999 / 10,000 / 10,001, 5,000 / 5,001 emoji, emoji + ASCII, before the syntax), `regex.test.ts`,
+  `split.test.ts`, `workers.test.ts` (every worker), `processing.test.ts` (IPC kinds, main thread, metrics), Rust
+  `pattern_rule_counts_utf16_code_units_before_compiling` and `text_commands_report_the_regex_pattern_rule_as_pattern_errors`.
 - **Validation** happens in the engine that runs the pattern (no JS pre-validation in Rust mode). The pattern preview of
   the Filter page always uses JS in its own worker; in Rust mode it says so, and a pattern JS rejects shows a note.
 - **Known limits (Paket 10, decided for Phase C):** the backtracking limit applies to one search, not to a job
@@ -371,7 +380,11 @@ a whole emoji is highlighted with the match counter; "split matches" updates the
 1,000 highlights, the row cut marker and the incomplete note; a valid preview after an error; the JS engine note only in
 Rust mode. Surrogate notes depend on the Filter engine: for `😀x` with `.` (keep, split matches) and `😁` with `[😀]`
 (remove) the real JS Filter refuses and its notes say so; the real Rust Filter succeeds (`😀`/`x`, `😁` unchanged) and the
-Rust mode notes speak only about the JS preview. The pattern preview is checked for highlighting, the engine
+Rust mode notes speak only about the JS preview. Paket 10 C3 `checkPatternRule` (browser; Tauri in Rust and JS mode): on the
+Split (regex), Filter and Remove (regex) pages an empty pattern, 10,001 units and 5,001 emoji show their own message
+(not the syntax error), the previous result and metrics stay, a later valid job works; a plain delimiter and a plain
+search term of 10,001 characters work, duplicates ignore an empty, invalid or too long pattern; the preview of a too long
+pattern names the length, also in Rust mode. The pattern preview is checked for highlighting, the engine
 hint (Rust mode), the note for patterns JS rejects (also after switching the engine) and the stop of a catastrophic
 preview (3 s preview timeout). JS mode only (the first run must still be running): two rapid Filter runs show only
 the newer result and one success message; a Split that finishes keeps the processing state of a running Filter.

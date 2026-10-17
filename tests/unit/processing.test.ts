@@ -123,6 +123,74 @@ test('Paket 10 E4: the JS main-thread split refuses an empty plain delimiter, al
   }
 });
 
+// --- Paket 10 E3: the regex pattern rule (empty, more than 10,000 UTF-16 code units) in every path ---
+
+for (const kind of ['patternEmpty', 'patternTooLong'] as const) {
+  for (const [name, service, args] of [
+    ['split', () => new SplitService(), splitArgs('a', '', true)],
+    ['filter', () => new FilterService(), filterArgs('a', '')],
+    ['remove', () => new RemoveService(), removeArgs('a', '', 'containing', true)],
+  ] as const) {
+    test(`Paket 10 E3: ${kind} from the Rust ${name} command is an invalid-input error, keeps the metrics, a later job works`, async () => {
+      const instance = service();
+      backend(() => processed(name === 'split' ? ['a'] : 'a'));
+      await instance.invoke(args as never, true);
+      const before = instance.getMetrics();
+      backend(() => {
+        throw { kind, message: 'the regex pattern is empty' };
+      });
+      const error = await rejectionOf(() => instance.invoke(args as never, true));
+      assert.deepEqual({ kind: error.kind, message: error.message }, { kind: 'invalidInput', message: `errors.${kind}` });
+      assert.deepEqual(instance.getMetrics(), before, 'metrics of the last result');
+      backend(() => processed(name === 'split' ? ['b'] : 'b'));
+      assert.ok(await instance.invoke(args as never, true));
+    });
+  }
+}
+
+test('Paket 10 E3: without Web Worker the pattern errors come before regexRequiresWorker, the mode before both', async () => {
+  installWindow();
+  const tooLong = 'a'.repeat(10_001);
+  const previewArgs = (pattern: string): MatchPreviewConfig => ({ sourceText: 'a', mainParam: pattern, configParams: { caseSensitive: true, splitMatches: false } });
+  for (const [pattern, message] of [['', 'errors.patternEmpty'], [tooLong, 'errors.patternTooLong'], ['😀'.repeat(5_001), 'errors.patternTooLong'], ['([a-', 'errors.invalidRegex'], ['a', 'errors.regexRequiresWorker']]) {
+    for (const text of ['', 'a']) {
+      for (const run of [
+        () => new SplitService().invoke(splitArgs(text, pattern, true), false),
+        () => new FilterService().invoke(filterArgs(text, pattern), false),
+        () => new FilterService().invoke(filterArgs(text, pattern, 'remove'), false),
+        () => new RemoveService().invoke(removeArgs(text, pattern, 'containing', true), false),
+        () => new RemoveService().invoke(removeArgs(text, pattern, 'notContaining', true), false),
+        () => new MatchPreviewService().invoke(previewArgs(pattern), false),
+      ]) {
+        const error = await rejectionOf(run);
+        assert.equal(error.message, message, `${JSON.stringify(pattern.slice(0, 6))} on ${JSON.stringify(text)}`);
+        assert.equal(error.kind, message === 'errors.regexRequiresWorker' ? 'worker' : 'invalidInput');
+      }
+    }
+  }
+  for (const pattern of ['', tooLong]) {
+    assert.equal((await rejectionOf(() => new FilterService().invoke(filterArgs('a', pattern, 'bogus'), false))).message, 'errors.invalidMode');
+    assert.equal((await rejectionOf(() => new RemoveService().invoke(removeArgs('a', pattern, 'bogus', true), false))).message, 'errors.invalidMode');
+  }
+  // Not a regex pattern: duplicates ignore it, plain search terms and plain delimiters are not limited (main thread)
+  for (const pattern of ['', '([a-', tooLong]) {
+    const duplicates = await new RemoveService().invoke(removeArgs('x\nx', pattern, 'duplicates', true), false);
+    assert.equal((duplicates.result as { result_text: string }).result_text, 'x');
+  }
+  const plain = await new RemoveService().invoke(removeArgs(`b\n${tooLong}`, tooLong, 'containing', false), false);
+  assert.deepEqual({ ...(plain.result as object), metrics: undefined }, { result_text: 'b', removed_lines: 1, metrics: undefined });
+  const split = await new SplitService().invoke(splitArgs(`x${tooLong}y`, tooLong), false);
+  assert.deepEqual(split.result, [['x'], ['y']]);
+});
+
+test('Paket 10 E3: fromBackendError keeps the Rust detail of a pattern error', async () => {
+  backend(() => {
+    throw { kind: 'patternTooLong', message: 'the regex pattern has 10002 UTF-16 code units (at most 10000)' };
+  });
+  const error = await rejectionOf(() => new FilterService().invoke(filterArgs('a', '😀'.repeat(5_001)), true));
+  assert.deepEqual({ kind: error.kind, message: error.message, detail: error.detail }, { kind: 'invalidInput', message: 'errors.patternTooLong', detail: 'the regex pattern has 10002 UTF-16 code units (at most 10000)' });
+});
+
 test('B4: regex runtime error from Rust (backtrack limit) is an invalid-input error with its own message', async () => {
   backend(() => {
     throw { kind: 'regexRuntime', message: 'Max limit for backtracking count exceeded' };

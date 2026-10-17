@@ -13,7 +13,6 @@ import { splitLines } from '../../src/utils/lines.ts';
 const { SplitService } = await import('../../src/services/Services.ts');
 const { BaseService } = await import('../../src/services/BaseService.ts');
 const { ERROR_KEYS } = await import('../../src/services/ProcessingError.ts');
-const { MAX_PATTERN_LENGTH } = await import('../../src/utils/regex.ts');
 disableWorkerCleanupInterval(BaseService);
 installWindow();
 
@@ -48,10 +47,10 @@ const fixtures: { description: string; cases: SplitCase[] } = JSON.parse(
 
 const CASE_KEYS = ['name', 'input', 'delimiter', 'useRegex', 'trimParts', 'keepEmptyLines', 'expected', 'expectedRust', 'expectedJs', 'divergence', 'resolved', 'ref', 'target', 'targetRust', 'targetJs', 'pending'];
 const DIVERGENCE_KINDS = ['dialect', 'utf16Guard', 'utf16Damage', 'unvalidatedInput'];
-/** Errors of the current engines (Paket 10 C1: emptyDelimiter, JS only: regexSplitsCharacter). */
-const CURRENT_ERRORS = ['invalidRegex', 'emptyDelimiter', 'regexSplitsCharacter'];
+/** Errors of the current engines (Paket 10 C1: emptyDelimiter, C3: patternEmpty/patternTooLong, JS only: regexSplitsCharacter). */
+const CURRENT_ERRORS = ['invalidRegex', 'emptyDelimiter', 'patternEmpty', 'patternTooLong', 'regexSplitsCharacter'];
 /** Errors that only a target may use (Paket 10 decisions); `regexSplitsCharacter` is JS only (Rust never cuts a character). */
-const TARGET_ERRORS = ['invalidRegex', 'emptyDelimiter', 'emptyPattern', 'patternTooLong', 'regexSplitsCharacter'];
+const TARGET_ERRORS = ['invalidRegex', 'emptyDelimiter', 'patternEmpty', 'patternTooLong', 'regexSplitsCharacter'];
 const DECISIONS = ['E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E7', 'E8', 'E9', 'E10', 'E11'];
 
 const isObject = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -222,7 +221,7 @@ test('split fixture check rejects malformed entries', () => {
     ['unknown key', { ...valid, expectedTs: [] }],
     ['per-engine without divergence', { ...valid, expected: undefined, expectedRust: [['a']], expectedJs: [['b']] }],
     ['unknown divergence kind', { ...valid, expected: undefined, expectedRust: [['a']], expectedJs: [['b']], divergence: { kind: 'bug', reason: 'r' } }],
-    ['target-only error as current error', { ...valid, expected: { error: 'emptyPattern' } }],
+    ['unknown current error', { ...valid, expected: { error: 'emptyPattern' } }],
     ['unknown target error', { ...valid, target: { error: 'timeout' }, pending }],
     ['target without pending', { ...valid, target: { error: 'emptyDelimiter' } }],
     ['pending without target', { ...valid, pending }],
@@ -263,11 +262,13 @@ test('split fixtures cover the Paket 10 Phase A reproductions and decisions', ()
   const refs = new Set(fixtures.cases.map((c) => c.ref).filter(Boolean));
   for (const ref of ['R2', 'R5', 'R7']) assert.ok(refs.has(ref), `missing ${ref}`);
   const decisions = new Set(fixtures.cases.flatMap((c) => c.pending?.decisions ?? []));
-  // Still open: E3 (pattern rule, C2) and E9 (split flags, C2); E4 and E5 are implemented (Paket 10 C1)
-  assert.deepEqual([...decisions].sort(), ['E3', 'E9']);
+  // Still open: E9 (split flags); E4 and E5 are implemented (Paket 10 C1), E3 (pattern rule) in Paket 10 C3
+  assert.deepEqual([...decisions].sort(), ['E9']);
   const resolved = fixtures.cases.filter((c) => c.resolved?.startsWith('Paket 10 C1'));
   assert.ok(resolved.filter((c) => isError(c.expected) && c.expected.error === 'emptyDelimiter').length >= 6, 'E4 cases');
   assert.ok(resolved.filter((c) => isError(c.expectedJs) && c.expectedJs.error === 'regexSplitsCharacter').length >= 14, 'E5 cases');
+  const e3 = fixtures.cases.filter((c) => c.resolved?.startsWith('Paket 10 C3 (E3)'));
+  assert.deepEqual(e3.map((c) => (c.expected as SplitError).error).sort(), ['patternEmpty', 'patternEmpty', 'patternTooLong', 'patternTooLong']);
 });
 
 for (const c of fixtures.cases) {
@@ -399,8 +400,33 @@ test('split (JS, E4): an empty plain delimiter is refused before any line, also 
     assert.throws(() => splitLinesToColumns(lines, '', plainSplit), (error: unknown) => error instanceof SplitInputError && error.reason === 'emptyDelimiter');
   }
   assert.deepEqual(splitLinesToColumns(['a b'], ' ', plainSplit), [['a'], ['b']]);
-  // The empty regex pattern is rule E3 (Phase C2): unchanged
-  assert.deepEqual(splitLinesToColumns(['ab'], '', regexSplit), [['a'], ['b']]);
+  // The empty regex pattern is rule E3 (Paket 10 C3): its own error, also for no lines
+  for (const lines of [[], ['ab']]) {
+    assert.throws(() => splitLinesToColumns(lines, '', regexSplit), (error: unknown) => error instanceof SplitInputError && error.reason === 'patternEmpty');
+  }
+});
+
+test('split (JS, E3): the regex pattern rule counts UTF-16 code units and applies only to regex splits', () => {
+  const reason = (delimiter: string, options = regexSplit, lines = ['x']) => {
+    try {
+      splitLinesToColumns(lines, delimiter, options);
+      return 'ok';
+    } catch (error) {
+      if (error instanceof SplitInputError) return error.reason;
+      return error instanceof SyntaxError ? 'invalidRegex' : String(error);
+    }
+  };
+  assert.deepEqual(
+    ['a'.repeat(9_999), 'a'.repeat(10_000), 'a'.repeat(10_001), '😀'.repeat(5_000), '😀'.repeat(5_001), '😀'.repeat(4_999) + 'aa', '😀'.repeat(4_999) + 'aaa', ' '].map((d) => reason(d)),
+    ['ok', 'ok', 'patternTooLong', 'ok', 'patternTooLong', 'ok', 'patternTooLong', 'ok']
+  );
+  // Before the text and before the syntax: also for no lines and for an invalid pattern
+  assert.equal(reason(')'.repeat(10_001), regexSplit, []), 'patternTooLong');
+  assert.equal(reason('(', regexSplit, []), 'invalidRegex');
+  // A plain delimiter is not limited (only empty is refused, E4)
+  assert.equal(reason('a'.repeat(10_001), plainSplit), 'ok');
+  assert.equal(reason('', plainSplit), 'emptyDelimiter');
+  assert.deepEqual(splitLinesToColumns(['a' + ','.repeat(10_001) + 'b'], ','.repeat(10_001), plainSplit), [['a'], ['b']]);
 });
 
 // --- The real SplitWorker module (in-process, `self` stand-in) ---
@@ -458,15 +484,14 @@ for (const c of fixtures.cases) {
       assert.deepEqual({ type: result.type, result: result.result }, { type: 'ColumnList', result: expected });
       return;
     }
-    // A regex never runs in the UI thread. The compile check there (`compileUserRegex`) also refuses an empty or too
-    // long pattern as invalidRegex, which the worker does not check (R5)
+    // A regex never runs in the UI thread. The check there (`compileUserRegex`) reports the same pattern errors as the
+    // worker (E3, invalid syntax); a valid pattern is refused as regexRequiresWorker, not hidden behind it
     const error = await rejectionOf(run);
-    const pattern = delimiterOf(c.delimiter);
     const expected = jsExpectation(c);
-    const refusedPattern = (isError(expected) && expected.error === 'invalidRegex') || !pattern || pattern.length > MAX_PATTERN_LENGTH;
+    const refusedPattern = isError(expected) && ['invalidRegex', 'patternEmpty', 'patternTooLong'].includes(expected.error);
     assert.deepEqual(
       { kind: error.kind, message: error.message },
-      refusedPattern ? { kind: 'invalidInput', message: ERROR_KEYS.invalidRegex } : { kind: 'worker', message: ERROR_KEYS.regexRequiresWorker }
+      refusedPattern ? { kind: 'invalidInput', message: ERROR_KEYS[expected.error as keyof typeof ERROR_KEYS] } : { kind: 'worker', message: ERROR_KEYS.regexRequiresWorker }
     );
   });
 }

@@ -174,6 +174,55 @@ test('Paket 10 E4/E5: SplitWorker refuses an empty plain delimiter and a cut cha
   assert.deepEqual(safe.result.result, [['a'], ['😀'], ['b'], [''], ['c']]);
 });
 
+test('Paket 10 E3: every worker that compiles a user regex refuses an empty or too long pattern before the text', () => {
+  const remove = (text: string, pattern: string, removeMode: string, useRegex = true): RemoveConfig => ({
+    sourceText: text, mainParam: pattern, configParams: { caseSensitive: false, useRegex, trimParts: false, removeMode },
+  });
+  const preview = (text: string, pattern: string) => ({ sourceText: text, mainParam: pattern, configParams: { caseSensitive: true, splitMatches: false } }) as MatchPreviewConfig;
+  const jobs = (text: string, pattern: string): [string, BaseConfig][] => [
+    ['SplitWorker', splitArgs(text, pattern, true)],
+    ['FilterWorker', filterArgs(text, pattern)],
+    ['FilterWorker', filterArgs(text, pattern, 'remove')],
+    ['RemoveWorker', remove(text, pattern, 'containing')],
+    ['RemoveWorker', remove(text, pattern, 'notContaining')],
+    ['MatchPreviewWorker', preview(text, pattern)],
+  ];
+  const outcome = (name: string, args: BaseConfig) => {
+    const messages = runWorker(name, args);
+    assert.equal(messages.length, 1, `${name}: one message`);
+    return messages[0].success ? 'ok' : `${messages[0].errorKind}/${messages[0].error}`;
+  };
+  for (const text of ['', 'a😀b']) {
+    for (const [pattern, expected] of [
+      ['', 'invalidInput/errors.patternEmpty'],
+      ['a'.repeat(10_001), 'invalidInput/errors.patternTooLong'],
+      ['😀'.repeat(5_001), 'invalidInput/errors.patternTooLong'],
+      ['😀'.repeat(4_999) + 'aaa', 'invalidInput/errors.patternTooLong'],
+      // The length is checked before the syntax; a syntax error within the limit stays invalidRegex
+      [')'.repeat(10_001), 'invalidInput/errors.patternTooLong'],
+      ['a)'.repeat(5_000), 'invalidInput/errors.invalidRegex'],
+      // Allowed: whitespace and exactly 10,000 UTF-16 code units (an emoji counts 2)
+      [' ', 'ok'],
+      ['a'.repeat(10_000), 'ok'],
+      ['😀'.repeat(5_000), 'ok'],
+      ['😀'.repeat(4_999) + 'aa', 'ok'],
+    ] as const) {
+      for (const [name, args] of jobs(text, pattern)) assert.equal(outcome(name, args), expected, `${name} ${JSON.stringify(text)} ${pattern.length} units`);
+    }
+  }
+  // A syntax error keeps the engine detail (shown on the page)
+  const [syntax] = runWorker('FilterWorker', filterArgs('a', '([a-'));
+  assert.match(syntax.errorDetail, /Invalid regular expression/);
+  // Not a regex pattern: duplicates ignore it, a plain search term is not limited
+  for (const pattern of ['', '([a-', 'a'.repeat(10_001)]) {
+    const [message] = runWorker('RemoveWorker', remove('x\nx', pattern, 'duplicates'));
+    assert.deepEqual([message.success, message.result.result.result_text], [true, 'x']);
+  }
+  const long = 'b'.repeat(10_001);
+  const [plain] = runWorker('RemoveWorker', remove(`a\n${long}`, long, 'containing', false));
+  assert.deepEqual([plain.success, plain.result.result.result_text, plain.result.result.removed_lines], [true, 'a', 1]);
+});
+
 test('RemoveWorker: removing all lines is a successful empty TextV2 result', () => {
   const [message] = runWorker('RemoveWorker', removeArgs('a\nab', 'a'));
   assert.equal(message.success, true);
@@ -209,6 +258,20 @@ test('worker path: successful results reach the service', async () => {
   assert.equal(diff.type, 'Diff');
   assert.deepEqual((diff.result as any).document.stats, { unchanged: 0, removed: 1, added: 1, moved: 0 });
   assert.equal((diff.result as any).intraline, null);
+});
+
+test('Paket 10 E3: worker path: a pattern error reaches the service as invalid input, the next job of the service works', async () => {
+  for (const [service, bad, good] of [
+    [new SplitService(), splitArgs('a,b', '', true), splitArgs('a,b', ',', true)],
+    [new FilterService(), filterArgs('ab', 'a'.repeat(10_001)), filterArgs('ab', 'b')],
+    [new RemoveService(), removeArgs('a\nb', '😀'.repeat(5_001), true), removeArgs('a\nb', 'a', true)],
+    [new MatchPreviewService(), { sourceText: 'ab', mainParam: '', configParams: { caseSensitive: true, splitMatches: false } }, { sourceText: 'ab', mainParam: 'b', configParams: { caseSensitive: true, splitMatches: false } }],
+  ] as const) {
+    const error = await rejectionOf(() => (service as any).invoke(bad, false));
+    assert.equal(error.kind, 'invalidInput');
+    assert.match(error.message, /^errors\.pattern(Empty|TooLong)$/);
+    assert.ok(await (service as any).invoke(good, false));
+  }
 });
 
 const diffArgs = (sourceText: string, mainParam: string): DiffConfig => ({ sourceText, mainParam, configParams: { caseSensitive: true, ignoreWhitespace: false } });

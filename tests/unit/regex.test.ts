@@ -28,10 +28,42 @@ test('compileUserRegex: invalid JS patterns are invalid-input errors with the en
   }
 });
 
-test('compileUserRegex: empty and too long patterns are rejected (engine-neutral limits)', () => {
-  assert.throws(() => compileUserRegex('', 'g'), (e: any) => e.kind === 'invalidInput');
-  assert.throws(() => compileUserRegex('a'.repeat(MAX_PATTERN_LENGTH + 1), 'g'), (e: any) => e.kind === 'invalidInput');
-  assert.ok(compileUserRegex('a'.repeat(MAX_PATTERN_LENGTH), 'g'));
+test('compileUserRegex (Paket 10 E3): empty and too long patterns have their own errors, before the syntax', () => {
+  const error = (pattern: string) => {
+    try {
+      compileUserRegex(pattern, 'g');
+      return 'ok';
+    } catch (e: any) {
+      return `${e.kind}/${e.message}`;
+    }
+  };
+  assert.equal(MAX_PATTERN_LENGTH, 10_000);
+  assert.equal(error(''), 'invalidInput/errors.patternEmpty');
+  assert.equal(error('a'.repeat(MAX_PATTERN_LENGTH + 1)), 'invalidInput/errors.patternTooLong');
+  assert.equal(error('😀'.repeat(5_001)), 'invalidInput/errors.patternTooLong');
+  assert.equal(error(')'.repeat(MAX_PATTERN_LENGTH + 1)), 'invalidInput/errors.patternTooLong');
+  assert.equal(error('a)'.repeat(5_000)), 'invalidInput/errors.invalidRegex');
+  for (const pattern of [' ', 'a'.repeat(MAX_PATTERN_LENGTH), '😀'.repeat(5_000)]) assert.equal(error(pattern), 'ok', `${pattern.length} units`);
+  // The page shows the translated reason without a technical detail (only a syntax error shows the engine message)
+  const t = (key: string) => `<${key}>`;
+  assert.throws(() => compileUserRegex('😀'.repeat(5_001), 'g'), (e: any) => processingErrorMessage(e, t) === '<errors.patternTooLong>' && /10002 UTF-16 code units/.test(e.detail));
+  assert.throws(() => compileUserRegex('', 'g'), (e: any) => processingErrorMessage(e, t) === '<errors.patternEmpty>');
+});
+
+test('Paket 10 E3: German and English messages tell the empty pattern, the too long pattern, a syntax error and an empty delimiter apart', async () => {
+  const { default: de } = await import('../../src/i18n/locales/de.ts');
+  const { default: en } = await import('../../src/i18n/locales/en.ts');
+  for (const [language, locale] of [['de', de], ['en', en]] as const) {
+    const errors = locale.translation.errors as Record<string, string>;
+    const texts = (['patternEmpty', 'patternTooLong', 'invalidRegex', 'emptyDelimiter'] as const).map((key) => {
+      // The keys are the ones the engines report (ERROR_KEYS)
+      assert.equal(ERROR_KEYS[key], `errors.${key}`);
+      assert.ok(errors[key], `${language}: errors.${key}`);
+      return errors[key];
+    });
+    assert.equal(new Set(texts).size, texts.length, `${language}: distinct messages ${JSON.stringify(texts)}`);
+    assert.match(errors.patternTooLong, /10[.,]000/, `${language}: the limit is named`);
+  }
 });
 
 test('hasValidPatternLength checks only the length, not the JS syntax', () => {

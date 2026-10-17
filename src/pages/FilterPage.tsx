@@ -12,7 +12,7 @@ import { useRuntimeSetting } from '../hooks/useSettings';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
 import useSnackbar from '../hooks/useSnackbar';
-import { isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
+import { ERROR_KEYS, isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import './styles/FilterPageStyle.css';
 
 interface FilterPageProps {
@@ -44,7 +44,9 @@ export default function FilterPage({
   const handleProcessText = useCallback(
     async (action: 'remove' | 'keep') => {
       if (!sourceText || !options.pattern) {
-        snackbar.error(t('errors.textAndPatternRequired'));
+        // Paket 10 E3: with a text, a missing pattern is the empty regex pattern (the engines refuse it too; a too long
+        // pattern is reported by the engine)
+        snackbar.error(t(sourceText ? ERROR_KEYS.patternEmpty : 'errors.textAndPatternRequired'));
         return;
       }
 

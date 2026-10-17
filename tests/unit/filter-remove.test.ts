@@ -20,7 +20,7 @@ installWindow();
 
 // --- Fixture format ---
 
-type ErrorKind = 'invalidRegex' | 'regexRuntime' | 'invalidMode' | 'regexSplitsCharacter';
+type ErrorKind = 'invalidRegex' | 'regexRuntime' | 'invalidMode' | 'patternEmpty' | 'patternTooLong' | 'regexSplitsCharacter';
 type FixtureError = { error: ErrorKind };
 type FilterExpected = string | FixtureError;
 type RemoveExpected = { text: string; removedLines: number } | FixtureError;
@@ -67,23 +67,26 @@ interface Fixtures {
 }
 
 const CASE_KEYS = ['name', 'ref', 'input', 'pattern', 'options', 'expected', 'expectedRust', 'expectedJs', 'expectedJsUnreachableMainThread', 'divergence', 'openQuestion', 'resolved', 'target', 'pending', 'preview'];
-/** Errors that only a target may use (Paket 10 E3): own errors for an empty or too long regex pattern. */
-const TARGET_ERROR_KINDS = ['invalidRegex', 'regexRuntime', 'invalidMode', 'emptyPattern', 'patternTooLong'];
-/** Paket 10 C2: a match that cuts a character in every Filter mode is a preview error */
-const PREVIEW_ERROR_KINDS = ['invalidRegex', 'regexSplitsCharacter'];
-const PREVIEW_TARGET_ERROR_KINDS = ['invalidRegex', 'emptyPattern', 'patternTooLong', 'regexSplitsCharacter'];
+/** Errors a target may use (the current errors without the JS-only regexSplitsCharacter). */
+const TARGET_ERROR_KINDS = ['invalidRegex', 'regexRuntime', 'invalidMode', 'patternEmpty', 'patternTooLong'];
+/** Paket 10 C2: a match that cuts a character in every Filter mode is a preview error; C3: the pattern errors of E3 */
+const PREVIEW_ERROR_KINDS = ['invalidRegex', 'patternEmpty', 'patternTooLong', 'regexSplitsCharacter'];
+const PREVIEW_TARGET_ERROR_KINDS = PREVIEW_ERROR_KINDS;
 const DECISIONS = ['E1', 'E2', 'E3', 'E4', 'E5', 'E6', 'E7', 'E8', 'E9', 'E10', 'E11'];
 const OPTION_TYPES = {
   filter: { mode: 'string', caseSensitive: 'boolean', splitMatches: 'boolean' },
   remove: { removeMode: 'string', caseSensitive: 'boolean', useRegex: 'boolean', trimParts: 'boolean' },
 } as const;
 const DIVERGENCE_KINDS = ['dialect', 'utf16Guard', 'suspectedBug', 'inconsistentDefinition', 'unvalidatedInput'];
-const ERROR_KINDS = ['invalidRegex', 'regexRuntime', 'invalidMode'];
+/** Paket 10 C3 (E3): patternEmpty / patternTooLong for an empty or too long regex pattern, in both engines */
+const ERROR_KINDS = ['invalidRegex', 'regexRuntime', 'invalidMode', 'patternEmpty', 'patternTooLong'];
 /** Only the JS Filter refuses results with cut surrogate pairs (Rust works on Unicode scalar values). */
 const JS_FILTER_ERROR = 'regexSplitsCharacter';
 const MESSAGE_OF_ERROR: Record<string, string> = {
   invalidRegex: ERROR_KEYS.invalidRegex,
   invalidMode: ERROR_KEYS.invalidMode,
+  patternEmpty: ERROR_KEYS.patternEmpty,
+  patternTooLong: ERROR_KEYS.patternTooLong,
   regexSplitsCharacter: ERROR_KEYS.regexSplitsCharacter,
 };
 
@@ -347,10 +350,13 @@ test('filter/remove fixtures cover the Phase A reproductions', () => {
   // Paket 10 Phase A (docs/analyse/Paket10-PhaseA-Regex-Analyse.md): preview R1/R6, pattern rules R5
   for (const ref of ['R1', 'R5', 'R6']) assert.ok(refs.has(ref), `missing ${ref}`);
   const decisions = new Set([...fixtures.filter, ...fixtures.remove].flatMap((c) => [...(c.pending?.decisions ?? []), ...(c.preview?.pending?.decisions ?? [])]));
-  // E1 is implemented (Paket 10 C2: resolved previews), E3 is still open
-  assert.deepEqual([...decisions].filter((d) => d !== 'E11').sort(), ['E3']);
+  // E1 is implemented (Paket 10 C2: resolved previews), E3 in Paket 10 C3: no open decision is left in these fixtures
+  assert.deepEqual([...decisions], []);
   const previews = fixtures.filter.filter((c) => c.preview?.resolved);
-  assert.ok(previews.length >= 18 && previews.filter((c) => c.preview!.keepSplitCutsCharacter).length >= 4, `${previews.length} resolved previews`);
+  assert.ok(previews.length >= 20 && previews.filter((c) => c.preview!.keepSplitCutsCharacter).length >= 4, `${previews.length} resolved previews`);
+  const e3 = [...fixtures.filter, ...fixtures.remove].filter((c) => c.resolved?.startsWith('Paket 10 C3 (E3)'));
+  assert.equal(e3.length, 7, 'resolved E3 cases');
+  assert.ok(e3.every((c) => isErrorOf(c.expected, 'patternEmpty') || isErrorOf(c.expected, 'patternTooLong')));
 });
 
 // --- Engines ---
@@ -462,8 +468,8 @@ for (const c of fixtures.filter) {
   // compiling can fail
   test(`filter service without Web Worker: ${c.name}`, async () => {
     const error = await rejectionOf(() => new FilterService().invoke(filterArgs(c), false));
-    if (isErrorOf(expected, 'invalidMode')) assertInputError(error.kind, error.message, 'invalidMode', c.name);
-    else if (isErrorOf(expected, 'invalidRegex')) assertInputError(error.kind, error.message, 'invalidRegex', c.name);
+    // Mode first (service check), then the pattern rule and the syntax (compiling): the same errors as the worker
+    if (typeof expected === 'object' && expected.error !== JS_FILTER_ERROR) assertInputError(error.kind, error.message, expected.error, c.name);
     else assert.deepEqual({ kind: error.kind, message: error.message }, { kind: 'worker', message: ERROR_KEYS.regexRequiresWorker });
   });
 

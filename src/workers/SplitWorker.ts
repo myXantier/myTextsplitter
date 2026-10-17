@@ -1,7 +1,7 @@
 import { BaseWorker, type ProcessOptions } from './BaseWorker';
 import { WorkerLogger } from '../other/Logger';
 import { SplitInputError, splitLinesToColumns } from '../utils/splitColumns';
-import { createResult, emptyDelimiterError, invalidRegexError, regexSplitsCharacterError } from '../services/ProcessingError';
+import { createResult, invalidRegexError, splitInputError } from '../services/ProcessingError';
 
 export class SplitWorker extends BaseWorker {
   /** Errors are thrown and reported by `BaseWorker.process` (never turned into an empty result). */
@@ -18,9 +18,9 @@ export class SplitWorker extends BaseWorker {
       return createResult('ColumnList', columns);
     } catch (error) {
       // `splitLinesToColumns` throws a SyntaxError for an invalid regex and a SplitInputError for an empty plain
-      // delimiter or a cut character (Paket 10 E4/E5); no partial columns are returned
+      // delimiter, an empty or too long regex pattern or a cut character (Paket 10 E4/E3/E5); no partial columns are returned
       if (configParams.useRegex && error instanceof SyntaxError) throw invalidRegexError(error.message);
-      if (error instanceof SplitInputError) throw error.reason === 'emptyDelimiter' ? emptyDelimiterError() : regexSplitsCharacterError();
+      if (error instanceof SplitInputError) throw splitInputError(error.reason);
       throw error;
     }
   }

@@ -1,6 +1,6 @@
 import { BaseService, type JobOutcome, type JobRegex } from './BaseService';
 import { SplitInputError, splitTextToColumns } from '../utils/splitColumns';
-import { assertBackendResult, createResult, emptyDelimiterError, invalidRegexError, regexSplitsCharacterError } from './ProcessingError';
+import { assertBackendResult, createResult, invalidRegexError, splitInputError } from './ProcessingError';
 
 export class SplitService extends BaseService {
   protected readonly resultType = 'ColumnList';
@@ -38,9 +38,9 @@ export class SplitService extends BaseService {
       return createResult('ColumnList', splitTextToColumns(sourceText, mainParam, configParams));
     } catch (error) {
       // `splitTextToColumns` throws a SyntaxError for an invalid regex and a SplitInputError for an empty plain
-      // delimiter (Paket 10 E4); a regex never runs here (BaseService.assertMainThreadAllowed)
+      // delimiter (Paket 10 E4) or an empty / too long regex pattern (E3); a regex never runs here (BaseService.assertMainThreadAllowed)
       if (configParams.useRegex && error instanceof SyntaxError) throw invalidRegexError(error.message);
-      if (error instanceof SplitInputError) throw error.reason === 'emptyDelimiter' ? emptyDelimiterError() : regexSplitsCharacterError();
+      if (error instanceof SplitInputError) throw splitInputError(error.reason);
       throw error;
     }
   }

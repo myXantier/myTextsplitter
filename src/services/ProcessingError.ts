@@ -6,6 +6,7 @@
 // Kept free of app imports so the workers and `npm test` can load it directly.
 import { isDiffData, type DiffData } from '../utils/diff/result';
 import type { MatchPreviewData } from '../utils/matchPreview';
+import { MAX_PATTERN_LENGTH, type PatternProblem } from '../utils/regexPattern';
 
 export type ProcessingErrorKind =
   /** The user input cannot be processed, e.g. an invalid regex. */
@@ -31,6 +32,10 @@ export const ERROR_KEYS = {
   regexSplitsCharacter: 'errors.regexSplitsCharacter',
   /** A plain (non-regex) split delimiter is empty (Paket 10 E4): never a split into characters. */
   emptyDelimiter: 'errors.emptyDelimiter',
+  /** A regex pattern is empty (Paket 10 E3; a pattern of spaces is allowed). */
+  patternEmpty: 'errors.patternEmpty',
+  /** A regex pattern is longer than `MAX_PATTERN_LENGTH` UTF-16 code units (Paket 10 E3). */
+  patternTooLong: 'errors.patternTooLong',
   /** The Filter or Remove mode is not supported (unknown or empty). */
   invalidMode: 'errors.invalidMode',
   /** A regex cannot be run without Web Worker (it could block the UI thread). */
@@ -78,6 +83,24 @@ export const emptyDelimiterError = (detail?: string) => new ProcessingError('inv
 export const regexSplitsCharacterError = () =>
   new ProcessingError('invalidInput', ERROR_KEYS.regexSplitsCharacter, 'a match boundary lies inside a UTF-16 surrogate pair');
 
+/**
+ * An empty or too long regex pattern (Paket 10 E3, Rust `TextError::PatternEmpty` / `PatternTooLong`): invalid input,
+ * checked before the pattern is compiled. `length` = UTF-16 code units of the pattern (only in the detail).
+ */
+export const patternError = (problem: PatternProblem, length?: number) =>
+  new ProcessingError(
+    'invalidInput',
+    ERROR_KEYS[problem],
+    problem === 'patternEmpty' ? 'the regex pattern is empty' : `the regex pattern has ${length ?? 'more than ' + MAX_PATTERN_LENGTH} UTF-16 code units (at most ${MAX_PATTERN_LENGTH})`
+  );
+
+/** Invalid split input found by the JS split (`SplitInputError.reason`), as the error of the engines. */
+export function splitInputError(reason: 'emptyDelimiter' | 'regexSplitsCharacter' | PatternProblem): ProcessingError {
+  if (reason === 'emptyDelimiter') return emptyDelimiterError();
+  if (reason === 'regexSplitsCharacter') return regexSplitsCharacterError();
+  return patternError(reason);
+}
+
 export const supersededError = () => new ProcessingError('superseded', ERROR_KEYS.superseded);
 
 /** True for a processing that was replaced by a newer one of the same type (the pages show nothing for it). */
@@ -98,6 +121,7 @@ export function fromBackendError(error: unknown): ProcessingError {
     if (kind === 'diffTooComplex') return new ProcessingError('invalidInput', ERROR_KEYS.diffTooComplex, detail);
     if (kind === 'invalidMode') return invalidModeError(detail);
     if (kind === 'emptyDelimiter') return emptyDelimiterError(detail);
+    if (kind === 'patternEmpty' || kind === 'patternTooLong') return new ProcessingError('invalidInput', ERROR_KEYS[kind], detail);
     // The Rust job slot replaced this request by a newer one before it ran. BaseService reports it as `superseded`
     // when a newer job exists; for the latest job (requests arrived out of order) it stays a visible backend error.
     if (kind === 'superseded') return new ProcessingError('backend', ERROR_KEYS.general, 'superseded by a newer backend request');
