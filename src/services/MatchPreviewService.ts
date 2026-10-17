@@ -4,10 +4,11 @@ import { ProcessingError, ERROR_KEYS } from './ProcessingError';
 /**
  * Pattern preview of the Filter page. Always uses the native JS RegExp in the preview worker (also in Rust mode:
  * no IPC per keystroke), so it is only an approximation of the Rust result (see MatchPreview).
- * Result: `ColumnList`, one row of alternating text/match segments per line with a match (`findMatchSegments`).
+ * Result: `MatchPreview` (`buildMatchPreview`): limited rows of alternating text/match segments, the number of
+ * highlights, whether a limit stopped it and whether "keep" with split matches would cut a character.
  */
 export class MatchPreviewService extends BaseService {
-  protected readonly resultType = 'ColumnList';
+  protected readonly resultType = 'MatchPreview';
 
   constructor() {
     super('preview');

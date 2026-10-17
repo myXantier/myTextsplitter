@@ -1,10 +1,17 @@
 /** Utility functions for regex handling with the native JS RegExp engine */
-import { invalidRegexError, regexSplitsCharacterError } from '../services/ProcessingError';
+import { invalidRegexError, patternError, regexSplitsCharacterError } from '../services/ProcessingError';
+import { patternProblem } from './regexPattern';
 
-export const MAX_PATTERN_LENGTH = 10_000;
+export { MAX_PATTERN_LENGTH, patternProblem, type PatternProblem } from './regexPattern';
 
 /** Engine-neutral precheck (non-empty, at most MAX_PATTERN_LENGTH). No syntax check: Rust and JS have different dialects. */
-export const hasValidPatternLength = (pattern: string): boolean => !!pattern && pattern.length <= MAX_PATTERN_LENGTH;
+export const hasValidPatternLength = (pattern: string): boolean => patternProblem(pattern) === null;
+
+/** Paket 10 E3: refuses an empty or too long regex pattern with its own error (`patternEmpty` / `patternTooLong`). */
+export function assertValidPattern(pattern: string): void {
+  const problem = patternProblem(pattern);
+  if (problem) throw patternError(problem, pattern.length);
+}
 
 /** True if the native JS RegExp engine accepts the pattern (JS dialect only, not valid for the Rust backend) */
 export const validateRegexPattern = (pattern: string): boolean => {
@@ -19,11 +26,12 @@ export const validateRegexPattern = (pattern: string): boolean => {
 };
 
 /**
- * Compiles a user pattern with the native JS RegExp engine. Throws an `invalidInput` ProcessingError that keeps
- * the engine's message as detail. Compiling is safe in any thread; *executing* a user regex is not (see BaseService).
+ * Compiles a user pattern with the native JS RegExp engine. An empty or too long pattern is `patternEmpty` /
+ * `patternTooLong` (checked first), a syntax error `invalidRegex` with the engine's message as detail; all are
+ * `invalidInput` ProcessingErrors. Compiling is safe in any thread; *executing* a user regex is not (see BaseService).
  */
 export function compileUserRegex(pattern: string, flags: string): RegExp {
-  if (!hasValidPatternLength(pattern)) throw invalidRegexError();
+  assertValidPattern(pattern);
   try {
     return new RegExp(pattern, flags);
   } catch (error) {
@@ -40,7 +48,7 @@ const isHighSurrogate = (unit: number) => unit >= 0xd800 && unit <= 0xdbff;
 const isLowSurrogate = (unit: number) => unit >= 0xdc00 && unit <= 0xdfff;
 
 /** True if `index` lies between the two halves of a surrogate pair of `text` (a cut there splits one character). */
-const splitsSurrogatePair = (text: string, index: number): boolean =>
+export const splitsSurrogatePair = (text: string, index: number): boolean =>
   index > 0 && index < text.length && isHighSurrogate(text.charCodeAt(index - 1)) && isLowSurrogate(text.charCodeAt(index));
 
 /**

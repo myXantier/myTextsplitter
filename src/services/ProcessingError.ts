@@ -5,6 +5,8 @@
 // Failure: the services reject with a `ProcessingError`; nothing is replaced by `{}`, `[]` or `''`.
 // Kept free of app imports so the workers and `npm test` can load it directly.
 import { isDiffData, type DiffData } from '../utils/diff/result';
+import type { MatchPreviewData } from '../utils/matchPreview';
+import { MAX_PATTERN_LENGTH, type PatternProblem } from '../utils/regexPattern';
 
 export type ProcessingErrorKind =
   /** The user input cannot be processed, e.g. an invalid regex. */
@@ -28,6 +30,12 @@ export const ERROR_KEYS = {
   regexTooComplex: 'errors.regexTooComplex',
   /** A JS regex match would cut a character (surrogate pair) apart: the result would be damaged text. */
   regexSplitsCharacter: 'errors.regexSplitsCharacter',
+  /** A plain (non-regex) split delimiter is empty (Paket 10 E4): never a split into characters. */
+  emptyDelimiter: 'errors.emptyDelimiter',
+  /** A regex pattern is empty (Paket 10 E3; a pattern of spaces is allowed). */
+  patternEmpty: 'errors.patternEmpty',
+  /** A regex pattern is longer than `MAX_PATTERN_LENGTH` UTF-16 code units (Paket 10 E3). */
+  patternTooLong: 'errors.patternTooLong',
   /** The Filter or Remove mode is not supported (unknown or empty). */
   invalidMode: 'errors.invalidMode',
   /** A regex cannot be run without Web Worker (it could block the UI thread). */
@@ -69,8 +77,29 @@ export const invalidRegexError = (detail?: string) => new ProcessingError('inval
 /** An unknown or empty Filter/Remove mode: invalid input (Rust `TextError::InvalidMode`), never a silent default. */
 export const invalidModeError = (detail?: string) => new ProcessingError('invalidInput', ERROR_KEYS.invalidMode, detail);
 
+/** An empty plain split delimiter: invalid input (Rust `TextError::EmptyDelimiter`), checked before the text is processed. */
+export const emptyDelimiterError = (detail?: string) => new ProcessingError('invalidInput', ERROR_KEYS.emptyDelimiter, detail);
+
 export const regexSplitsCharacterError = () =>
   new ProcessingError('invalidInput', ERROR_KEYS.regexSplitsCharacter, 'a match boundary lies inside a UTF-16 surrogate pair');
+
+/**
+ * An empty or too long regex pattern (Paket 10 E3, Rust `TextError::PatternEmpty` / `PatternTooLong`): invalid input,
+ * checked before the pattern is compiled. `length` = UTF-16 code units of the pattern (only in the detail).
+ */
+export const patternError = (problem: PatternProblem, length?: number) =>
+  new ProcessingError(
+    'invalidInput',
+    ERROR_KEYS[problem],
+    problem === 'patternEmpty' ? 'the regex pattern is empty' : `the regex pattern has ${length ?? 'more than ' + MAX_PATTERN_LENGTH} UTF-16 code units (at most ${MAX_PATTERN_LENGTH})`
+  );
+
+/** Invalid split input found by the JS split (`SplitInputError.reason`), as the error of the engines. */
+export function splitInputError(reason: 'emptyDelimiter' | 'regexSplitsCharacter' | PatternProblem): ProcessingError {
+  if (reason === 'emptyDelimiter') return emptyDelimiterError();
+  if (reason === 'regexSplitsCharacter') return regexSplitsCharacterError();
+  return patternError(reason);
+}
 
 export const supersededError = () => new ProcessingError('superseded', ERROR_KEYS.superseded);
 
@@ -91,7 +120,10 @@ export function fromBackendError(error: unknown): ProcessingError {
     if (kind === 'regexRuntime') return new ProcessingError('invalidInput', ERROR_KEYS.regexTooComplex, detail);
     if (kind === 'diffTooComplex') return new ProcessingError('invalidInput', ERROR_KEYS.diffTooComplex, detail);
     if (kind === 'invalidMode') return invalidModeError(detail);
-    // The Rust job slot replaced this request by a newer one before it ran. BaseService reports it as `superseded`
+    if (kind === 'emptyDelimiter') return emptyDelimiterError(detail);
+    if (kind === 'patternEmpty' || kind === 'patternTooLong') return new ProcessingError('invalidInput', ERROR_KEYS[kind], detail);
+    // The Rust job slot replaced this request by a newer one before it ran, or stopped it while it ran (Paket 10 E6,
+    // regex jobs). The budget of a regex job arrives as `regexRuntime` ("too complex"). BaseService reports it as `superseded`
     // when a newer job exists; for the latest job (requests arrived out of order) it stays a visible backend error.
     if (kind === 'superseded') return new ProcessingError('backend', ERROR_KEYS.general, 'superseded by a newer backend request');
     return new ProcessingError('backend', ERROR_KEYS.general, detail ?? String(kind));
@@ -159,6 +191,25 @@ export const isTextV2 = (value: unknown): value is RemoveResultData =>
   // optional, but if present it must be valid
   ((value as RemoveResultData).metrics === undefined || isMetrics((value as RemoveResultData).metrics));
 
+const isCount = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0;
+
+/** Structure of a pattern preview: rows of odd length with non-empty matches, valid omissions (`src/utils/matchPreview.ts`). */
+export function isMatchPreviewData(value: unknown): value is MatchPreviewData {
+  if (!value || typeof value !== 'object') return false;
+  const data = value as MatchPreviewData;
+  if (!Array.isArray(data.rows) || !isCount(data.matches) || typeof data.complete !== 'boolean' || typeof data.keepSplitCutsCharacter !== 'boolean') return false;
+  return data.rows.every(
+    (row) =>
+      !!row &&
+      isCount(row.line) && row.line > 0 &&
+      isStringArray(row.segments) && row.segments.length % 2 === 1 && row.segments.length >= 3 &&
+      row.segments.every((segment, index) => index % 2 === 0 || segment !== '') &&
+      isCount(row.restOmitted) &&
+      Array.isArray(row.elided) &&
+      row.elided.every((e) => !!e && isCount(e.segment) && e.segment < row.segments.length && isCount(e.at) && e.at <= row.segments[e.segment].length && isCount(e.omitted) && e.omitted > 0)
+  );
+}
+
 const VALIDATORS: Record<NonNullable<myResultDataType>, (value: unknown) => boolean> = {
   Text: isString,
   Column: isStringArray,
@@ -166,6 +217,7 @@ const VALIDATORS: Record<NonNullable<myResultDataType>, (value: unknown) => bool
   TextV2: isTextV2,
   // Structure and every invariant of the line diff (`src/utils/diff/validate.ts`)
   Diff: isDiffData,
+  MatchPreview: isMatchPreviewData,
 };
 
 /** Data type of a `myResult` type. */
@@ -175,6 +227,7 @@ export interface ResultData {
   ColumnList: string[][];
   TextV2: RemoveResultData;
   Diff: DiffData;
+  MatchPreview: MatchPreviewData;
 }
 export type ResultType = keyof ResultData;
 

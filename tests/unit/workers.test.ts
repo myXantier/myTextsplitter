@@ -156,6 +156,73 @@ test('B22: SplitWorker reports an invalid regex as error', () => {
   assert.equal(messages[0].errorKind, 'invalidInput');
 });
 
+test('Paket 10 E4/E5: SplitWorker refuses an empty plain delimiter and a cut character with one error, no partial columns', () => {
+  for (const [args, error] of [
+    [splitArgs('', ''), 'errors.emptyDelimiter'],
+    [splitArgs('a\n😀b', ''), 'errors.emptyDelimiter'],
+    // The first row is fine, the second one would be cut: the whole job fails
+    [splitArgs('a,b\r\nx😀y', '[😀]', true), 'errors.regexSplitsCharacter'],
+    [splitArgs('a😀b', '(\\uD83D)\\uDE00', true), 'errors.regexSplitsCharacter'],
+  ] as const) {
+    const messages = runWorker('SplitWorker', args);
+    assert.deepEqual(messages.map((m) => ({ success: m.success, errorKind: m.errorKind, error: m.error, result: m.result })), [
+      { success: false, errorKind: 'invalidInput', error, result: null },
+    ]);
+  }
+  // Safe emoji splits keep working
+  const [safe] = runWorker('SplitWorker', splitArgs('a😀b🎉c', '(😀)|🎉', true));
+  assert.deepEqual(safe.result.result, [['a'], ['😀'], ['b'], [''], ['c']]);
+});
+
+test('Paket 10 E3: every worker that compiles a user regex refuses an empty or too long pattern before the text', () => {
+  const remove = (text: string, pattern: string, removeMode: string, useRegex = true): RemoveConfig => ({
+    sourceText: text, mainParam: pattern, configParams: { caseSensitive: false, useRegex, trimParts: false, removeMode },
+  });
+  const preview = (text: string, pattern: string) => ({ sourceText: text, mainParam: pattern, configParams: { caseSensitive: true, splitMatches: false } }) as MatchPreviewConfig;
+  const jobs = (text: string, pattern: string): [string, BaseConfig][] => [
+    ['SplitWorker', splitArgs(text, pattern, true)],
+    ['FilterWorker', filterArgs(text, pattern)],
+    ['FilterWorker', filterArgs(text, pattern, 'remove')],
+    ['RemoveWorker', remove(text, pattern, 'containing')],
+    ['RemoveWorker', remove(text, pattern, 'notContaining')],
+    ['MatchPreviewWorker', preview(text, pattern)],
+  ];
+  const outcome = (name: string, args: BaseConfig) => {
+    const messages = runWorker(name, args);
+    assert.equal(messages.length, 1, `${name}: one message`);
+    return messages[0].success ? 'ok' : `${messages[0].errorKind}/${messages[0].error}`;
+  };
+  for (const text of ['', 'a😀b']) {
+    for (const [pattern, expected] of [
+      ['', 'invalidInput/errors.patternEmpty'],
+      ['a'.repeat(10_001), 'invalidInput/errors.patternTooLong'],
+      ['😀'.repeat(5_001), 'invalidInput/errors.patternTooLong'],
+      ['😀'.repeat(4_999) + 'aaa', 'invalidInput/errors.patternTooLong'],
+      // The length is checked before the syntax; a syntax error within the limit stays invalidRegex
+      [')'.repeat(10_001), 'invalidInput/errors.patternTooLong'],
+      ['a)'.repeat(5_000), 'invalidInput/errors.invalidRegex'],
+      // Allowed: whitespace and exactly 10,000 UTF-16 code units (an emoji counts 2)
+      [' ', 'ok'],
+      ['a'.repeat(10_000), 'ok'],
+      ['😀'.repeat(5_000), 'ok'],
+      ['😀'.repeat(4_999) + 'aa', 'ok'],
+    ] as const) {
+      for (const [name, args] of jobs(text, pattern)) assert.equal(outcome(name, args), expected, `${name} ${JSON.stringify(text)} ${pattern.length} units`);
+    }
+  }
+  // A syntax error keeps the engine detail (shown on the page)
+  const [syntax] = runWorker('FilterWorker', filterArgs('a', '([a-'));
+  assert.match(syntax.errorDetail, /Invalid regular expression/);
+  // Not a regex pattern: duplicates ignore it, a plain search term is not limited
+  for (const pattern of ['', '([a-', 'a'.repeat(10_001)]) {
+    const [message] = runWorker('RemoveWorker', remove('x\nx', pattern, 'duplicates'));
+    assert.deepEqual([message.success, message.result.result.result_text], [true, 'x']);
+  }
+  const long = 'b'.repeat(10_001);
+  const [plain] = runWorker('RemoveWorker', remove(`a\n${long}`, long, 'containing', false));
+  assert.deepEqual([plain.success, plain.result.result.result_text, plain.result.result.removed_lines], [true, 'a', 1]);
+});
+
 test('RemoveWorker: removing all lines is a successful empty TextV2 result', () => {
   const [message] = runWorker('RemoveWorker', removeArgs('a\nab', 'a'));
   assert.equal(message.success, true);
@@ -191,6 +258,20 @@ test('worker path: successful results reach the service', async () => {
   assert.equal(diff.type, 'Diff');
   assert.deepEqual((diff.result as any).document.stats, { unchanged: 0, removed: 1, added: 1, moved: 0 });
   assert.equal((diff.result as any).intraline, null);
+});
+
+test('Paket 10 E3: worker path: a pattern error reaches the service as invalid input, the next job of the service works', async () => {
+  for (const [service, bad, good] of [
+    [new SplitService(), splitArgs('a,b', '', true), splitArgs('a,b', ',', true)],
+    [new FilterService(), filterArgs('ab', 'a'.repeat(10_001)), filterArgs('ab', 'b')],
+    [new RemoveService(), removeArgs('a\nb', '😀'.repeat(5_001), true), removeArgs('a\nb', 'a', true)],
+    [new MatchPreviewService(), { sourceText: 'ab', mainParam: '', configParams: { caseSensitive: true, splitMatches: false } }, { sourceText: 'ab', mainParam: 'b', configParams: { caseSensitive: true, splitMatches: false } }],
+  ] as const) {
+    const error = await rejectionOf(() => (service as any).invoke(bad, false));
+    assert.equal(error.kind, 'invalidInput');
+    assert.match(error.message, /^errors\.pattern(Empty|TooLong)$/);
+    assert.ok(await (service as any).invoke(good, false));
+  }
 });
 
 const diffArgs = (sourceText: string, mainParam: string): DiffConfig => ({ sourceText, mainParam, configParams: { caseSensitive: true, ignoreWhitespace: false } });
@@ -481,18 +562,61 @@ test('a job that ends after cleanupWorkers() returns its worker to the current p
 
 // --- Match preview (Paket 5): runs in its own worker type ---
 
-const previewArgs = (sourceText: string, pattern: string, caseSensitive = true) => ({ sourceText, mainParam: pattern, configParams: { caseSensitive } });
+const previewArgs = (sourceText: string, pattern: string, caseSensitive = true, splitMatches = false): MatchPreviewConfig => ({
+  sourceText,
+  mainParam: pattern,
+  configParams: { caseSensitive, splitMatches },
+});
+const rowsOf = (data: any) => data.rows.map((row: any) => row.segments);
 
-test('MatchPreviewWorker: delivers match segments as ColumnList', () => {
+test('MatchPreviewWorker: delivers a MatchPreview with rows, line numbers and the number of highlights', () => {
   const [message] = runWorker('MatchPreviewWorker', previewArgs('an apple\nnone\nAPPLE', 'ap', false));
   assert.equal(message.success, true);
-  assert.deepEqual({ type: message.result.type, result: message.result.result }, { type: 'ColumnList', result: [['an ', 'ap', 'ple'], ['', 'AP', 'PLE']] });
+  assert.equal(message.result.type, 'MatchPreview');
+  assert.deepEqual(message.result.result, {
+    rows: [
+      { line: 1, segments: ['an ', 'ap', 'ple'], elided: [], restOmitted: 0 },
+      { line: 3, segments: ['', 'AP', 'PLE'], elided: [], restOmitted: 0 },
+    ],
+    matches: 2,
+    complete: true,
+    keepSplitCutsCharacter: false,
+  });
 });
 
 test('MatchPreviewWorker: invalid regex is an invalid-input error', () => {
   const messages = runWorker('MatchPreviewWorker', previewArgs('apple', '([a-'));
   assert.equal(messages.length, 1);
   assert.equal(messages[0].errorKind, 'invalidInput');
+});
+
+test('MatchPreviewWorker (Paket 10 E1): a partial match of a character is an error, joined halves are reported only with splitMatches', () => {
+  const [cut] = runWorker('MatchPreviewWorker', previewArgs('a😀b', '\\uD83D'));
+  assert.deepEqual({ success: cut.success, errorKind: cut.errorKind, error: cut.error, result: cut.result }, { success: false, errorKind: 'invalidInput', error: 'errors.regexSplitsCharacter', result: null });
+  for (const splitMatches of [false, true]) {
+    const [joined] = runWorker('MatchPreviewWorker', previewArgs('😀x', '.', true, splitMatches));
+    assert.deepEqual(rowsOf(joined.result.result), [['', '😀', '', 'x', '']]);
+    assert.equal(joined.result.result.keepSplitCutsCharacter, splitMatches);
+  }
+});
+
+test('MatchPreviewWorker (Paket 10 E7): limits are enforced while the answer is built, a limited answer is marked', () => {
+  // 200,000 matches in one line: one row with 1,000 highlights, the rest of the line is not shown
+  const [oneLine] = runWorker('MatchPreviewWorker', previewArgs('ab'.repeat(200_000), 'a'));
+  const data = oneLine.result.result;
+  assert.deepEqual({ rows: data.rows.length, segments: data.rows[0].segments.length, matches: data.matches, complete: data.complete }, { rows: 1, segments: 2_001, matches: 1_000, complete: false });
+  assert.equal(data.rows[0].restOmitted, 400_000 - 1_999);
+  // 5,000 short lines: 1,000 rows, then the search stops
+  const [manyLines] = runWorker('MatchPreviewWorker', previewArgs('xa\n'.repeat(5_000), 'a'));
+  assert.deepEqual({ rows: manyLines.result.result.rows.length, complete: manyLines.result.result.complete }, { rows: 1_000, complete: false });
+  assert.ok(manyLines.result.result.rows.every((row: any, i: number) => row.line === i + 1 && row.segments.join('') === 'xa'));
+  // The character budget holds for the whole answer, the final text of a row included (review case of C2)
+  const [budget] = runWorker('MatchPreviewWorker', previewArgs('a'.repeat(200_000) + 'b'.repeat(10_000), 'a{200}'));
+  const stored = budget.result.result.rows.reduce((n: number, row: any) => n + row.segments.reduce((m: number, s: string) => m + s.length, 0), 0);
+  assert.deepEqual({ stored, matches: budget.result.result.matches, complete: budget.result.result.complete, rest: budget.result.result.rows[0].restOmitted }, { stored: 200_000, matches: 1_000, complete: false, rest: 10_000 });
+  // Zero-width matches and no matches: no rows, a complete answer ("no matches" is true)
+  const [zeroWidth] = runWorker('MatchPreviewWorker', previewArgs('ab'.repeat(200_000), '(?=a)'));
+  assert.deepEqual(zeroWidth.result.result, { rows: [], matches: 0, complete: true, keepSplitCutsCharacter: false });
 });
 
 test('MatchPreviewService runs in the preview worker, independent of a running filter job', limited, async () => {
@@ -504,7 +628,7 @@ test('MatchPreviewService runs in the preview worker, independent of a running f
   assert.equal(previewWorker.name, 'MatchPreviewWorker');
   previewWorker.answer();
   filterWorker.answer();
-  assert.deepEqual((await preview).result, [['', 'ap', 'ple']]);
+  assert.deepEqual(rowsOf((await preview).result), [['', 'ap', 'ple']]);
   assert.equal((await filter).result, 'ap');
 });
 
@@ -515,6 +639,41 @@ test('BaseService.cancelPending stops a running preview (worker terminated, job 
   BaseService.cancelPending('preview');
   assert.equal((await preview).kind, 'superseded');
   assert.equal(instances[0].terminated, true);
+});
+
+test('Paket 10 C2: a preview started before a splitMatches change never overwrites the newer one', limited, async () => {
+  behaviour = 'manual';
+  const older = rejectionOf(() => new MatchPreviewService().invoke(previewArgs('😀x', '.', true, false), false));
+  await flush();
+  const newer = new MatchPreviewService().invoke(previewArgs('😀x', '.', true, true), false);
+  await flush();
+  const [oldWorker, newWorker] = instances;
+  assert.equal((await older).kind, 'superseded', 'the older preview ends at once');
+  assert.equal(oldWorker.terminated, true);
+  newWorker.answer();
+  assert.equal((await newer).result.keepSplitCutsCharacter, true);
+});
+
+test('Paket 10 C2: the preview timeout (3 s) stops the worker; a late answer changes nothing, the next preview works', limited, async () => {
+  behaviour = 'manual';
+  mock.timers.enable({ apis: ['setTimeout'] });
+  try {
+    const service = new MatchPreviewService();
+    const pending = rejectionOf(() => service.invoke(previewArgs('apple', 'ap'), false));
+    await flush();
+    const [stale] = instances;
+    mock.timers.tick(2_999);
+    assert.equal(stale.terminated, false);
+    mock.timers.tick(1);
+    assert.equal((await pending).kind, 'timeout');
+    assert.equal(stale.terminated, true);
+    stale.answer(); // a terminated worker never answers
+    behaviour = 'real';
+    const next = await new MatchPreviewService().invoke(previewArgs('apple', 'pl'), false);
+    assert.deepEqual(rowsOf(next.result), [['ap', 'pl', 'e']]);
+  } finally {
+    mock.timers.reset();
+  }
 });
 
 // --- Paket 7 B3: optional word diff through the worker ---

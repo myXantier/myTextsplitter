@@ -127,8 +127,9 @@ export abstract class BaseService implements IBaseService {
   }
 
   /**
-   * Stops the running job of `type`: a worker job is terminated, a backend job (cannot be stopped) has its late
-   * result discarded. Its promise rejects as `superseded`.
+   * Stops the running job of `type`: a worker job is terminated, a backend job has its late result discarded. Its
+   * promise rejects as `superseded`. This does not reach Rust: a running Rust regex job ends at its time budget or when
+   * a newer request of the same operation arrives (Paket 10 E6).
    */
   public static cancelPending(type: WorkerType): void {
     BaseService.latestJobIds.set(type, ++BaseService.jobCounter);
@@ -191,7 +192,8 @@ export abstract class BaseService implements IBaseService {
    * `ProcessingError`. There is no automatic fallback to another processing path: errors are reported as they are.
    *
    * Only the latest job per type is delivered: when a newer job of the same type starts, an older worker job is
-   * terminated and an older backend job (Rust cannot be stopped) has its late result or error discarded; both
+   * terminated and an older backend job has its late result or error discarded (a running Rust regex job also ends at its
+   * next check with `superseded`, Paket 10 E6); both
    * reject with `superseded`. Results and metrics of a superseded job are never applied.
    */
   async invoke(args: BaseConfig, tryBackend?: boolean): Promise<myResult> {
@@ -246,8 +248,8 @@ export abstract class BaseService implements IBaseService {
 
   /**
    * Without Web Worker the job would run in the UI thread, where a user regex cannot be stopped (a timer in the same
-   * thread does not run while the regex runs). Such jobs are refused: an invalid pattern as `invalidRegex`
-   * (compiling is safe), a valid one as `regexRequiresWorker`. Jobs without regex are not affected.
+   * thread does not run while the regex runs). Such jobs are refused: an empty or too long pattern as `patternEmpty` /
+   * `patternTooLong`, an invalid one as `invalidRegex` (compiling is safe), a valid one as `regexRequiresWorker`. Jobs without regex are not affected.
    */
   private assertMainThreadAllowed(args: BaseConfig) {
     const regex = this.regexOf(args);

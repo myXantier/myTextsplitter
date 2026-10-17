@@ -1,7 +1,7 @@
 import { BaseWorker, type ProcessOptions } from './BaseWorker';
 import { WorkerLogger } from '../other/Logger';
-import { splitLinesToColumns } from '../utils/splitColumns';
-import { createResult, invalidRegexError } from '../services/ProcessingError';
+import { SplitInputError, splitLinesToColumns } from '../utils/splitColumns';
+import { createResult, invalidRegexError, splitInputError } from '../services/ProcessingError';
 
 export class SplitWorker extends BaseWorker {
   /** Errors are thrown and reported by `BaseWorker.process` (never turned into an empty result). */
@@ -17,8 +17,10 @@ export class SplitWorker extends BaseWorker {
       const columns = splitLinesToColumns(chunk, options.args.mainParam, configParams);
       return createResult('ColumnList', columns);
     } catch (error) {
-      // `splitLinesToColumns` throws a SyntaxError for an invalid regex
+      // `splitLinesToColumns` throws a SyntaxError for an invalid regex and a SplitInputError for an empty plain
+      // delimiter, an empty or too long regex pattern or a cut character (Paket 10 E4/E3/E5); no partial columns are returned
       if (configParams.useRegex && error instanceof SyntaxError) throw invalidRegexError(error.message);
+      if (error instanceof SplitInputError) throw splitInputError(error.reason);
       throw error;
     }
   }

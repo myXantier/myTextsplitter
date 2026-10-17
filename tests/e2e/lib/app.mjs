@@ -439,6 +439,456 @@ export async function checkRegexRobustness(page, r, label, errorsSince, engine) 
 }
 
 /**
+ * Filter pattern preview (Paket 10 C2) on the real Filter page; the preview always runs the JS RegExp in its worker
+ * (`engine` = engine of the Filter itself): a partial match of an emoji is a note, not a highlight; whole emoji are
+ * highlighted; switching "split matches" updates the preview; a limited preview is marked and renders a bounded number of
+ * highlights; a valid preview works after an error; in Rust mode a note names the JS engine of the preview, and the
+ * surrogate notes speak about the JS preview only (the real Rust Filter succeeds where the JS Filter refuses).
+ */
+export async function checkMatchPreview(page, r, label, errorsSince, engine) {
+  const exceptionsSince = (n) => errorsSince(n).filter((l) => l.kind === 'exception');
+  const checkbox = (re) => `[...__t.page().querySelectorAll('.input-box')].find(e => ${re}.test(e.innerText)).querySelector('input')`;
+  const setChecked = (re, on) => page.eval(`${checkbox(re)}.checked !== ${on} && ${checkbox(re)}.click(); true`);
+  const setText = async (value) => {
+    await page.eval(`__t.set(__t.textareas()[0], ${value}); true`);
+    await sleepMs(150);
+  };
+  const setPattern = async (value) => {
+    await page.eval(`__t.set(__t.page().querySelector('.form-add-render input'), ${JSON.stringify(value)}); true`);
+    await sleepMs(150);
+  };
+  const view = () =>
+    page.eval(`(() => { const p = __t.page().querySelector('.match-preview'); return p && {
+      notes: [...p.querySelectorAll('.preview-note')].map(n => n.className.replace('preview-note', '').trim() + ': ' + n.innerText),
+      highlights: [...p.querySelectorAll('.match-highlight')].map(h => h.innerText),
+      spans: p.querySelector('.preview-content')?.querySelectorAll('span').length ?? 0,
+      elisions: [...p.querySelectorAll('.preview-elision')].map(e => e.innerText),
+      count: p.querySelector('.match-count')?.innerText ?? null } })()`);
+  const waitView = async (condition) => {
+    await page.waitFor(`(() => { const p = __t.page().querySelector('.match-preview'); return !!p && (${condition}); })()`, 8000);
+    return view();
+  };
+  const PREVIEW = /pattern matches/i;
+  const SPLIT = /separate/i;
+  const CUT = /Teil eines Zeichens|part of a character/i;
+  const JS_ENGINE = /JavaScript-RegExp|JavaScript RegExp/;
+  // Statements about the JS Filter (JS mode only) and the qualification of the Rust mode notes
+  const JS_REFUSES = /würde diesen Text ablehnen|would refuse this text/;
+  const KEEP_REFUSED = /wird abgelehnt|is refused/;
+  const OWN_ENGINE = /eigenen Engine|its own engine/;
+  const REMOVE = 0;
+  const KEEP = 1;
+  /** Runs the real Filter (`.filter-actions` button) on an empty result: the result and the snackbars it shows */
+  const result = `(__t.textareas()[1] ? __t.raw(__t.textareas()[1]) : '')`;
+  const runFilter = async (button) => {
+    // The result field exists only after a first result
+    await page.eval(`__t.textareas()[1] && __t.set(__t.textareas()[1], ''); __t.watchSnacks(); true`);
+    await sleepMs(100);
+    await page.eval(`__t.page().querySelectorAll('.filter-actions button')[${button}].click(); true`);
+    await page.waitFor(`__t.snackLog.length > 0 || ${result} !== ''`, 8000);
+    await sleepMs(300);
+    return { result: await page.eval(result), snacks: await page.eval('__t.takeSnacks()') };
+  };
+
+  const n = page.logs.length;
+  await page.eval(`__t.nav('filter'); true`);
+  await sleepMs(200);
+  await setChecked(SPLIT, false);
+  await setChecked(PREVIEW, true);
+  await setText(`'a😀b\\nc😁d'`);
+
+  // 1. A pattern that matches only one half of the emoji: note instead of a misleading highlight
+  await setPattern('\\uD83D');
+  let v = await waitView(`p.querySelector('.preview-note.error')`);
+  r.check(`${label}: preview of a surrogate half -> note, no highlight`, v.highlights.length === 0 && v.notes.some((note) => note.startsWith('error') && CUT.test(note)), JSON.stringify(v));
+  r.check(`${label}: preview engine note ${engine === 'rust' ? 'names JavaScript in Rust mode' : 'only in Rust mode'}`, v.notes.some((note) => JS_ENGINE.test(note)) === (engine === 'rust'), JSON.stringify(v.notes));
+
+  // 2. A whole emoji is highlighted; the counter names lines and matches
+  await setPattern('😀');
+  v = await waitView(`p.querySelector('.match-highlight')?.innerText === '😀'`);
+  r.check(`${label}: preview highlights a whole emoji`, JSON.stringify(v.highlights) === '["😀"]' && /1 (Treffer|matches) in 1/.test(v.count ?? ''), JSON.stringify(v));
+
+  // 3. "split matches" changes the preview: halves joined into one highlight are reported only with it
+  await setText(`'😀x'`);
+  await setPattern('.');
+  // Two highlights: the joined emoji and x (the previous preview showed one)
+  v = await waitView(`p.querySelectorAll('.match-highlight').length === 2 && !p.querySelector('.preview-note.warning')`);
+  r.check(`${label}: preview joins adjacent halves into one highlight`, v.highlights[0] === '😀' && v.highlights.length === 2, JSON.stringify(v));
+  await setChecked(SPLIT, true);
+  v = await waitView(`!!p.querySelector('.preview-note.warning')`);
+  r.check(`${label}: switching "split matches" on updates the preview (keep would cut the emoji)`, v.highlights[0] === '😀' && v.notes.some((note) => note.startsWith('warning')), JSON.stringify(v.notes));
+  const warning = v.notes.find((note) => note.startsWith('warning')) ?? '';
+  r.check(
+    `${label}: joined-halves note ${engine === 'rust' ? 'names the JS preview, promises no refusal by the Rust Filter' : 'names the refusal of keep with split matches'}`,
+    engine === 'rust' ? !KEEP_REFUSED.test(warning) && OWN_ENGINE.test(warning) : KEEP_REFUSED.test(warning),
+    warning
+  );
+  // The real Filter, keep with split matches: JS refuses the cut emoji, Rust (fancy-regex) matches whole characters
+  let outcome = await runFilter(KEEP);
+  r.check(
+    `${label}: Filter keep with split matches on '😀x' with '.' ${engine === 'rust' ? 'succeeds in Rust (😀 / x)' : 'is refused by the JS Filter'}`,
+    engine === 'rust' ? outcome.result === '😀\nx' && !outcome.snacks.some((s) => s.startsWith('error')) : outcome.result === '' && outcome.snacks.some((s) => s.startsWith('error') && CUT.test(s)),
+    JSON.stringify(outcome)
+  );
+  await setChecked(SPLIT, false);
+  v = await waitView(`!p.querySelector('.preview-note.warning')`);
+  r.check(`${label}: switching "split matches" off removes the note`, !v.notes.some((note) => note.startsWith('warning')), JSON.stringify(v.notes));
+
+  // 3b. [😀] on 😁: JS RegExp matches the shared high half (preview note); Rust treats the class as Unicode, no match
+  await setText(`'😁'`);
+  await setPattern('[😀]');
+  v = await waitView(`!!p.querySelector('.preview-note.error')`);
+  const cutNote = v.notes.find((note) => note.startsWith('error')) ?? '';
+  r.check(
+    `${label}: preview of [😀] on 😁 ${engine === 'rust' ? 'is limited to the JS preview, promises no refusal by the Rust Filter' : 'names the refusal of the JS Filter'}`,
+    v.highlights.length === 0 && CUT.test(cutNote) && (engine === 'rust' ? !JS_REFUSES.test(cutNote) && OWN_ENGINE.test(cutNote) : JS_REFUSES.test(cutNote)),
+    cutNote
+  );
+  outcome = await runFilter(REMOVE);
+  r.check(
+    `${label}: Filter remove of [😀] on 😁 ${engine === 'rust' ? 'succeeds in Rust (text unchanged)' : 'is refused by the JS Filter'}`,
+    engine === 'rust' ? outcome.result === '😁' && !outcome.snacks.some((s) => s.startsWith('error')) : outcome.result === '' && outcome.snacks.some((s) => s.startsWith('error') && CUT.test(s)),
+    JSON.stringify(outcome)
+  );
+
+  // 4. Many matches: limited, marked, a bounded number of spans (no fixed timing)
+  await setText(`'ab'.repeat(100000)`);
+  await setPattern('a');
+  v = await waitView(`!!p.querySelector('.preview-note.incomplete')`);
+  r.check(
+    `${label}: preview of 100,000 matches is limited and marked as incomplete`,
+    v.highlights.length === 1000 && v.spans <= 2002 && v.elisions.length === 1 && /mindestens|at least/i.test(v.count ?? ''),
+    JSON.stringify({ highlights: v.highlights.length, spans: v.spans, elisions: v.elisions, count: v.count, notes: v.notes })
+  );
+
+  // 5. After a preview error a valid preview works
+  await setText(`'apple'`);
+  await setPattern('(');
+  v = await waitView(`!!p.querySelector('.preview-note.error')`);
+  await setPattern('pl');
+  v = await waitView(`p.querySelector('.match-highlight')?.innerText === 'pl'`);
+  r.check(`${label}: valid preview after an error`, JSON.stringify(v.highlights) === '["pl"]' && !v.notes.some((note) => note.startsWith('error')), JSON.stringify(v));
+  r.check(`${label}: preview checks without exceptions`, exceptionsSince(n).length === 0, JSON.stringify(exceptionsSince(n)));
+
+  await setChecked(PREVIEW, false);
+  await setPattern('');
+  // The source text is shared by the pages: leave a harmless one
+  await setText(`'a_b'`);
+}
+
+/**
+ * Regex pattern rule (Paket 10 C3, E3) on the real Split, Filter and Remove pages in the current engine (`engine`):
+ * an empty regex pattern and one of more than 10,000 UTF-16 code units (also 5,001 emoji) are refused with their own
+ * message, never as a syntax error; the previous result and metrics stay and a later valid job works. Split checks the
+ * rule on the page (and the engines), Filter and Remove report a too long pattern from the engine. Plain delimiters and
+ * plain search terms are not limited, duplicates ignore the pattern. The pattern preview names the length, also in Rust
+ * mode (not "JavaScript does not support this pattern").
+ */
+export async function checkPatternRule(page, r, label, errorsSince, engine) {
+  const exceptionsSince = (n) => errorsSince(n).filter((l) => l.kind === 'exception');
+  const checkbox = (re) => `[...__t.page().querySelectorAll('.input-box')].find(e => ${re}.test(e.innerText)).querySelector('input')`;
+  const setChecked = async (re, on) => {
+    await page.eval(`${checkbox(re)}.checked !== ${on} && ${checkbox(re)}.click(); true`);
+    await sleepMs(100);
+  };
+  /** `value` is a JS expression evaluated in the page (long texts are not sent over CDP) */
+  const setText = async (value) => {
+    await page.eval(`__t.set(__t.textareas()[0], ${value}); true`);
+    await sleepMs(150);
+  };
+  const setPattern = async (value) => {
+    await page.eval(`__t.set(__t.page().querySelector('.form-add-render input'), ${value}); true`);
+    await sleepMs(150);
+  };
+  /** Clicks, waits for the first snackbar and returns all snackbars shown meanwhile */
+  const run = async (clickExpr) => {
+    await page.eval(`__t.watchSnacks(); ${clickExpr}; true`);
+    await page.waitFor(`__t.snackLog.length > 0`, 10000);
+    await sleepMs(300);
+    return page.eval('__t.takeSnacks()');
+  };
+  const metrics = () => page.eval(`__t.page().querySelector('.metrics-group')?.innerText ?? null`);
+  const resultText = () => page.eval(`__t.textareas()[1] ? __t.raw(__t.textareas()[1]) : null`);
+  const EMPTY = /Regex-Muster darf nicht leer|regex pattern must not be empty/;
+  const TOO_LONG = /Regex-Muster ist zu lang|regex pattern is too long/;
+  const SYNTAX = /Ungültige Syntax|Invalid regular expression syntax/;
+  const NOT_JS = /JavaScript unterstützt dieses Muster nicht|JavaScript does not support/;
+  const oneError = (snacks, reason) => snacks.length === 1 && snacks[0].startsWith('error') && reason.test(snacks[0]) && !SYNTAX.test(snacks[0]);
+  const LONG = `'a'.repeat(10001)`;
+  const EMOJI = `'😀'.repeat(5001)`;
+  const REGEX = /regex/i;
+
+  /** The refused patterns of one page: one error with the reason, result and metrics unchanged */
+  const refuses = async (page_, click, read, cases) => {
+    for (const [pattern, reason, what] of cases) {
+      const before = { result: await read(), metrics: await metrics() };
+      await setPattern(pattern);
+      const n = page.logs.length;
+      const snacks = await run(click);
+      const after = { result: await read(), metrics: await metrics() };
+      r.check(
+        `${label}: ${page_} ${what} -> own error message, previous result and metrics kept`,
+        oneError(snacks, reason) && JSON.stringify(after) === JSON.stringify(before) && exceptionsSince(n).length === 0,
+        `${JSON.stringify(snacks)} ${JSON.stringify(after) === JSON.stringify(before) ? '' : JSON.stringify({ before, after })}`
+      );
+    }
+  };
+  const PATTERNS = [
+    [`''`, EMPTY, 'empty regex pattern'],
+    [LONG, TOO_LONG, 'regex pattern of 10,001 UTF-16 code units'],
+    [EMOJI, TOO_LONG, 'regex pattern of 5,001 emoji (10,002 UTF-16 code units)'],
+  ];
+
+  // --- Split ---
+  const split = `__t.page().querySelector('button[title="Split text"]').click()`;
+  const columns = () => page.eval('JSON.stringify(__t.columns())');
+  await page.eval(`__t.nav('split'); true`);
+  await sleepMs(250);
+  await setText(`'a,b\\nc'`);
+  await setChecked(REGEX, true);
+  await setPattern(`','`);
+  let snacks = await run(split);
+  r.check(`${label}: Split regex valid result before the pattern errors`, (await columns()) === JSON.stringify([['a', 'c'], ['b', '']]), `${await columns()} ${JSON.stringify(snacks)}`);
+  await refuses('Split', split, columns, PATTERNS);
+  await setText(`'x y'`);
+  await setPattern(`' '`);
+  snacks = await run(split);
+  r.check(`${label}: Split regex works after the pattern errors (whitespace pattern)`, (await columns()) === JSON.stringify([['x'], ['y']]) && snacks.every((s) => !s.startsWith('error')), `${await columns()} ${JSON.stringify(snacks)}`);
+  // A plain delimiter is not limited; an empty one is still emptyDelimiter (C1)
+  await setChecked(REGEX, false);
+  await setText(`'x' + ${LONG} + 'y'`);
+  await setPattern(LONG);
+  snacks = await run(split);
+  r.check(`${label}: Split plain delimiter of 10,001 characters is allowed`, (await columns()) === JSON.stringify([['x'], ['y']]) && snacks.every((s) => !s.startsWith('error')), `${(await columns()).slice(0, 80)} ${JSON.stringify(snacks)}`);
+  await setPattern(`''`);
+  snacks = await run(split);
+  r.check(`${label}: Split empty plain delimiter -> emptyDelimiter, not the regex message`, snacks.length === 1 && /Trennzeichen darf nicht leer|delimiter must not be empty/.test(snacks[0]) && !EMPTY.test(snacks[0]), JSON.stringify(snacks));
+  await setPattern(`'_'`);
+  await setText(`'a_b'`);
+
+  // --- Filter ---
+  const keep = `__t.page().querySelectorAll('.filter-actions button')[1].click()`;
+  await page.eval(`__t.nav('filter'); true`);
+  await sleepMs(250);
+  await setChecked(/pattern matches/i, false);
+  await setText(`'apple\\nbanana'`);
+  await setPattern(`'ban'`);
+  snacks = await run(keep);
+  r.check(`${label}: Filter valid result before the pattern errors`, (await resultText()) === 'ban', `${JSON.stringify(await resultText())} ${JSON.stringify(snacks)}`);
+  await refuses('Filter', keep, resultText, PATTERNS);
+  await setPattern(`'app'`);
+  snacks = await run(keep);
+  r.check(`${label}: Filter works after the pattern errors`, (await resultText()) === 'app' && snacks.every((s) => s.startsWith('success')), `${JSON.stringify(await resultText())} ${JSON.stringify(snacks)}`);
+
+  // Pattern preview: the length is the reason, also in Rust mode
+  await setChecked(/pattern matches/i, true);
+  await setPattern(LONG);
+  await page.waitFor(`!!__t.page().querySelector('.match-preview .preview-note.error')`, 8000);
+  const notes = await page.eval(`[...__t.page().querySelectorAll('.match-preview .preview-note')].map((n) => n.className + ': ' + n.innerText)`);
+  const errorNote = notes.find((note) => note.includes('error')) ?? '';
+  r.check(
+    `${label}: preview of a too long pattern names the length${engine === 'rust' ? ', not a JS syntax incompatibility' : ''}`,
+    TOO_LONG.test(errorNote) && !NOT_JS.test(errorNote) && !SYNTAX.test(errorNote) && !(await page.eval(`!!__t.page().querySelector('.match-preview .match-highlight')`)),
+    JSON.stringify(notes)
+  );
+  r.check(`${label}: preview engine note ${engine === 'rust' ? 'stays in Rust mode' : 'only in Rust mode'}`, notes.some((note) => /JavaScript-RegExp|JavaScript RegExp/.test(note) && !note.includes('error')) === (engine === 'rust'), JSON.stringify(notes));
+  await setPattern(`'an'`);
+  await page.waitFor(`__t.page().querySelector('.match-preview .match-highlight')?.innerText === 'an'`, 8000);
+  r.check(`${label}: valid preview after the length error`, true);
+  await setChecked(/pattern matches/i, false);
+  await setPattern(`''`);
+
+  // --- Remove ---
+  const containing = `__t.page().querySelector('.remove-action-button.containing').click()`;
+  const duplicates = `__t.page().querySelector('.remove-action-button.duplicates').click()`;
+  await page.eval(`__t.nav('remove'); true`);
+  await sleepMs(250);
+  await setText(`'a1\\nb'`);
+  await setChecked(REGEX, true);
+  await setPattern(`'\\\\d'`);
+  snacks = await run(containing);
+  r.check(`${label}: Remove regex valid result before the pattern errors`, (await resultText()) === 'b', `${JSON.stringify(await resultText())} ${JSON.stringify(snacks)}`);
+  await refuses('Remove', containing, resultText, PATTERNS);
+  await setPattern(`'^b'`);
+  snacks = await run(containing);
+  r.check(`${label}: Remove regex works after the pattern errors`, (await resultText()) === 'a1' && snacks.every((s) => s.startsWith('success')), `${JSON.stringify(await resultText())} ${JSON.stringify(snacks)}`);
+  // Duplicates ignore the pattern (empty, invalid or too long)
+  await setText(`'x\\nx\\ny'`);
+  for (const pattern of [`''`, `'([a-'`, LONG]) {
+    await setPattern(pattern);
+    snacks = await run(duplicates);
+    r.check(`${label}: Remove duplicates ignores the regex pattern ${pattern.slice(0, 12)}`, (await resultText()) === 'x\ny' && snacks.length === 1 && snacks[0].startsWith('success'), `${JSON.stringify(await resultText())} ${JSON.stringify(snacks)}`);
+  }
+  // A plain search term is not limited
+  await setChecked(REGEX, false);
+  await setText(`'keep\\n' + ${LONG}`);
+  await setPattern(LONG);
+  snacks = await run(containing);
+  r.check(`${label}: Remove plain search term of 10,001 characters is allowed`, (await resultText()) === 'keep' && snacks.length === 1 && snacks[0].startsWith('success'), `${JSON.stringify(await resultText())} ${JSON.stringify(snacks)}`);
+  await setPattern(`''`);
+  // The source text is shared by the pages: leave a harmless one
+  await setText(`'a_b'`);
+}
+
+/**
+ * Split regex flags (Paket 10 C4, E9) on the real Split page in the current engine (`engine`): the JS split uses the flag g
+ * only, so ^ and $ do not match next to U+2028/U+2029 inside a line (the former flag m did); Rust is unchanged. Safe emoji
+ * splits keep working and a valid split works after a regex error.
+ */
+export async function checkSplitFlags(page, r, label, errorsSince, engine) {
+  const exceptionsSince = (n) => errorsSince(n).filter((l) => l.kind === 'exception');
+  const regexCheckbox = `[...__t.page().querySelectorAll('.input-box')].find(e => /regex/i.test(e.innerText)).querySelector('input')`;
+  const setText = async (value) => {
+    await page.eval(`__t.set(__t.textareas()[0], ${JSON.stringify(value)}); true`);
+    await sleepMs(150);
+  };
+  const setSeparator = async (value) => {
+    await page.eval(`__t.set(__t.page().querySelector('.form-add-render input'), ${JSON.stringify(value)}); true`);
+    await sleepMs(150);
+  };
+  const columns = () => page.eval('JSON.stringify(__t.columns())');
+  /** Splits and waits for the first snackbar (all snackbars shown meanwhile) */
+  const split = async () => {
+    await page.eval(`__t.watchSnacks(); __t.page().querySelector('button[title="Split text"]').click(); true`);
+    await page.waitFor(`__t.snackLog.length > 0`, 8000);
+    await sleepMs(300);
+    return page.eval('__t.takeSnacks()');
+  };
+  const js = engine === 'js';
+  const n = page.logs.length;
+  await page.eval(`__t.nav('split'); true`);
+  await sleepMs(250);
+  await page.eval(`${regexCheckbox}.checked || ${regexCheckbox}.click(); true`);
+  await sleepMs(100);
+
+  // [text, pattern, JS result (flag g), Rust result, former JS result with gm]
+  const cases = [
+    ['a b', '$', [['a b']], [['a b'], ['']], [['a'], [' b']]],
+    ['a b', 'a$', [['a b']], [['a b']], [[''], [' b']]],
+    ['a b', '^b', [['a b']], [['a b']], [['a '], ['']]],
+    // Safe emoji splits next to U+2028 (Rust split inserts no captures)
+    ['a😀 😀b', '(😀)', [['a'], ['😀'], [' '], ['😀'], ['b']], [['a'], [' '], ['b']], null],
+    ['a😀 😀b', '(😀)$', [['a😀 😀b']], [['a😀 😀b']], [['a'], ['😀'], [' 😀b']]],
+  ];
+  for (const [text, pattern, jsResult, rustResult, formerJs] of cases) {
+    await setText(text);
+    await setSeparator(pattern);
+    const snacks = await split();
+    const expected = JSON.stringify(js ? jsResult : rustResult);
+    r.check(
+      `${label}: Split ${JSON.stringify(pattern)} on ${JSON.stringify(text)} -> ${js ? 'flag g' : 'Rust'} result${formerJs && js ? ' (not the former gm result)' : ''}`,
+      (await columns()) === expected && snacks.every((s) => !s.startsWith('error')),
+      `${await columns()} ${JSON.stringify(snacks)} expected ${expected}${formerJs ? `, former gm ${JSON.stringify(formerJs)}` : ''}`
+    );
+  }
+
+  // A controlled regex error keeps the columns; a valid split works afterwards
+  const before = await columns();
+  await setSeparator('(');
+  let snacks = await split();
+  r.check(`${label}: Split regex error after the E9 cases -> one error, columns kept`, snacks.length === 1 && snacks[0].startsWith('error') && (await columns()) === before, `${JSON.stringify(snacks)} ${await columns()}`);
+  await setText('ab\nba');
+  await setSeparator('^a|a$');
+  snacks = await split();
+  r.check(`${label}: Split ^a|a$ at the real start and end of the data lines works after the error`, (await columns()) === JSON.stringify([['', 'b'], ['b', '']]) && snacks.every((s) => !s.startsWith('error')), `${await columns()} ${JSON.stringify(snacks)}`);
+  r.check(`${label}: Split flag checks without exceptions`, exceptionsSince(n).length === 0, JSON.stringify(exceptionsSince(n)));
+
+  await page.eval(`${regexCheckbox}.checked && ${regexCheckbox}.click(); true`);
+  await setSeparator('_');
+  await setText('a_b');
+}
+
+/**
+ * Split data integrity (Paket 10 C1) on the real Split page in the current engine (`engine`: 'js' worker or 'rust'):
+ * an empty plain delimiter is refused (E4), a regex split that would cut an emoji is refused in JS (E5; Rust never cuts a
+ * character and rejects surrogate escapes), no damaged or partial result is applied, the previous result and metrics stay,
+ * and safe emoji delimiters and a later valid split work.
+ */
+export async function checkSplitIntegrity(page, r, label, errorsSince, engine) {
+  const exceptionsSince = (n) => errorsSince(n).filter((l) => l.kind === 'exception');
+  const regexCheckbox = `[...__t.page().querySelectorAll('.input-box')].find(e => /regex/i.test(e.innerText)).querySelector('input')`;
+  const setRegex = (on) => page.eval(`${regexCheckbox}.checked !== ${on} && ${regexCheckbox}.click(); true`);
+  const setText = async (value) => {
+    await page.eval(`__t.set(__t.textareas()[0], ${JSON.stringify(value)}); true`);
+    await sleepMs(150);
+  };
+  const setSeparator = async (value) => {
+    await page.eval(`__t.set(__t.page().querySelector('.form-add-render input'), ${JSON.stringify(value)}); true`);
+    await sleepMs(150);
+  };
+  const state = () => page.eval(`({ columns: __t.columns(), metrics: __t.page().querySelector('.metrics-group')?.innerText ?? null })`);
+  const split = `__t.page().querySelector('button[title="Split text"]').click()`;
+  /** Splits and waits for the first snackbar (all snackbars shown meanwhile) */
+  const splitForSnacks = async () => {
+    await page.eval(`__t.watchSnacks(); ${split}; true`);
+    await page.waitFor(`__t.snackLog.length > 0`, 8000);
+    await sleepMs(300);
+    return page.eval('__t.takeSnacks()');
+  };
+  /** Splits and waits until the columns equal `expected`; returns the error snackbars */
+  const splitForColumns = async (expected) => {
+    await page.eval(`__t.watchSnacks(); ${split}; true`);
+    const ok = await page.waitFor(`JSON.stringify(__t.columns()) === ${JSON.stringify(JSON.stringify(expected))}`, 8000);
+    await sleepMs(200);
+    return { ok, errors: (await page.eval('__t.takeSnacks()')).filter((s) => s.startsWith('error')) };
+  };
+  const EMPTY_DELIMITER = /Trennzeichen darf nicht leer|delimiter must not be empty/i;
+  const CUT_CHARACTER = /Teil eines Zeichens|part of a character/i;
+
+  await page.eval(`__t.nav('split'); true`);
+  await sleepMs(200);
+  await setRegex(false);
+  let n = page.logs.length;
+  await setText('a😀b,c\nd🎉e,f');
+  await setSeparator(',');
+  let outcome = await splitForColumns([['a😀b', 'd🎉e'], ['c', 'f']]);
+  r.check(`${label}: Split with emoji in the values`, outcome.ok && outcome.errors.length === 0, JSON.stringify(await state()));
+  const before = await state();
+
+  // E4: empty plain delimiter
+  await setSeparator('');
+  let snacks = await splitForSnacks();
+  r.check(`${label}: Split with an empty plain delimiter -> one input error`, snacks.length === 1 && snacks[0].startsWith('error') && EMPTY_DELIMITER.test(snacks[0]), JSON.stringify(snacks));
+  r.check(`${label}: empty delimiter -> previous result and metrics kept`, JSON.stringify(await state()) === JSON.stringify(before), JSON.stringify(await state()));
+
+  // E5: a regex that matches the halves of the emoji separately ([😀] without u flag) and a capture of one half
+  await setRegex(true);
+  await setText('a😀b');
+  await setSeparator('[😀]');
+  if (engine === 'js') {
+    snacks = await splitForSnacks();
+    r.check(`${label}: regex [😀] would cut the emoji -> one input error`, snacks.length === 1 && snacks[0].startsWith('error') && CUT_CHARACTER.test(snacks[0]), JSON.stringify(snacks));
+    r.check(`${label}: cut character -> no damaged or partial result, metrics kept`, JSON.stringify(await state()) === JSON.stringify(before), JSON.stringify(await state()));
+    await setSeparator('(\\uD83D)\\uDE00');
+    snacks = await splitForSnacks();
+    r.check(`${label}: capture of one surrogate half -> one input error`, snacks.length === 1 && CUT_CHARACTER.test(snacks[0]), JSON.stringify(snacks));
+    r.check(`${label}: capture of one surrogate half -> previous result kept`, JSON.stringify(await state()) === JSON.stringify(before), JSON.stringify(await state()));
+  } else {
+    // Rust matches Unicode scalar values: the class holds the emoji, nothing is cut
+    outcome = await splitForColumns([['a'], ['b']]);
+    r.check(`${label}: regex [😀] splits at the whole emoji (Rust)`, outcome.ok && outcome.errors.length === 0, JSON.stringify(await state()));
+    await setSeparator('(\\uD83D)\\uDE00');
+    snacks = await splitForSnacks();
+    r.check(`${label}: surrogate escape is an invalid regex in Rust`, snacks.length === 1 && /^error: .*(regex|regul)/i.test(snacks[0]), JSON.stringify(snacks));
+  }
+
+  // Safe emoji splits after the errors
+  await setSeparator('(😀)');
+  outcome = await splitForColumns(engine === 'js' ? [['a'], ['😀'], ['b']] : [['a'], ['b']]);
+  r.check(`${label}: regex with a whole-emoji capture works after an error`, outcome.ok && outcome.errors.length === 0, JSON.stringify(await state()));
+  await setRegex(false);
+  await setText('x😀y\nz');
+  await setSeparator('😀');
+  outcome = await splitForColumns([['x', 'z'], ['y', '']]);
+  r.check(`${label}: plain emoji delimiter works`, outcome.ok && outcome.errors.length === 0, JSON.stringify(await state()));
+  r.check(`${label}: split integrity checks without exceptions`, exceptionsSince(n).length === 0, JSON.stringify(exceptionsSince(n)));
+
+  // The source text is shared by the pages: leave a harmless one and the usual separator
+  await setText('a_b');
+  await setSeparator('_');
+}
+
+/**
  * Combine state (Paket 6 follow-up) in the current processing mode (Rust: `combine_columns`, JS: frontend): adding a
  * column is a new state even if the combined text is '' or unchanged; undo/redo restore the used columns.
  */

@@ -59,8 +59,20 @@ fn is_backend_available() -> bool {
 
 // CPU-heavy text commands (Split, Filter, Remove, Diff) run on Tokio's blocking pool, not on the async executor threads
 // that also serve the other IPC commands. Per operation at most one job runs and at most one waits (`JobSlot`):
-// a newer request replaces the waiting one, which then never runs (`TextError::Superseded`). A running regex cannot
-// be stopped. Different operations do not block each other.
+// a newer request replaces the waiting one, which then never runs (`TextError::Superseded`). Different operations do not
+// block each other.
+//
+// Paket 10 E6: a running user regex job (Split with regex, Filter, Remove containing/notContaining with regex) checks a
+// cooperative time budget from its start and the supersede signal of a newer request of the same operation, before and
+// after every single regex search step (`JobControl::regex_budget`). It ends with `TextError::RegexRuntime` (budget,
+// frontend: errors.regexTooComplex) or `TextError::Superseded`, never with a partial result. A single running search
+// cannot be interrupted: the budget is no hard limit, the job ends at the first check after that search. Plain splits,
+// plain Remove, duplicates and Diff have no new limit. `BaseService.cancelPending` alone does not reach Rust: such a job
+// ends at its budget or when a newer request of the same operation arrives.
+const SPLIT_REGEX_BUDGET: Duration = Duration::from_millis(10_000);
+const FILTER_REGEX_BUDGET: Duration = Duration::from_millis(10_000);
+const REMOVE_REGEX_BUDGET: Duration = Duration::from_millis(12_000);
+
 static SPLIT_JOBS: JobSlot<ProcessedText<Vec<String>>> = JobSlot::new();
 static FILTER_JOBS: JobSlot<ProcessedText<String>> = JobSlot::new();
 static REMOVE_JOBS: JobSlot<ProcessedText<String>> = JobSlot::new();
@@ -74,8 +86,9 @@ async fn process_text_block(
     useregex: bool,
     keepemptylines: bool,
 ) -> Result<ProcessedText<Vec<String>>, TextError> {
-    SPLIT_JOBS.run(move || {
-        TextProcessor::process_text_block_to_column_strings(&text, &delimiter, trimparts, useregex, keepemptylines)
+    SPLIT_JOBS.run(move |control| {
+        // The budget is only checked by the regex path
+        TextProcessor::process_text_block_checked(&text, &delimiter, trimparts, useregex, keepemptylines, &control.regex_budget(SPLIT_REGEX_BUDGET))
     })
     .await
 }
@@ -115,7 +128,7 @@ async fn get_text_diff(
     ignorewhitespace: bool,
     worddiff: bool,
 ) -> Result<diff::DiffResponse, TextError> {
-    DIFF_JOBS.run(move || diff::get_diff(&oldtext, &newtext, ignorewhitespace, worddiff)).await
+    DIFF_JOBS.run(move |_| diff::get_diff(&oldtext, &newtext, ignorewhitespace, worddiff)).await
 }
 
 /// Filter Text Method
@@ -128,13 +141,14 @@ async fn filter_text(
     casesensitive: bool,
     splitmatches: bool,
 ) -> Result<ProcessedText<String>, TextError> {
-    FILTER_JOBS.run(move || {
-        TextProcessor::filter_text_internal(
+    FILTER_JOBS.run(move |control| {
+        TextProcessor::filter_text_checked(
             &text,
             &pattern,
             &filtermode,
             casesensitive,
             splitmatches,
+            &control.regex_budget(FILTER_REGEX_BUDGET),
         )
     })
     .await
@@ -151,14 +165,16 @@ async fn remove_lines(
     useregex: bool,
     trimparts: bool,
 ) -> Result<ProcessedText<String>, TextError> {
-    REMOVE_JOBS.run(move || {
-        TextProcessor::remove_lines_internal(
+    REMOVE_JOBS.run(move |control| {
+        // The budget is only checked with a regex (not for duplicates or a plain search)
+        TextProcessor::remove_lines_checked(
             &text,
             &pattern,
             &removemode,
             casesensitive,
             useregex,
             trimparts,
+            &control.regex_budget(REMOVE_REGEX_BUDGET),
         )
     })
     .await
@@ -339,6 +355,61 @@ mod tests {
     }
 
     #[test]
+    fn split_command_reports_an_empty_plain_delimiter_as_empty_delimiter() {
+        let _serial = serial();
+        use tauri::async_runtime::block_on;
+        // Paket 10 E4: also for an empty text; the frontend maps the kind to `invalidInput` / `errors.emptyDelimiter`
+        for text in ["a😀b", ""] {
+            let error = ipc_error(block_on(process_text_block(text.into(), "".into(), false, false, true)));
+            assert_eq!(error["kind"], "emptyDelimiter", "{error}");
+        }
+        // Whitespace is a valid delimiter; the empty regex pattern is rule E3 (`patternEmpty`, Paket 10 C3)
+        assert_eq!(block_on(process_text_block("a b".into(), " ".into(), false, false, true)).unwrap().result_text, vec!["a", "b"]);
+        assert_eq!(ipc_error(block_on(process_text_block("ab".into(), "".into(), false, true, true)))["kind"], "patternEmpty");
+    }
+
+    #[test]
+    fn text_commands_report_the_regex_pattern_rule_as_pattern_errors() {
+        let _serial = serial();
+        use tauri::async_runtime::block_on;
+        let too_long = "a".repeat(10_001);
+        // Paket 10 E3: the same kinds for every command that compiles a user regex, also for an empty text;
+        // the frontend maps them to `invalidInput` / `errors.patternEmpty` / `errors.patternTooLong`
+        for text in ["a", ""] {
+            for (pattern, kind) in [("", "patternEmpty"), (too_long.as_str(), "patternTooLong")] {
+                for error in [
+                    ipc_error(block_on(process_text_block(text.into(), pattern.into(), false, true, true))),
+                    ipc_error(block_on(filter_text(text.into(), pattern.into(), "keep".into(), true, false))),
+                    ipc_error(block_on(filter_text(text.into(), pattern.into(), "remove".into(), false, false))),
+                    ipc_error(block_on(remove_lines(text.into(), pattern.into(), "containing".into(), true, true, false))),
+                    ipc_error(block_on(remove_lines(text.into(), pattern.into(), "notContaining".into(), false, true, false))),
+                ] {
+                    assert_eq!(error["kind"], kind, "{error}");
+                    assert!(error["message"].as_str().is_some_and(|m| !m.is_empty()), "{error}");
+                }
+            }
+        }
+        let error = ipc_error(block_on(filter_text("a".into(), "😀".repeat(5_001), "keep".into(), true, false)));
+        assert_eq!((error["kind"].as_str(), error["message"].as_str()), (Some("patternTooLong"), Some("the regex pattern has 10002 UTF-16 code units (at most 10000)")));
+        // The mode is checked first
+        assert_eq!(ipc_error(block_on(filter_text("a".into(), "".into(), "bogus".into(), true, false)))["kind"], "invalidMode");
+        assert_eq!(ipc_error(block_on(remove_lines("a".into(), too_long.clone(), "bogus".into(), true, true, false)))["kind"], "invalidMode");
+        // Not a regex pattern: duplicates ignore it, a plain search term and a plain delimiter are not limited
+        for pattern in ["", "([a-", too_long.as_str()] {
+            let removed = block_on(remove_lines("x\nx".into(), pattern.into(), "duplicates".into(), true, true, false)).unwrap();
+            assert_eq!((removed.result_text.as_str(), removed.removed_lines), ("x", 1), "duplicates with {:?}", &pattern[..pattern.len().min(8)]);
+        }
+        let plain = block_on(remove_lines(format!("b\n{too_long}"), too_long.clone(), "containing".into(), true, false, false)).unwrap();
+        assert_eq!((plain.result_text.as_str(), plain.removed_lines), ("b", 1));
+        let split = block_on(process_text_block(format!("x{too_long}y"), too_long.clone(), false, false, true)).unwrap();
+        assert_eq!(split.result_text, vec!["x", "y"]);
+        // A syntax error within the limit keeps the fancy-regex message; a later valid job works
+        let error = ipc_error(block_on(filter_text("a".into(), format!("{})", "a".repeat(9_999)), "keep".into(), true, false)));
+        assert_eq!(error["kind"], "invalidRegex", "{error}");
+        assert_eq!(block_on(filter_text("ab".into(), "b".into(), "keep".into(), true, false)).unwrap().result_text, "b");
+    }
+
+    #[test]
     fn text_commands_report_backtrack_limit_as_regex_runtime_error() {
         let _serial = serial();
         let text = "ab".repeat(40);
@@ -380,5 +451,9 @@ mod tests {
         assert_eq!(superseded["kind"], "superseded", "{superseded}");
         let internal = ipc_error::<()>(Err(TextError::Internal("text processing job panicked".into())));
         assert_eq!((internal["kind"].as_str(), internal["message"].as_str()), (Some("internal"), Some("text processing job panicked")));
+        for (error, kind) in [(TextError::PatternEmpty("m".into()), "patternEmpty"), (TextError::PatternTooLong("m".into()), "patternTooLong")] {
+            let value = ipc_error::<()>(Err(error));
+            assert_eq!((value["kind"].as_str(), value["message"].as_str()), (Some(kind), Some("m")));
+        }
     }
 }
