@@ -1,5 +1,7 @@
 // DOM helpers for driving the myTextsplitter UI through CDP (installed as `window.__t` in the page).
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 export const APP_HELPERS = `window.__t = {
   /** Currently visible page container */
@@ -1687,4 +1689,800 @@ export async function checkSort(page, r, label, errorsSince) {
   // The source text is shared by the pages: leave the usual one for the following checks
   await page.eval(`__t.set(__t.textareas()[0], 'a_b'); true`);
   await sleepMs(300);
+}
+
+// --- Paket 11 Phase B: file import (tests/fixtures/file-io-cases.json, contract docs/analyse/Paket11-PhaseB-Datei-IO-Vertrag.md) ---
+
+const FILE_IO = JSON.parse(readFileSync(new URL('../../fixtures/file-io-cases.json', import.meta.url), 'utf8'));
+/** Deterministic ASCII text of `size` bytes (same generator as tests/unit/file-io-fixtures.test.ts). */
+const generatedText = (size) => FILE_IO.generator.line.repeat(Math.ceil(size / FILE_IO.generator.line.length)).slice(0, size);
+const fileBytes = (c) =>
+  c.generate !== undefined ? Buffer.from(generatedText(c.generate), 'latin1') : Buffer.from(c.bytes.split(' ').filter(Boolean).map((h) => parseInt(h, 16)));
+/**
+ * Text of the former F1 error of OpenFileButton (dev build / production build), fixed in Paket 11 C1. Only used to observe
+ * `hookException` in the read error scenarios; such an error is never excused, it also fails the error checks.
+ */
+const HOOK_ERROR = /Invalid hook call|Minified React error #321/;
+/** Snackbar texts of a notifications key in English and German, read from src/i18n/locales (first occurrence = notifications). */
+const notificationTexts = (key) =>
+  ['en', 'de'].map((lang) => {
+    const source = readFileSync(new URL(`../../../src/i18n/locales/${lang}.ts`, import.meta.url), 'utf8');
+    return 'error: ' + new RegExp(String.raw`\n\s+` + key + ": '([^']*)'").exec(source)[1];
+  });
+/** The message of each import error (useFileImport), the same for the Open File button and the drop (Paket 11 C3). */
+const IMPORT_ERROR_MESSAGES = {
+  unsupportedExtension: notificationTexts('unsupportedFileType'),
+  tooLarge: notificationTexts('fileTooLarge'),
+  invalidEncoding: notificationTexts('invalidEncoding'),
+  readError: notificationTexts('readError'),
+};
+/** Exactly one snackbar, the message of `error`. */
+const onlyMessage = (shown, error) => shown.length === 1 && IMPORT_ERROR_MESSAGES[error].includes(shown[0]);
+
+/**
+ * Counts the file reads of the page and can hold their START (`__t.reads.hold`): the FileReader read methods and the
+ * Blob read methods (`text`, `arrayBuffer`, `bytes`) are wrapped, so any implementation of the import is covered. A held
+ * read starts only when the test releases it, then the browser really reads and decodes the file; nothing is mocked.
+ * `settled` counts reads whose result (load, error) was delivered.
+ */
+const FILE_READ_GATE_INSTALL = `(() => {
+  if (__t.reads) return true;
+  const g = (__t.reads = { started: 0, settled: 0, hold: false, held: [], restore: [] });
+  const done = () => setTimeout(() => g.settled++, 0);
+  const wrap = (proto, name, make) => {
+    const orig = proto[name];
+    if (typeof orig !== 'function') return;
+    g.restore.push(() => { proto[name] = orig; });
+    proto[name] = make(orig);
+  };
+  for (const name of ['readAsText', 'readAsArrayBuffer', 'readAsDataURL', 'readAsBinaryString'])
+    wrap(FileReader.prototype, name, (orig) => function (...args) {
+      g.started++;
+      this.addEventListener('loadend', done, { once: true });
+      const start = () => orig.apply(this, args);
+      if (g.hold) g.held.push(start); else start();
+    });
+  for (const name of ['text', 'arrayBuffer', 'bytes'])
+    wrap(Blob.prototype, name, (orig) => function (...args) {
+      g.started++;
+      const start = () => orig.apply(this, args);
+      const p = g.hold ? new Promise((resolve) => g.held.push(() => resolve(start()))) : start();
+      p.then(done, done);
+      return p;
+    });
+  if (__t.dropCount === undefined) {
+    __t.dropCount = 0;
+    // Capture: the Remove drop handler stops the propagation; the timer runs after the handler
+    window.addEventListener('drop', () => setTimeout(() => __t.dropCount++, 0), true);
+    // A drag that ends without a drop (operation 'none') ends with dragleave; registered after the app's file drop
+    // guard (window capture), so the dragover state shows whether the guard cancelled it
+    __t.dragLeaveCount = 0;
+    window.addEventListener('dragleave', () => setTimeout(() => __t.dragLeaveCount++, 0), true);
+    window.addEventListener('dragover', (e) => { __t.lastDragOver = { cancelled: e.defaultPrevented, dropEffect: e.dataTransfer?.dropEffect ?? null }; }, true);
+  }
+  window.__fileGen = (n) => ${JSON.stringify(FILE_IO.generator.line)}.repeat(Math.ceil(n / ${FILE_IO.generator.line.length})).slice(0, n);
+  return true;
+})()`;
+const FILE_READ_GATE_UNINSTALL = `(() => { __t.reads?.restore.forEach((f) => f()); __t.reads = null; return true; })()`;
+
+/**
+ * Paket 11 Phase B: characterizes the file import with real files (temporary directory, written from the byte fixtures).
+ *   - Button: `DOM.setFileInputFiles` on the real input = the path of the Chromium file chooser (a real change event,
+ *     no change for the same path again); every case uses its own path.
+ *   - Drop (Remove): `Input.dispatchDragEvent` with the real file = Chromium's drag pipeline in the renderer. In Tauri
+ *     this is NOT the native OS drop (wry handles that before the WebView, dragDropEnabled), see tests/README.md.
+ *   - Read errors are real: a path that does not exist (NotFoundError) or a file deleted before its held read starts.
+ *   - Races are a controlled simulation: real reads whose start is held and released in a fixed order.
+ * The checks expect the CURRENT behaviour; a case or scenario with `pending` names its target in the check label.
+ * No error is expected: any logged error (also a React hook error) fails the check.
+ */
+export async function checkFileIo(page, r, label, errorsSince) {
+  const n = page.logs.length;
+  const json = (value) => JSON.stringify(value);
+  const PREV = FILE_IO.previousText;
+  const dir = mkdtempSync(join(tmpdir(), 'mytextsplitter-file-io-'));
+  const inputSelector = '.app-container-column:not(.hide-page) .file-upload input[type=file]';
+  const nav = async (name) => {
+    await page.eval(`__t.nav('${name}'); true`);
+    await sleepMs(250);
+  };
+  const raw = (index) => page.eval(`__t.raw(__t.textareas()[${index}])`);
+  const setText = async (index, value) => {
+    await page.eval(`__t.set(__t.textareas()[${index}], ${json(value)}); true`);
+    return page.waitFor(`__t.raw(__t.textareas()[${index}]) === ${json(value)}`, 3000);
+  };
+  const textarea = (index, expr) => page.eval(`(() => { const ta = __t.textareas()[${index}]; return ${expr}; })()`);
+  const frame = () => page.eval(`new Promise((r) => requestAnimationFrame(() => setTimeout(() => r(true), 0)))`);
+  /** All started and released reads delivered their result, then React rendered. */
+  const settle = async () => {
+    const ok = await page.waitFor(`__t.reads.settled === __t.reads.started - __t.reads.held.filter(Boolean).length`, 20000);
+    await frame();
+    return ok;
+  };
+  /** Holds the start of the following reads; their release indices start at 0 for every held group. */
+  const hold = (on) => page.eval(`(() => { if (${on}) __t.reads.held = []; __t.reads.hold = ${on}; return true; })()`);
+  const heldCount = () => page.eval(`__t.reads.held.filter(Boolean).length`);
+  const release = async (i) => {
+    await page.eval(`(() => { const f = __t.reads.held[${i}]; __t.reads.held[${i}] = null; f(); return true; })()`);
+    return settle();
+  };
+  const started = () => page.eval('__t.reads.started');
+  const snacks = () => page.eval('__t.takeSnacks()');
+  /** A React hook exception (F1) was logged since `from`. */
+  const hookExceptionSince = (from) => errorsSince(from).some((l) => l.kind === 'exception' && HOOK_ERROR.test(l.text));
+  /** Writes `content` (string or Buffer) to `dir/<sub>/<name>` and returns the path. */
+  const writeFile = (sub, name, content) => {
+    mkdirSync(join(dir, sub), { recursive: true });
+    const path = join(dir, sub, name);
+    writeFileSync(path, content);
+    return path;
+  };
+  /** Chooses `files` with the index-th file input of the visible page (the change event is dispatched synchronously). */
+  const choose = async (index, files) => {
+    const { root } = await page.send('DOM.getDocument', { depth: 0 });
+    const { nodeIds } = await page.send('DOM.querySelectorAll', { nodeId: root.nodeId, selector: inputSelector });
+    await page.send('DOM.setFileInputFiles', { files: [].concat(files), nodeId: nodeIds[index] });
+  };
+  /** Drops the file at `path` onto the index-th textarea; true once the drop event was handled. */
+  /**
+   * A visible point of the index-th textarea for a drop. Snackbar messages slide in and out with a transform, so the
+   * point they cover changes during the animation; the layout box of their container does not (a transform does not
+   * change the layout). The point avoids these boxes (with a margin) and `elementFromPoint` must hit the textarea.
+   * Throws with the covering elements when no such point exists; the app styles are never changed.
+   */
+  const dropPoint = (index) => freePoint(`__t.textareas()[${index}]`);
+  /** The same for any element (`expr` evaluates to it in the page); a point on a child of the element counts. */
+  const freePoint = async (expr) => {
+    const found = await page.eval(`(() => { const ta = ${expr}; ta.scrollIntoView({ block: 'center' });
+      const r = ta.getBoundingClientRect(); const pad = 16;
+      const boxes = [...document.querySelectorAll('.snackbar-container')].map((c) => c.getBoundingClientRect()).filter((b) => b.width && b.height);
+      const free = (x, y) => !boxes.some((b) => x > b.left - pad && x < b.right + pad && y > b.top - pad && y < b.bottom + pad);
+      for (let y = Math.round(r.bottom - 12); y > r.top + 4; y -= 12)
+        for (let x = Math.round(r.left + 12); x < r.right - 4; x += 24)
+          if (free(x, y) && ta.contains(document.elementFromPoint(x, y))) return { x, y };
+      const center = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return { error: 'no free drop point on ' + (ta.className || ta.tagName) + ' ' + JSON.stringify({ target: [r.left, r.top, r.right, r.bottom],
+        snackbarBoxes: boxes.map((b) => [b.left, b.top, b.right, b.bottom]), atCenter: center?.className || center?.tagName }) };
+    })()`);
+    if (found.error) throw new Error(found.error);
+    return found;
+  };
+  /** Drags `data` (CDP drag data) onto the index-th textarea; resolves once the drop event was handled. */
+  const drag = async (data, index = 0) => {
+    const before = await page.eval('__t.dropCount');
+    const at = await dropPoint(index);
+    for (const type of ['dragEnter', 'dragOver', 'drop']) await page.send('Input.dispatchDragEvent', { type, ...at, data });
+    if (await page.waitFor(`__t.dropCount > ${before}`, 5000)) return true;
+    // Not delivered: end the drag session, so later input does not wait for it
+    await page.send('Input.dispatchDragEvent', { type: 'dragCancel', ...at, data }).catch(() => {});
+    const hit = await page.eval(`document.elementFromPoint(${at.x}, ${at.y})?.className ?? null`);
+    throw new Error(`drop at ${at.x},${at.y} not delivered (element there now: ${hit})`);
+  };
+  /** Drops the file at `path` onto the index-th textarea (a real file through Chromium's drag pipeline). */
+  const dropFile = (path, index = 0) => drag({ items: [], files: [path], dragOperationsMask: 1 }, index);
+  const describe = (e) =>
+    'text' in e ? `text ${json(e.text.length > 24 ? e.text.slice(0, 24) + '…' : e.text)}` : 'generatedText' in e ? 'generated text' : 'unchanged' in e ? 'ignored' : `rejected (${e.rejected})`;
+
+  await page.eval(FILE_READ_GATE_INSTALL);
+  await page.eval('__t.watchSnacks(); true');
+  let dropAvailable = true;
+  try {
+    // --- Byte fixtures through both import paths ---
+    for (const path of ['button', 'drop']) {
+      await nav(path === 'button' ? 'split' : 'remove');
+      for (const [i, c] of FILE_IO.cases.entries()) {
+        const expected = (path === 'button' ? c.expectedButton : c.expectedDrop) ?? c.expected;
+        const file = writeFile(`${path}-${i}`, c.file, fileBytes(c));
+        await setText(0, PREV);
+        await snacks();
+        const before = await started();
+        if (path === 'button') {
+          await choose(0, file);
+          await page.waitFor(`__t.reads.started > ${before}`, 3000);
+        } else {
+          try {
+            await dropFile(file);
+          } catch (err) {
+            dropAvailable = false;
+            r.check(`${label}: file drop reaches the Remove textarea`, false, `${c.name}: ${err.message}`);
+            break;
+          }
+        }
+        await settle();
+        const want = 'text' in expected ? json(expected.text) : 'generatedText' in expected ? `__fileGen(${c.generate})` : 'null';
+        const state = await page.eval(`(() => { const v = __t.raw(__t.textareas()[0]);
+          return { prev: v === ${json(PREV)}, matches: v === ${want}, length: v.length, head: v.slice(0, 40) }; })()`);
+        const shown = await snacks();
+        // A loaded file shows no message; a refused one exactly the message of its reason (no second snackbar)
+        const ok =
+          'text' in expected || 'generatedText' in expected
+            ? state.matches && shown.length === 0
+            : 'unchanged' in expected
+              ? state.prev && shown.length === 0
+              : state.prev && onlyMessage(shown, expected.rejected);
+        const pending = c.pending?.paths.includes(path) ? ` [current; target: ${describe(c.target)}, pending ${c.pending.decisions.join('+')} ${c.pending.phase}]` : '';
+        r.check(`${label}: file ${path} "${c.name}" -> ${describe(expected)}${pending}`, ok, json({ ...state, snacks: shown }));
+      }
+    }
+
+    // A text drag onto the Remove textarea is no file drag (C5): the browser inserts the text, no message, no read
+    if (dropAvailable) {
+      await setText(0, PREV);
+      await snacks();
+      const readsBefore = await started();
+      await drag({ items: [{ mimeType: 'text/plain', data: 'dragged text' }], dragOperationsMask: 1 });
+      const textInserted = await page.waitFor(`(__t.raw(__t.textareas()[0]) || '').includes('dragged text')`, 5000);
+      const shown = await snacks();
+      r.check(
+        `${label}: a text drag onto the Remove textarea inserts the text (no file import, no message)`,
+        textInserted && shown.length === 0 && (await started()) === readsBefore,
+        json({ textInserted, shown, text: await raw(0) })
+      );
+
+      // A valid drop while error messages of refused drops are visible over a part of the textarea: refused drops until
+      // the message stack reaches into the textarea (no waiting for the messages to disappear), then the valid file
+      await setText(0, PREV);
+      await snacks();
+      const refused = writeFile('drop-under-message', 'refused.csv', 'x');
+      const overlap = `(() => { const t = __t.textareas()[0].getBoundingClientRect();
+        return [...document.querySelectorAll('.snackbar-message')].some((m) => { const b = m.getBoundingClientRect();
+          return b.bottom > t.top && b.top < t.bottom && b.right > t.left && b.left < t.right; }); })()`;
+      let refusals = 0;
+      while (refusals < 12 && !(await page.eval(overlap))) {
+        await dropFile(refused);
+        await frame();
+        refusals++;
+      }
+      const covered = await page.eval(overlap);
+      const visible = await page.eval(`document.querySelectorAll('.snackbar-message').length`);
+      await snacks();
+      await dropFile(writeFile('drop-under-message', 'valid.txt', 'DROPPED_UNDER_MESSAGE'));
+      await settle();
+      const underMessage = { text: await raw(0), messages: await snacks() };
+      r.check(
+        `${label}: a valid drop works while error messages cover a part of the textarea`,
+        covered && visible > 0 && underMessage.text === 'DROPPED_UNDER_MESSAGE' && underMessage.messages.length === 0,
+        json({ refusals, covered, visible, ...underMessage })
+      );
+    }
+
+    // --- C5: every text input is a file drop zone of its own import target (CDP drags; Explorer drops: manual test) ---
+    if (dropAvailable) {
+      const zones = [
+        { page: 'split', index: 0 },
+        { page: 'filter', index: 0 },
+        { page: 'remove', index: 0 },
+        { page: 'sort', index: 0 },
+        { page: 'diff', index: 0, other: 1 },
+        { page: 'diff', index: 1, other: 0 },
+      ];
+      const invalid = Buffer.from([0x61, 0xff, 0x62]);
+      for (const zone of zones) {
+        const name = `${zone.page}[${zone.index}]`;
+        await nav(zone.page);
+        if (zone.other !== undefined) await setText(zone.other, 'OTHER_FIELD');
+        await setText(zone.index, PREV);
+        await snacks();
+        const state = {};
+        await dropFile(writeFile(`zones-${zone.page}-${zone.index}`, 'valid.txt', `DROP_${zone.page}_${zone.index}\r\n`), zone.index);
+        await settle();
+        state.valid = await raw(zone.index);
+        state.validMessages = (await snacks()).length;
+        await dropFile(writeFile(`zones-${zone.page}-${zone.index}`, 'data.csv', 'x'), zone.index);
+        await settle();
+        state.csvKeepsText = (await raw(zone.index)) === state.valid;
+        state.csvMessage = onlyMessage(await snacks(), 'unsupportedExtension');
+        await dropFile(writeFile(`zones-${zone.page}-${zone.index}`, 'invalid.txt', invalid), zone.index);
+        await settle();
+        state.invalidKeepsText = (await raw(zone.index)) === state.valid;
+        state.invalidMessage = onlyMessage(await snacks(), 'invalidEncoding');
+        await dropFile(writeFile(`zones-${zone.page}-${zone.index}`, 'empty.txt', ''), zone.index);
+        await settle();
+        state.empty = await raw(zone.index);
+        if (zone.other !== undefined) state.otherField = await raw(zone.other);
+        const expected = {
+          valid: `DROP_${zone.page}_${zone.index}\r\n`, validMessages: 0, csvKeepsText: true, csvMessage: true,
+          invalidKeepsText: true, invalidMessage: true, empty: '',
+          ...(zone.other !== undefined ? { otherField: 'OTHER_FIELD' } : {}),
+        };
+        r.check(`${label}: file drop zone ${name}: valid, .csv, invalid bytes and empty file only change its own text`, json(state) === json(expected), json(state));
+      }
+
+      // Lock while a dropped file is read, drop after drop and button after drop on the shared text (Split)
+      await nav('split');
+      await setText(0, PREV);
+      await hold(true);
+      await dropFile(writeFile('zones-race', 'a.txt', 'DROP_A'));
+      const dropLock = {
+        readOnly: await textarea(0, 'ta.readOnly'),
+        busy: await textarea(0, `ta.getAttribute('aria-busy') === 'true'`),
+        hint: await page.eval(`!!__t.page().querySelector('.file-loading')`),
+      };
+      await dropFile(writeFile('zones-race', 'b.txt', 'DROP_B'));
+      await choose(0, writeFile('zones-race', 'c.txt', 'BUTTON_C'));
+      await hold(false);
+      await release(2);
+      dropLock.afterC = await raw(0);
+      await release(1);
+      await release(0);
+      dropLock.afterAll = await raw(0);
+      dropLock.readOnlyAfter = await textarea(0, 'ta.readOnly');
+      r.check(`${label}: a dropped file locks the text while read; drop A, drop B, button C: only C is set`,
+        json(dropLock) === json({ readOnly: true, busy: true, hint: true, afterC: 'BUTTON_C', afterAll: 'BUTTON_C', readOnlyAfter: false }), json(dropLock));
+
+      // Diff: the two drop zones have independent import states; button A then drop B on the new text
+      await nav('diff');
+      await setText(0, 'OLD_PREV');
+      await setText(1, 'NEW_PREV');
+      await hold(true);
+      await dropFile(writeFile('zones-diff', 'old.txt', 'OLD_DROP'), 0);
+      const diffDrop = { oldLocked: await textarea(0, 'ta.readOnly'), newFreeWhileOldLoads: !(await textarea(1, 'ta.readOnly')) };
+      await choose(1, writeFile('zones-diff', 'new-a.txt', 'NEW_BUTTON_A'));
+      await dropFile(writeFile('zones-diff', 'new-b.txt', 'NEW_DROP_B'), 1);
+      diffDrop.newLocked = await textarea(1, 'ta.readOnly');
+      await hold(false);
+      await release(2);
+      await release(1);
+      diffDrop.newText = await raw(1);
+      diffDrop.oldStillLocked = await textarea(0, 'ta.readOnly');
+      await release(0);
+      diffDrop.oldText = await raw(0);
+      diffDrop.readOnlyAfter = (await textarea(0, 'ta.readOnly')) || (await textarea(1, 'ta.readOnly'));
+      r.check(`${label}: Diff drop zones are independent; button A then drop B on the new text: only B is set`,
+        json(diffDrop) === json({ oldLocked: true, newFreeWhileOldLoads: true, newLocked: true, newText: 'NEW_DROP_B', oldStillLocked: true, oldText: 'OLD_DROP', readOnlyAfter: false }),
+        json(diffDrop));
+
+      // A late error of a replaced drop shows no message (Remove: drop A deleted before its read, drop B)
+      await nav('remove');
+      await setText(0, PREV);
+      await snacks();
+      const lateDrop = writeFile('zones-late', 'a.txt', 'DROP_A');
+      await hold(true);
+      await dropFile(lateDrop);
+      await dropFile(writeFile('zones-late', 'b.txt', 'DROP_B'));
+      await hold(false);
+      await release(1);
+      unlinkSync(lateDrop);
+      await release(0);
+      const late = { text: await raw(0), messages: (await snacks()).length };
+      r.check(`${label}: drop A replaced by drop B: the late error of A shows no message`, json(late) === json({ text: 'DROP_B', messages: 0 }), json(late));
+    }
+
+    // --- C4B: the file drop guard (CDP drags in the renderer; the native Windows Explorer drop is a manual test) ---
+    if (dropAvailable) {
+      const navigations = [];
+      const offs = ['Page.frameRequestedNavigation', 'Page.frameStartedLoading', 'Page.frameNavigated'].map((m) => page.on(m, () => navigations.push(m)));
+      /** Drags a real file to a viewport point that is no drop zone: the drag must end without drop and without navigation. */
+      const dragFileToPoint = async (point, label) => {
+        const file = writeFile('guard', `${label}.txt`, 'GUARD_FILE');
+        const before = await page.eval(`({ drops: __t.dropCount, leaves: __t.dragLeaveCount, reads: __t.reads.started, url: location.href })`);
+        navigations.length = 0;
+        const data = { items: [], files: [file], dragOperationsMask: 1 };
+        for (const type of ['dragEnter', 'dragOver', 'drop']) await page.send('Input.dispatchDragEvent', { type, ...point, data });
+        const ended = await page.waitFor(`__t.dragLeaveCount > ${before.leaves} || __t.dropCount > ${before.drops}`, 5000);
+        await frame();
+        const after = await page.eval(`({ drops: __t.dropCount, reads: __t.reads.started, url: location.href, helpers: !!window.__t, dragOver: __t.lastDragOver })`);
+        return {
+          ended,
+          dropDelivered: after.drops > before.drops,
+          guardCancelledDragOver: after.dragOver?.cancelled === true && after.dragOver?.dropEffect === 'none',
+          navigated: navigations.length > 0 || !after.helpers || after.url !== before.url,
+          fileRead: after.reads > before.reads,
+        };
+      };
+      // Without the guard the page navigates to the file and the CDP session stops answering: fail clearly, never hang
+      const dragFileTo = (point, label) =>
+        Promise.race([
+          dragFileToPoint(point, label),
+          new Promise((_, reject) => setTimeout(() => reject(new Error(`file drop guard: the page did not answer after the file drop (${label}): navigated to the file?`)), 15000)),
+        ]);
+      const pointOf = (selector) => freePoint(`document.querySelector(${json(selector)})`);
+      const ignored = { ended: true, dropDelivered: false, guardCancelledDragOver: true, navigated: false, fileRead: false };
+
+      // Outside the drop zone on Remove (the header) and on another page (the Split text field)
+      await nav('remove');
+      await setText(0, PREV);
+      await snacks();
+      const header = await dragFileTo(await pointOf('header.header'), 'header');
+      const headerState = { ...header, text: await raw(0), messages: (await snacks()).length };
+      r.check(`${label}: a file dropped outside the Remove drop zone is ignored (no drop, no navigation, no read)`,
+        json(headerState) === json({ ...ignored, text: PREV, messages: 0 }), json(headerState));
+      await nav('split');
+      await setText(0, PREV);
+      const other = await dragFileTo(await pointOf('.app-container-column:not(.hide-page) .input-options-container'), 'other-page');
+      const otherState = { ...other, text: await raw(0), messages: (await snacks()).length };
+      r.check(`${label}: a file dropped on another page outside its text field is ignored`, json(otherState) === json({ ...ignored, text: PREV, messages: 0 }), json(otherState));
+      const onButton = await dragFileTo(await pointOf('.app-container-column:not(.hide-page) .file-label'), 'open-button');
+      const onButtonState = { ...onButton, text: await raw(0), messages: (await snacks()).length };
+      r.check(`${label}: a file dropped on the Open File button is ignored`, json(onButtonState) === json({ ...ignored, text: PREV, messages: 0 }), json(onButtonState));
+
+      // On a split result column (its own drop handler would move the first column, finding B16)
+      const columns = [['a'], ['b'], ['c']];
+      await splitAndRead(page, 'a,b,c', ',', columns);
+      const onColumn = await dragFileTo(await pointOf('.app-container-column:not(.hide-page) .result-column'), 'column');
+      const columnState = { ...onColumn, columns: await page.eval('__t.columns()') };
+      r.check(`${label}: a file dropped on a result column is ignored (columns unchanged)`, json(columnState) === json({ ...ignored, columns }), json(columnState));
+
+      // A text drag is no file drag: the guard leaves it alone and the textarea inserts the text natively
+      await setText(0, 'start ');
+      const at = await pointOf('.app-container-column:not(.hide-page) textarea');
+      const textData = { items: [{ mimeType: 'text/plain', data: 'dragged' }], dragOperationsMask: 1 };
+      for (const type of ['dragEnter', 'dragOver', 'drop']) await page.send('Input.dispatchDragEvent', { type, ...at, data: textData });
+      const inserted = await page.waitFor(`(__t.raw(__t.textareas()[0]) || '').includes('dragged')`, 5000);
+      const textDragOver = await page.eval('__t.lastDragOver');
+      r.check(`${label}: a text drag is not treated as a file drag (guard inactive, text inserted)`,
+        inserted && textDragOver?.cancelled === false, json({ inserted, textDragOver, text: await raw(0) }));
+
+      // In-page drag of the result columns (real Chromium drag: dragstart in the page, intercepted, then dropped)
+      await splitAndRead(page, 'a,b,c', ',', columns);
+      const colPoint = (i) => page.eval(`(() => { const el = __t.page().querySelectorAll('.result-column .result-header h2')[${i}]; el.scrollIntoView({ block: 'center' });
+        const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`);
+      const from = await colPoint(0);
+      await page.send('Input.setInterceptDrags', { enabled: true });
+      let dragData = null;
+      try {
+        const intercepted = new Promise((resolve) => {
+          const off = page.on('Input.dragIntercepted', (p) => (off(), resolve(p.data)));
+          setTimeout(() => (off(), resolve(null)), 5000);
+        });
+        await page.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...from, button: 'left', buttons: 1, clickCount: 1 });
+        const to = await colPoint(2);
+        for (let s = 1; s <= 5; s++) await page.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: from.x + ((to.x - from.x) * s) / 5, y: from.y + ((to.y - from.y) * s) / 5, button: 'left', buttons: 1 });
+        dragData = await intercepted;
+      } finally {
+        await page.send('Input.setInterceptDrags', { enabled: false }).catch(() => {});
+      }
+      const to = await colPoint(2);
+      if (dragData) for (const type of ['dragEnter', 'dragOver', 'drop']) await page.send('Input.dispatchDragEvent', { type, ...to, data: dragData });
+      await page.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...to, button: 'left', buttons: 0, clickCount: 1 });
+      const moved = await page.waitFor(`JSON.stringify(__t.columns()) === ${json(json([['b'], ['c'], ['a']]))}`, 5000);
+      r.check(`${label}: the result columns can still be reordered by drag and drop (in-page drag, no file)`,
+        !!dragData && moved, json({ intercepted: !!dragData, types: dragData?.items?.map((i) => i.mimeType), columns: await page.eval('__t.columns()') }));
+      offs.forEach((off) => off());
+      // The usual separator for the following checks
+      await page.eval(`__t.set(__t.page().querySelector('.form-add-render input'), '_'); true`);
+    }
+
+    const report = (name, observed) => {
+      const s = FILE_IO.scenarios.find((x) => x.name === name);
+      const pending = s.pending ? ` [current; target differs in ${s.pending.fields.join(', ')}: ${s.pending.decisions.join('+')} ${s.pending.phase}]` : '';
+      r.check(`${label}: file import "${name}" (${s.method})${pending}`, json(observed) === json(s.current), `observed ${json(observed)} expected ${json(s.current)}`);
+    };
+
+    // --- Same file chosen again (F3, real file chooser path) ---
+    await nav('split');
+    const fileA = writeFile('reselect', 'a.txt', 'FILE_A\r\n');
+    const fileB = writeFile('reselect', 'b.txt', 'FILE_B');
+    const same = {};
+    const before = await started();
+    await choose(0, fileA);
+    r.check(`${label}: the file chooser path dispatches the change event synchronously`, (await started()) === before + 1);
+    await settle();
+    same.first = await raw(0);
+    await setText(0, 'EDITED');
+    await choose(0, fileA);
+    await settle();
+    same.againAfterEdit = await raw(0);
+    writeFileSync(fileA, 'FILE_A_CHANGED');
+    await choose(0, fileA);
+    await settle();
+    same.againAfterDiskChange = await raw(0);
+    await choose(0, fileB);
+    await settle();
+    await choose(0, fileA);
+    await settle();
+    same.otherThenSame = await raw(0);
+    await nav('sort');
+    await nav('split');
+    await setText(0, 'EDITED');
+    await choose(0, fileA);
+    await settle();
+    same.afterRemount = await raw(0);
+    report('same file chosen again', same);
+
+    // --- Read errors (real: the file does not exist when it is read) ---
+    await setText(0, PREV);
+    await snacks();
+    let from = page.logs.length;
+    await choose(0, join(dir, 'missing', 'does-not-exist.txt'));
+    await settle();
+    const buttonErrorSnacks = await snacks();
+    const buttonError = {
+      text: await raw(0),
+      errorMessage: buttonErrorSnacks.some((s) => s.startsWith('error')),
+      hookException: hookExceptionSince(from),
+      readOnly: await textarea(0, 'ta.readOnly'),
+    };
+    // The same path again, now with a file: a new import after the error
+    await choose(0, writeFile('missing', 'does-not-exist.txt', 'RETRY'));
+    await settle();
+    buttonError.retryLoads = await raw(0);
+    report('read error on the button', buttonError);
+    r.check(
+      `${label}: a failed button read shows exactly the read error message (notifications.readError)`,
+      onlyMessage(buttonErrorSnacks, 'readError'),
+      json(buttonErrorSnacks)
+    );
+    if (dropAvailable) {
+      await nav('remove');
+      await setText(0, PREV);
+      await snacks();
+      from = page.logs.length;
+      await dropFile(join(dir, 'missing-drop', 'does-not-exist.txt'));
+      await settle();
+      report('read error on the drop', {
+        text: await raw(0),
+        errorMessage: (await snacks()).some((s) => s.startsWith('error')),
+        hookException: hookExceptionSince(from),
+        readOnly: await textarea(0, 'ta.readOnly'),
+      });
+    }
+
+    // --- Loading state of the shared target (gated) ---
+    await nav('split');
+    await setText(0, PREV);
+    await hold(true);
+    await choose(0, writeFile('loading', 'loaded.txt', 'LOADED'));
+    const loading = {
+      readOnly: await textarea(0, 'ta.readOnly'),
+      busy: await textarea(0, `ta.getAttribute('aria-busy') === 'true'`),
+      selectable: await textarea(0, `(ta.focus(), ta.setSelectionRange(0, 4), !ta.disabled && ta.selectionStart === 0 && ta.selectionEnd === 4)`),
+      hint: await page.eval(`!!__t.page().querySelector('.file-loading')?.textContent`),
+    };
+    // Copy command with a user gesture: the copy event of the locked textarea carries its selection
+    const copy = await page.send('Runtime.evaluate', {
+      expression: `(() => { const ta = __t.textareas()[0]; let copied = null;
+        const onCopy = () => { copied = ta.value.slice(ta.selectionStart, ta.selectionEnd); };
+        ta.addEventListener('copy', onCopy); ta.focus(); ta.setSelectionRange(0, 4); document.execCommand('copy');
+        ta.removeEventListener('copy', onCopy); return copied; })()`,
+      userGesture: true,
+      returnByValue: true,
+    });
+    loading.copied = copy.result.value;
+    // Real key input (a readOnly textarea refuses it, unlike a programmatically set value)
+    await textarea(0, '(ta.focus(), ta.setSelectionRange(ta.value.length, ta.value.length), true)');
+    await page.send('Input.insertText', { text: 'X' });
+    await frame();
+    loading.typingChangesText = (await raw(0)) !== PREV;
+    loading.fileInputEnabled = await page.eval(`!document.querySelector(${json(inputSelector)}).disabled`);
+    await hold(false);
+    await release(0);
+    loading.text = await raw(0);
+    loading.readOnlyAfter = await textarea(0, 'ta.readOnly');
+    loading.busyAfter = await textarea(0, `ta.getAttribute('aria-busy') === 'true'`);
+    loading.hintAfter = await page.eval(`!!__t.page().querySelector('.file-loading')`);
+    report('loading state of the shared target', loading);
+
+    // --- Latest import wins (gated: real reads, their start released in a fixed order) ---
+    await setText(0, PREV);
+    await hold(true);
+    await choose(0, writeFile('race', 'a.txt', 'RACE_A'));
+    await choose(0, writeFile('race', 'b.txt', 'RACE_B'));
+    const raceHeld = await heldCount();
+    await hold(false);
+    await release(1);
+    const race = { afterB: await raw(0) };
+    await release(0);
+    race.afterA = await raw(0);
+    r.check(`${label}: both overlapping reads were held`, raceHeld === 2, `held=${raceHeld}`);
+    report('newer file replaces a running import', race);
+
+    await setText(0, PREV);
+    await hold(true);
+    await choose(0, writeFile('race-older', 'a.txt', 'RACE_A'));
+    await choose(0, writeFile('race-older', 'b.txt', 'RACE_B'));
+    await hold(false);
+    await release(0);
+    const older = {
+      textAfterOlder: await raw(0),
+      readOnlyAfterOlder: await textarea(0, 'ta.readOnly'),
+      busyAfterOlder: await textarea(0, `ta.getAttribute('aria-busy') === 'true'`),
+    };
+    await release(1);
+    older.text = await raw(0);
+    older.readOnlyAfter = await textarea(0, 'ta.readOnly');
+    report('older import finishes first', older);
+
+    const lateA = writeFile('race-error', 'a.txt', 'RACE_A');
+    await setText(0, PREV);
+    await snacks();
+    await hold(true);
+    await choose(0, lateA);
+    await choose(0, writeFile('race-error', 'b.txt', 'RACE_B'));
+    await hold(false);
+    await release(1);
+    unlinkSync(lateA);
+    from = page.logs.length;
+    await release(0);
+    report('replaced import fails late', {
+      afterA: await raw(0),
+      errorMessage: (await snacks()).some((s) => s.startsWith('error')),
+      hookException: hookExceptionSince(from),
+    });
+
+    // --- C3: a refused file is no import job, an accepted file that fails to decode is one ---
+    await setText(0, PREV);
+    await snacks();
+    await hold(true);
+    await choose(0, writeFile('refused', 'running.txt', 'RUNNING_A'));
+    await choose(0, writeFile('refused', 'refused.csv', 'B'));
+    const refusedChoice = {
+      refusedMessage: onlyMessage(await snacks(), 'unsupportedExtension'),
+      readOnlyAfterRefusal: await textarea(0, 'ta.readOnly'),
+      busyAfterRefusal: await textarea(0, `ta.getAttribute('aria-busy') === 'true'`),
+    };
+    await hold(false);
+    await release(0);
+    refusedChoice.text = await raw(0);
+    refusedChoice.readOnlyAfter = await textarea(0, 'ta.readOnly');
+    report('refused choice during a running import', refusedChoice);
+
+    await setText(0, PREV);
+    await snacks();
+    await hold(true);
+    await choose(0, writeFile('decode', 'running.txt', 'RUNNING_A'));
+    await choose(0, writeFile('decode', 'invalid.txt', Buffer.from([0x61, 0xff, 0x62])));
+    await hold(false);
+    await release(1);
+    const decodeFails = {
+      afterB: await raw(0),
+      decodeErrorMessage: onlyMessage(await snacks(), 'invalidEncoding'),
+      readOnlyAfterB: await textarea(0, 'ta.readOnly'),
+      busyAfterB: await textarea(0, `ta.getAttribute('aria-busy') === 'true'`),
+      hintAfterB: await page.eval(`!!__t.page().querySelector('.file-loading')`),
+    };
+    await release(0);
+    decodeFails.afterA = await raw(0);
+    decodeFails.messagesAfterA = (await snacks()).length;
+    await choose(0, writeFile('decode', 'next.txt', 'NEXT'));
+    await settle();
+    decodeFails.nextImport = await raw(0);
+    report('newer import fails to decode', decodeFails);
+
+    if (dropAvailable) {
+      await nav('remove');
+      await setText(0, PREV);
+      await snacks();
+      await hold(true);
+      await choose(0, writeFile('refused-drop', 'running.txt', 'RUNNING_A'));
+      const tooLarge = FILE_IO.cases.find((c) => c.generate === FILE_IO.maxBytes + 1);
+      await dropFile(writeFile('refused-drop', 'too-large.txt', fileBytes(tooLarge)));
+      const refusedDrop = {
+        refusedMessage: onlyMessage(await snacks(), 'tooLarge'),
+        readOnlyAfterRefusal: await textarea(0, 'ta.readOnly'),
+        busyAfterRefusal: await textarea(0, `ta.getAttribute('aria-busy') === 'true'`),
+      };
+      await hold(false);
+      await release(0);
+      refusedDrop.text = await raw(0);
+      refusedDrop.readOnlyAfter = await textarea(0, 'ta.readOnly');
+      report('refused drop during a running import', refusedDrop);
+    }
+
+    if (dropAvailable) {
+      await nav('remove');
+      await setText(0, PREV);
+      await hold(true);
+      await choose(0, writeFile('shared', 'a.txt', 'RACE_A'));
+      await dropFile(writeFile('shared', 'b.txt', 'RACE_B'));
+      const shared = { readOnlyWhileLoading: await textarea(0, 'ta.readOnly') };
+      await hold(false);
+      await release(1);
+      shared.afterB = await raw(0);
+      await release(0);
+      shared.afterA = await raw(0);
+      report('button and drop share the Remove target', shared);
+
+      const dropA = writeFile('shared-reverse', 'a.txt', 'RACE_A');
+      await setText(0, PREV);
+      await snacks();
+      await hold(true);
+      await dropFile(dropA);
+      await choose(0, writeFile('shared-reverse', 'b.txt', 'RACE_B'));
+      const reverse = { readOnlyWhileLoading: await textarea(0, 'ta.readOnly') };
+      await hold(false);
+      await release(1);
+      reverse.afterB = await raw(0);
+      unlinkSync(dropA);
+      await release(0);
+      reverse.afterA = await raw(0);
+      reverse.errorMessage = (await snacks()).some((s) => s.startsWith('error'));
+      report('drop then button on the Remove target', reverse);
+    }
+
+    // --- Independent targets (Diff) and navigation during an import ---
+    await nav('diff');
+    await setText(0, 'OLD_PREV');
+    await setText(1, 'NEW_PREV');
+    await hold(true);
+    await choose(0, writeFile('diff', 'old.txt', 'OLD_FILE'));
+    const diff = { oldReadOnly: await textarea(0, 'ta.readOnly'), newReadOnlyWhileOldLoads: await textarea(1, 'ta.readOnly') };
+    await choose(1, writeFile('diff', 'new.txt', 'NEW_FILE'));
+    diff.newReadOnly = await textarea(1, 'ta.readOnly');
+    await hold(false);
+    await release(0);
+    await release(1);
+    diff.oldText = await raw(0);
+    diff.newText = await raw(1);
+    report('independent Diff targets', diff);
+
+    await nav('split');
+    await setText(0, PREV);
+    await hold(true);
+    await choose(0, writeFile('nav', 'shared.txt', 'NAV_FILE'));
+    await nav('sort');
+    const navShared = { sortReadOnlyWhileLoading: await textarea(0, 'ta.readOnly') };
+    await hold(false);
+    await release(0);
+    navShared.sortText = await raw(0);
+    navShared.readOnlyAfter = await textarea(0, 'ta.readOnly');
+    report('navigation during an import into the shared text', navShared);
+
+    await nav('split');
+    await setText(0, PREV);
+    await nav('diff');
+    from = page.logs.length;
+    await hold(true);
+    await choose(1, writeFile('nav', 'local.txt', 'LOCAL_FILE'));
+    await nav('split');
+    await hold(false);
+    await release(0);
+    const navLocal = { splitText: await raw(0), splitReadOnly: await textarea(0, 'ta.readOnly'), errors: errorsSince(from).length };
+    await nav('diff');
+    navLocal.newTextAfterReturn = await raw(1);
+    const localGone = writeFile('nav', 'local-error.txt', 'LOCAL_FILE');
+    await hold(true);
+    await choose(1, localGone);
+    await nav('split');
+    await hold(false);
+    unlinkSync(localGone);
+    await snacks();
+    await release(0);
+    navLocal.lateErrorMessage = (await snacks()).length > 0;
+    report('navigation during an import into the new Diff text', navLocal);
+
+    // --- Cancelled file dialog (intercepted chooser, opened with a user gesture) ---
+    await nav('split');
+    const cancelA = writeFile('cancel', 'a.txt', 'FILE_A');
+    await choose(0, cancelA);
+    await settle();
+    await setText(0, 'EDITED');
+    let opened = false;
+    try {
+      await page.send('Page.setInterceptFileChooserDialog', { enabled: true });
+      const chooser = new Promise((resolve) => {
+        const off = page.on('Page.fileChooserOpened', () => (off(), resolve(true)));
+        setTimeout(() => (off(), resolve(false)), 3000);
+      });
+      await page.send('Runtime.evaluate', { expression: `document.querySelector(${json(inputSelector)}).click()`, userGesture: true });
+      opened = await chooser;
+    } finally {
+      await page.send('Page.setInterceptFileChooserDialog', { enabled: false }).catch(() => {});
+    }
+    r.check(`${label}: file chooser opened (intercepted) with a user gesture`, opened);
+    const readOnlyWhileOpen = await textarea(0, 'ta.readOnly');
+    // No file chosen: no change event; Chromium fires 'cancel' on the input when the native dialog is closed
+    await page.eval(`document.querySelector(${json(inputSelector)}).dispatchEvent(new Event('cancel', { bubbles: true })); true`);
+    await settle();
+    const cancel = {
+      readOnlyWhileOpen,
+      text: await raw(0),
+      readOnly: await textarea(0, 'ta.readOnly'),
+      busy: await textarea(0, `ta.getAttribute('aria-busy') === 'true'`),
+    };
+    await choose(0, cancelA);
+    await settle();
+    cancel.sameFileAfterCancel = await raw(0);
+    report('cancelled file dialog', cancel);
+
+    r.check(`${label}: file import checks without errors`, errorsSince(n).length === 0, json(errorsSince(n)));
+  } finally {
+    await page.eval(`__t.reads && (__t.reads.hold = false, __t.reads.held.forEach((f) => f?.()), true)`).catch(() => {});
+    await page.eval(FILE_READ_GATE_UNINSTALL).catch(() => {});
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+  }
+
+  // The source text is shared by the pages: leave the usual one for the following checks
+  await nav('split');
+  await setText(0, 'a_b');
 }

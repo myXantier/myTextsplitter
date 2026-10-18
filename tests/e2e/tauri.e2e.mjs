@@ -11,7 +11,7 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, listTargets, sleep } from './lib/cdp.mjs';
-import { SPLIT_CASES, checkCombineState, checkSplitIntegrity, checkMatchPreview, checkPatternRule, checkSplitFlags, checkLineEndings, checkSort, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
+import { SPLIT_CASES, checkCombineState, checkFileIo, checkSplitIntegrity, checkMatchPreview, checkPatternRule, checkSplitFlags, checkLineEndings, checkSort, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
@@ -26,6 +26,9 @@ import {
 } from './lib/harness.mjs';
 
 const r = createReporter();
+// Targeted run: E2E_ONLY=file-io starts the app once and runs only the start checks and checkFileIo (Paket 11)
+const ONLY = process.env.E2E_ONLY;
+if (ONLY && ONLY !== 'file-io') throw new Error(`Unknown E2E_ONLY=${ONLY} (supported: file-io)`);
 
 if (process.platform !== 'win32') {
   console.log('SKIPPED: the Tauri smoke test needs WebView2 remote debugging (Windows only).');
@@ -179,6 +182,9 @@ async function firstRun() {
   await checkCombineState(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
   // Paket 9 C2: Sort has no Rust command, it runs the TypeScript sort in the sort worker also in Rust mode
   await checkSort(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
+  // Paket 11 Phase B: file import in the WebView2 (independent of the processing mode, so once); the drop is the CDP drag
+  // into the renderer, not the native OS drop (see tests/README.md)
+  await checkFileIo(main, r, 'Tauri', (from) => errorsIn(main.logs, from));
   await main.eval(`__t.nav('split'); true`);
   await sleep(200);
 
@@ -266,6 +272,17 @@ async function secondRun(expectedLineNumbers) {
   r.check('WebView2 debug port closed', await waitForCdpClosed(port));
 }
 
+async function fileIoOnly() {
+  r.section('Tauri - file import only (E2E_ONLY=file-io)');
+  const { app, port } = await launchApp();
+  const main = await checkStartup(port);
+  await checkFileIo(main, r, 'Tauri', (from) => errorsIn(main.logs, from));
+  r.check('No errors in main window', errorsIn(main.logs).length === 0, formatLogs(errorsIn(main.logs)));
+  main.close();
+  await stopProcess(app);
+  r.check('WebView2 debug port closed', await waitForCdpClosed(port));
+}
+
 runTest(async () => {
   if (!existsSync(APP)) throw new Error(`App not found: ${APP} - run \`npx tauri build --no-bundle\` first.`);
   if (isAppRunning()) throw new Error(`${binName}.exe is already running - close it first (WebView2 would reuse its process).`);
@@ -275,6 +292,10 @@ runTest(async () => {
   if (sourceTime > appTime) console.warn('WARNING: sources are newer than the app build - run `npx tauri build --no-bundle`.');
 
   protectUserSettings();
+  if (ONLY === 'file-io') {
+    await fileIoOnly();
+    return r.summary();
+  }
   const expectedLineNumbers = await firstRun();
   await secondRun(expectedLineNumbers);
   return r.summary();

@@ -103,8 +103,11 @@ export default {
     notifications: {
       copied: 'In die Zwischenablage kopiert!',
       saved: 'Datei erfolgreich gespeichert!',
-      fileTooLarge: 'Datei ist zu groß. Maximale Größe ist 10MB.',
+      fileTooLarge: 'Die Datei ist zu groß: höchstens 10 MiB sind erlaubt.',
       readError: 'Fehler beim Lesen der Datei',
+      fileLoading: 'Datei wird geladen …',
+      unsupportedFileType: 'Nur Textdateien mit der Endung .txt werden unterstützt.',
+      invalidEncoding: 'Die Datei ist kein gültiger Text in UTF-8 oder UTF-16 mit BOM und wurde nicht geladen.',
       saveError: 'Fehler beim Speichern der Datei',
       copyError: 'Fehler beim Kopieren in die Zwischenablage',
       invalidRegex: 'Ungültiges Regex-Muster',

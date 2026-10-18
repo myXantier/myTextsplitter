@@ -8,6 +8,8 @@ import CustomSelect from '../components/CustomSelect';
 import CopyButton from '../components/CopyButton';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
+import { FileImport, importingTextareaProps } from '../hooks/useFileImport';
+import { fileDragClassName, useDragAndDrop } from '../hooks/useDragAndDrop';
 import { SORT_METHODS, type SortMethod } from '../utils/sortLines';
 import { useBackendProcessor } from '../hooks/useBackendProcessor';
 import { BaseService } from '../services/BaseService';
@@ -19,6 +21,7 @@ import './styles/SortPageStyle.css';
 interface SortPageProps {
   sourceText: string;
   setSourceText: (text: string) => void;
+  sourceImport: FileImport;
   visible?: boolean;
 }
 
@@ -36,7 +39,7 @@ const usesCase = (method: SortMethod) => method.startsWith('alphabetical') || me
 const sameRequest = (a: SortRequest, b: SortRequest) =>
   a.sourceText === b.sourceText && a.sortMethod === b.sortMethod && (!usesCase(a.sortMethod) || a.caseSensitive === b.caseSensitive);
 
-export default function SortPage({ sourceText, setSourceText, visible }: SortPageProps) {
+export default function SortPage({ sourceText, setSourceText, sourceImport, visible }: SortPageProps) {
   const { t } = useTranslation();
   const [sortMethod, setSortMethod] = useState<SortMethod>('alphabetical');
   // Kept while a method without case option is selected, so it applies again after switching back
@@ -51,6 +54,8 @@ export default function SortPage({ sourceText, setSourceText, visible }: SortPag
   const jobCounter = useRef(0);
   const snackbar = useSnackbar();
   const { sortText } = useBackendProcessor();
+  // A file dropped on the source text field is an import of the shared source text (same job as Open File)
+  const sourceDrop = useDragAndDrop(sourceImport);
 
   const sortItems: Item<SortMethod>[] = useMemo(
     () => SORT_METHODS.map((method, index) => ({ label: t(`sortText.methods.${method}`), value: method, index })),
@@ -148,12 +153,15 @@ export default function SortPage({ sourceText, setSourceText, visible }: SortPag
                 onClick={() => setSourceText('')}
               />
             </div>
-            <OpenFileButton setFileText={setSourceText} />
+            <OpenFileButton fileImport={sourceImport} />
           </div>
           <div className="content2 flex-column">
             <textarea
               value={sourceText}
               onChange={(e) => setSourceText(e.target.value)}
+              {...sourceDrop.dragHandlers}
+              {...importingTextareaProps(sourceImport)}
+              className={fileDragClassName(sourceDrop.isDragging)}
               placeholder={t('sourceText.placeholder')}
             />
           </div>

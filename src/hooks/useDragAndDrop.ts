@@ -1,10 +1,9 @@
 import { useEffect, useState, useCallback, DragEvent } from 'react';
+import { FILE_DROP_ZONE_ATTRIBUTE, isFileDrag } from '../utils/fileDropGuard';
+import { FileImport } from './useFileImport';
 
-interface DragAndDropHandlers {
-  onFileAccepted: (file: File) => void;
-  onError: (message: string) => void;
-  maxSize?: number;
-}
+/** Classes of a file drop zone while a file is dragged over it. */
+export const fileDragClassName = (isDragging: boolean) => (isDragging ? 'border-2 border-dashed border-blue-500' : '');
 
 export function useDragAndDropFiles(setText: (text: string) => void) {
   useEffect(() => {
@@ -25,52 +24,38 @@ export function useDragAndDropFiles(setText: (text: string) => void) {
 }
 
 
-export function useDragAndDrop({
-  onFileAccepted,
-  onError,
-  maxSize = 10 * 1024 * 1024 // 10MB default
-}: DragAndDropHandlers) {
+/**
+ * File drop zone of a text field (Paket 11 C5, every text input): a dropped file is one more import of the field's text
+ * (`fileImport.importFile`, the same job as its Open File button: latest wins, checks, decoding, lock). Only file drags
+ * are handled; a text drag keeps the browser's own behaviour (the text is inserted).
+ */
+export function useDragAndDrop(fileImport: FileImport) {
   const [isDragging, setIsDragging] = useState(false);
+  const { importFile } = fileImport;
 
   const handleDragOver = useCallback((event: DragEvent<HTMLElement>) => {
+    if (!isFileDrag(event.nativeEvent)) return;
     event.preventDefault();
     event.stopPropagation();
     setIsDragging(true);
   }, []);
 
-  const handleDragLeave = useCallback((event: DragEvent<HTMLElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    setIsDragging(false);
-  }, []);
+  const handleDragLeave = useCallback(() => setIsDragging(false), []);
 
   const handleDrop = useCallback((event: DragEvent<HTMLElement>) => {
+    setIsDragging(false);
+    if (!isFileDrag(event.nativeEvent)) return;
     event.preventDefault();
     event.stopPropagation();
-    setIsDragging(false);
-
     const file = event.dataTransfer?.files[0];
-    if (!file) {
-      onError('No file was dropped');
-      return;
-    }
-
-    if (!file.name.endsWith('.txt')) {
-      onError('Only .txt files are supported');
-      return;
-    }
-
-    if (file.size > maxSize) {
-      onError(`File is too large. Maximum size is ${(maxSize / (1024 * 1024)).toFixed(1)}MB`);
-      return;
-    }
-
-    onFileAccepted(file);
-  }, [maxSize, onFileAccepted, onError]);
+    if (file) importFile(file);
+  }, [importFile]);
 
   return {
     isDragging,
     dragHandlers: {
+      // Marks the element as a file drop zone: the app-wide file drop guard leaves its drops alone
+      [FILE_DROP_ZONE_ATTRIBUTE]: true,
       onDragOver: handleDragOver,
       onDragLeave: handleDragLeave,
       onDrop: handleDrop

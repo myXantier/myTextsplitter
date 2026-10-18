@@ -352,6 +352,34 @@ Chrome/WebView2 125+, Node 23+; older runtimes: `invalidRegex`): the JS result m
   `regex.test.ts` (Unicode cases, line endings, complete and limited previews with the omitted text), `workers.test.ts`
   (worker answer, limits at full size, splitMatches change, timeout); sizes and UI costs: `node tests/bench/preview-baseline.mjs`.
 
+## File import fixtures (`tests/fixtures/file-io-cases.json`, Paket 11)
+
+Real files for the two import paths: the "Open File" button (`OpenFileButton`, every page) and the drop onto the Remove
+textarea. Contract D1–D14: `docs/analyse/Paket11-PhaseB-Datei-IO-Vertrag.md`; findings F1–F15: the Phase A report and the
+contract. Per case: `file` (name), `bytes` (hex) or `generate` (byte count of a deterministic ASCII text, written at run
+time), the CURRENT result `expected` or `expectedButton` + `expectedDrop` (`{ text }`, `{ generatedText }`, `{ unchanged }`
+= previous text kept without a message, `{ rejected, message? }` = previous text kept with an error message), and for an
+open decision `target` + `pending { decisions, phase, paths }` (exactly the paths still differing). `divergence
+{ kind: "chromiumFileReader", whatwg }` marks a Chromium result that differs from the WHATWG decode (F15: an odd UTF-16
+byte count is dropped silently). `scenarios` describe import flows (reselection, read errors, overlapping imports,
+loading state, navigation, cancelled dialog) as `current` / `target` observations with `pending.fields`.
+
+`tests/unit/file-io-fixtures.test.ts` checks only the fixture data: the format, the current expectations against a model
+of today's code (WHATWG decode with BOM sniffing, every content read is set also `''` since C1, drop checks `.txt`
+case-sensitively and 10 MiB), the targets against the contract (strict decoding, `.txt` in any case, at most 10 MiB
+inclusive) and the pending lists. Whether the app behaves like this is checked only by `checkFileIo` (below).
+
+`tests/unit/file-import.test.ts` (Paket 11 C2, C3) checks the shared import path (`src/utils/fileImport.ts`): the strict
+decoder `decodeText` (BOM selects UTF-8 / UTF-16LE / UTF-16BE and is removed once, otherwise UTF-8; invalid or incomplete
+sequences and an odd UTF-16 byte count are refused, never replaced by U+FFFD; a valid U+FFFD stays), the file check
+`checkImportFile` (`.txt` in any case, at most 10 MiB inclusive) and, with a controllable FileReader stand-in
+(`readAsArrayBuffer`), the import jobs: latest import wins, a replaced import sets no text, shows no error and does not
+end the loading state of its successor, a refused file starts no job (a running import stays current), an accepted file
+that fails to decode ends its own job with `invalidEncoding`, an empty content is a text, targets are independent,
+nothing happens after `dispose` (unmount) and a new import works after an error. Since C3 `file-io-fixtures.test.ts`
+checks the current expectations with these product functions. The React binding (`useFileImport`: the shared source text in
+`PageList`, the new Diff text in `DiffPage`; `readOnly` + `aria-busy` + the hint) is checked by `checkFileIo`.
+
 ## Integration tests
 
 They drive the **real application** and are not part of `npm test`.
@@ -360,6 +388,8 @@ They drive the **real application** and are not part of `npm test`.
 
 - Builds the frontend, then tests the Vite dev server **and** the production build (`vite preview`).
 - Single mode: `node tests/e2e/browser.e2e.mjs --mode=dev` or `--mode=preview` (needs `npm run build`).
+- Targeted run (Paket 11): `E2E_ONLY=file-io` runs only the start checks and `checkFileIo`, e.g.
+  `E2E_ONLY=file-io node tests/e2e/browser.e2e.mjs --mode=dev` (PowerShell: `$env:E2E_ONLY='file-io'`).
 - Runs without Tauri runtime and without mocks. It checks startup, navigation, Split/Sort/Filter/Remove/Diff,
   the JS mode with its metrics, persistence of the settings across a reload, and damaged `localStorage` data.
 - Browser: found automatically (Chrome, Edge, Chromium); otherwise set `CHROME_PATH`.
@@ -370,6 +400,8 @@ They drive the **real application** and are not part of `npm test`.
 
 - Prerequisite: `npx tauri build --no-bundle` (the test warns if sources are newer than the build).
   `TAURI_APP_PATH` can point to another executable.
+- Targeted run (Paket 11): `E2E_ONLY=file-io npm run test:e2e:tauri` starts the app once and runs only the start checks,
+  `checkFileIo` and the error check of the main window (no settings round trip, no restart).
 - Starts the real release build with the Tauri runtime and Rust backend. The WebView2 is driven through its DevTools port
   (`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=…`, only for this process).
 - Checks splash → main window, window title, backend processing and metrics, mode switch,
@@ -419,6 +451,40 @@ trailing newline are imported through "Open File" (typing into a textarea turns 
 same text typed with LF = no difference; Paket 7: a new text with more lines than the old one keeps every line, and a
 move keeps both positions and is counted once). Results are read from React's props (`__t.raw`) and from the copied text
 (`__t.captureCopy`), because `textarea.value` also normalizes line breaks to LF.
+
+File import (`checkFileIo`, Paket 11 Phase B, updated in C1 and C2; browser and Tauri in Rust mode, once): every byte fixture through the
+button (`DOM.setFileInputFiles` with the real file, i.e. the Chromium file chooser path with its real `change` event, one
+path per case) and through the drop (`Input.dispatchDragEvent` with the real file onto the Remove textarea); the same
+path chosen again (F3, no artificial `change`); real read errors (a path that does not exist, a file deleted before its
+read starts); overlapping imports, the loading state and navigation as a **controlled simulation**: the FileReader and
+Blob read methods are wrapped in the page and the start of a read is held and released in a fixed order, then the
+browser really reads (no fixed sleeps, completion is counted); typing uses real key input (`Input.insertText`); the
+cancelled dialog uses an intercepted file chooser (`Page.setInterceptFileChooserDialog`, opened with a user gesture).
+Since C3 a refused file (extension, size, invalid encoding) shows exactly one snackbar, the localized message of its
+reason (read from `src/i18n/locales`), the same for the button and the drop. The drop point is a visible point of the
+textarea outside the layout boxes of the snackbar containers (their messages slide with a transform, the boxes do not
+move) and confirmed with `elementFromPoint`; no app style is changed, a missing free point or an undelivered drop fails
+with the covering elements; a valid drop is checked while error messages cover a part of the textarea. The checks expect the current behaviour; a
+pending target is named in the check label. No error is expected: since
+Paket 11 C1 a failed button read shows `notifications.readError` without a React hook error (F1), and any logged error,
+also a hook error, fails `checkFileIo` and the final error check of the Tauri main window. File drop zones (Paket 11 C5): every text input is a file drop zone of its own import target (Split, Filter, Remove,
+Sort, Diff old = the shared source text; Diff new = its page-local text), `useDragAndDrop(fileImport)` = the same job as
+its Open File button. Per zone a valid file, a `.csv`, invalid bytes and an empty file are dropped (exact text, one
+localized message, `""`; on Diff the other field stays); a held drop locks the text (`readOnly`, `aria-busy`, hint); drop
+A, drop B, button C on Split and button A, drop B on the new Diff text: only the latest is set; the Diff fields lock
+independently; the late error of a replaced drop shows no message. Only file drags (`dataTransfer.types` with `Files`)
+are handled; a text drag onto a text field (also onto Remove) is inserted by the browser. The 41 byte fixtures run
+through the button and the Remove drop only (the shared path).
+
+File drop guard (Paket 11 C4B, `src/utils/fileDropGuard.ts`, unit test `tests/unit/file-drop-guard.test.ts`): a real file
+dragged onto the header of Remove, onto the Split options, onto an Open File button and onto a result column ends without drop, without
+navigation (CDP page events, URL, page helpers still present), without read and without message; a text drag is
+left alone (the textarea inserts it); the result columns are still reordered by an in-page drag (real Chromium drag:
+`Input.setInterceptDrags`, mouse press and move, the intercepted drag data dropped on the target column). A page that
+stops answering after a file drop (navigated to the file) fails the run instead of hanging. **Limit:** CDP drags enter
+the renderer, after the native OS drop target. Since C4B the main window has `dragDropEnabled: false` (WebView2 handles
+Explorer drops itself, F8 confirmed manually before), but whether a real Explorer drop and a native in-page drag work
+in the Windows app is shown only by the manual Windows test. Native file dialogs are not automated.
 
 The Tauri test switches "Keep Empty Lines" explicitly, because an existing `settings.json` may still
 contain `showEmptyLines: false` (the default before the option was wired to Split).

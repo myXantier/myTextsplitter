@@ -18,12 +18,15 @@ import { BaseService } from '../services/BaseService';
 import { ERROR_KEYS, isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
+import { FileImport, importingTextareaProps } from '../hooks/useFileImport';
+import { fileDragClassName, useDragAndDrop } from '../hooks/useDragAndDrop';
 import useSnackbar from '../hooks/useSnackbar';
 import './styles/SplitPageStyle.css';
 
 interface SplitPageProps {
   sourceText: string;
   setSourceText: (text: string) => void;
+  sourceImport: FileImport;
   splitResults: string[][];
   setSplitResults: Dispatch<SetStateAction<string[][]>>;
   visible?: boolean;
@@ -34,12 +37,15 @@ const TEST_RUN = false;
 export default function SplitPage({
   sourceText,
   setSourceText,
+  sourceImport,
   splitResults,
   setSplitResults,
   visible,
 }: SplitPageProps) {
   const { t } = useTranslation();
   const { splitText } = useBackendProcessor();
+  // A file dropped on the source text field is an import of the shared source text (same job as Open File)
+  const sourceDrop = useDragAndDrop(sourceImport);
   const [isLoading, setIsLoading] = useState(false);
   const [currentWorkerAbort, setCurrentWorkerAbort] = useState<(() => void) | null>(null);
   const snackbar = useSnackbar();
@@ -182,12 +188,15 @@ export default function SplitPage({
                 onClick={() => setSourceText('')}
               />
             </div>
-            <OpenFileButton setFileText={setSourceText} />
+            <OpenFileButton fileImport={sourceImport} />
           </div>
           <div className="content2 flex-column">
             <textarea
               value={sourceText}
               onChange={(e) => setSourceText(e.target.value)}
+              {...sourceDrop.dragHandlers}
+              {...importingTextareaProps(sourceImport)}
+              className={fileDragClassName(sourceDrop.isDragging)}
               placeholder={t('sourceText.placeholder')}
             />
           </div>
