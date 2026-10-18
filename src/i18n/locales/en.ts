@@ -108,7 +108,6 @@ export default {
       fileLoading: 'Loading file …',
       unsupportedFileType: 'Only text files with the extension .txt are supported.',
       invalidEncoding: 'The file is not valid UTF-8 or UTF-16 text with BOM and was not loaded.',
-      noFileDropped: 'No file was dropped.',
       saveError: 'Failed to save file',
       copyError: 'Failed to copy to clipboard',
       invalidRegex: 'Invalid regex pattern',

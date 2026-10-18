@@ -9,6 +9,7 @@ import CopyButton from '../components/CopyButton';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
 import { FileImport, importingTextareaProps } from '../hooks/useFileImport';
+import { fileDragClassName, useDragAndDrop } from '../hooks/useDragAndDrop';
 import { SORT_METHODS, type SortMethod } from '../utils/sortLines';
 import { useBackendProcessor } from '../hooks/useBackendProcessor';
 import { BaseService } from '../services/BaseService';
@@ -53,6 +54,8 @@ export default function SortPage({ sourceText, setSourceText, sourceImport, visi
   const jobCounter = useRef(0);
   const snackbar = useSnackbar();
   const { sortText } = useBackendProcessor();
+  // A file dropped on the source text field is an import of the shared source text (same job as Open File)
+  const sourceDrop = useDragAndDrop(sourceImport);
 
   const sortItems: Item<SortMethod>[] = useMemo(
     () => SORT_METHODS.map((method, index) => ({ label: t(`sortText.methods.${method}`), value: method, index })),
@@ -156,7 +159,9 @@ export default function SortPage({ sourceText, setSourceText, sourceImport, visi
             <textarea
               value={sourceText}
               onChange={(e) => setSourceText(e.target.value)}
+              {...sourceDrop.dragHandlers}
               {...importingTextareaProps(sourceImport)}
+              className={fileDragClassName(sourceDrop.isDragging)}
               placeholder={t('sourceText.placeholder')}
             />
           </div>

@@ -108,7 +108,6 @@ export default {
       fileLoading: 'Datei wird geladen …',
       unsupportedFileType: 'Nur Textdateien mit der Endung .txt werden unterstützt.',
       invalidEncoding: 'Die Datei ist kein gültiger Text in UTF-8 oder UTF-16 mit BOM und wurde nicht geladen.',
-      noFileDropped: 'Es wurde keine Datei abgelegt.',
       saveError: 'Fehler beim Speichern der Datei',
       copyError: 'Fehler beim Kopieren in die Zwischenablage',
       invalidRegex: 'Ungültiges Regex-Muster',

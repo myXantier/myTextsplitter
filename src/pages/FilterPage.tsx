@@ -12,6 +12,7 @@ import { useRuntimeSetting } from '../hooks/useSettings';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
 import { FileImport, importingTextareaProps } from '../hooks/useFileImport';
+import { fileDragClassName, useDragAndDrop } from '../hooks/useDragAndDrop';
 import useSnackbar from '../hooks/useSnackbar';
 import { ERROR_KEYS, isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import './styles/FilterPageStyle.css';
@@ -41,6 +42,8 @@ export default function FilterPage({
   });
 
   const { filterText } = useBackendProcessor();
+  // A file dropped on the source text field is an import of the shared source text (same job as Open File)
+  const sourceDrop = useDragAndDrop(sourceImport);
   // Same rule as useBackendProcessor: 'backend' runs the Filter in Rust
   const processingMode = useRuntimeSetting('processingMode');
 
@@ -100,7 +103,9 @@ export default function FilterPage({
             <textarea
               value={sourceText}
               onChange={(e) => setSourceText(e.target.value)}
+              {...sourceDrop.dragHandlers}
               {...importingTextareaProps(sourceImport)}
+              className={fileDragClassName(sourceDrop.isDragging)}
               placeholder={t('textFilter.sourcePlaceholder')}
             />
           </div>

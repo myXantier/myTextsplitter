@@ -19,6 +19,7 @@ import { ERROR_KEYS, isSuperseded, processingErrorMessage, unwrapResult } from '
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
 import { FileImport, importingTextareaProps } from '../hooks/useFileImport';
+import { fileDragClassName, useDragAndDrop } from '../hooks/useDragAndDrop';
 import useSnackbar from '../hooks/useSnackbar';
 import './styles/SplitPageStyle.css';
 
@@ -43,6 +44,8 @@ export default function SplitPage({
 }: SplitPageProps) {
   const { t } = useTranslation();
   const { splitText } = useBackendProcessor();
+  // A file dropped on the source text field is an import of the shared source text (same job as Open File)
+  const sourceDrop = useDragAndDrop(sourceImport);
   const [isLoading, setIsLoading] = useState(false);
   const [currentWorkerAbort, setCurrentWorkerAbort] = useState<(() => void) | null>(null);
   const snackbar = useSnackbar();
@@ -191,7 +194,9 @@ export default function SplitPage({
             <textarea
               value={sourceText}
               onChange={(e) => setSourceText(e.target.value)}
+              {...sourceDrop.dragHandlers}
               {...importingTextareaProps(sourceImport)}
+              className={fileDragClassName(sourceDrop.isDragging)}
               placeholder={t('sourceText.placeholder')}
             />
           </div>

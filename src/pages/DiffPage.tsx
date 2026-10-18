@@ -9,6 +9,7 @@ import { useBackendProcessor } from '../hooks/useBackendProcessor';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
 import { FileImport, importingTextareaProps, useFileImport } from '../hooks/useFileImport';
+import { fileDragClassName, useDragAndDrop } from '../hooks/useDragAndDrop';
 import CopyButton from '../components/CopyButton';
 import { fontSizeToIconSize } from '../utils/helper';
 import useSnackbar from '../hooks/useSnackbar';
@@ -52,6 +53,9 @@ export default function DiffPage({
   const [newText, setNewText] = useState('');
   // The new text is a page-local import target: it does not lock the shared source text and ends with the page
   const newTextImport = useFileImport(setNewText);
+  // One file drop zone per text field, each an import of its own target only
+  const oldDrop = useDragAndDrop(sourceImport);
+  const newDrop = useDragAndDrop(newTextImport);
   const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
   const [diffData, setDiffData] = useState<DiffData | null>(null);
   const [diffViewType, setDiffViewType] = useState<DiffViewType>('unified');
@@ -268,7 +272,9 @@ export default function DiffPage({
               <textarea
                 value={sourceText}
                 onChange={(e) => setSourceText(e.target.value)}
+                {...oldDrop.dragHandlers}
                 {...importingTextareaProps(sourceImport)}
+                className={fileDragClassName(oldDrop.isDragging)}
                 placeholder={t('textDiff.oldTextPlaceholder')}
               />
             </div>
@@ -294,7 +300,9 @@ export default function DiffPage({
               <textarea
                 value={newText}
                 onChange={(e) => setNewText(e.target.value)}
+                {...newDrop.dragHandlers}
                 {...importingTextareaProps(newTextImport)}
+                className={fileDragClassName(newDrop.isDragging)}
                 placeholder={t('textDiff.newTextPlaceholder')}
               />
             </div>

@@ -467,8 +467,17 @@ move) and confirmed with `elementFromPoint`; no app style is changed, a missing 
 with the covering elements; a valid drop is checked while error messages cover a part of the textarea. The checks expect the current behaviour; a
 pending target is named in the check label. No error is expected: since
 Paket 11 C1 a failed button read shows `notifications.readError` without a React hook error (F1), and any logged error,
-also a hook error, fails `checkFileIo` and the final error check of the Tauri main window. File drop guard (Paket 11 C4B, `src/utils/fileDropGuard.ts`, unit test `tests/unit/file-drop-guard.test.ts`): a real file
-dragged onto the header of Remove, onto the Split text field and onto a result column ends without drop, without
+also a hook error, fails `checkFileIo` and the final error check of the Tauri main window. File drop zones (Paket 11 C5): every text input is a file drop zone of its own import target (Split, Filter, Remove,
+Sort, Diff old = the shared source text; Diff new = its page-local text), `useDragAndDrop(fileImport)` = the same job as
+its Open File button. Per zone a valid file, a `.csv`, invalid bytes and an empty file are dropped (exact text, one
+localized message, `""`; on Diff the other field stays); a held drop locks the text (`readOnly`, `aria-busy`, hint); drop
+A, drop B, button C on Split and button A, drop B on the new Diff text: only the latest is set; the Diff fields lock
+independently; the late error of a replaced drop shows no message. Only file drags (`dataTransfer.types` with `Files`)
+are handled; a text drag onto a text field (also onto Remove) is inserted by the browser. The 41 byte fixtures run
+through the button and the Remove drop only (the shared path).
+
+File drop guard (Paket 11 C4B, `src/utils/fileDropGuard.ts`, unit test `tests/unit/file-drop-guard.test.ts`): a real file
+dragged onto the header of Remove, onto the Split options, onto an Open File button and onto a result column ends without drop, without
 navigation (CDP page events, URL, page helpers still present), without read and without message; a text drag is
 left alone (the textarea inserts it); the result columns are still reordered by an in-page drag (real Chromium drag:
 `Input.setInterceptDrags`, mouse press and move, the intercepted drag data dropped on the target column). A page that

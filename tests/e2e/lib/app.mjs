@@ -1905,17 +1905,18 @@ export async function checkFileIo(page, r, label, errorsSince) {
       }
     }
 
-    // A drop without a file (e.g. dragged text) is refused with the localized message, the text stays
+    // A text drag onto the Remove textarea is no file drag (C5): the browser inserts the text, no message, no read
     if (dropAvailable) {
       await setText(0, PREV);
       await snacks();
+      const readsBefore = await started();
       await drag({ items: [{ mimeType: 'text/plain', data: 'dragged text' }], dragOperationsMask: 1 });
-      await frame();
+      const textInserted = await page.waitFor(`(__t.raw(__t.textareas()[0]) || '').includes('dragged text')`, 5000);
       const shown = await snacks();
       r.check(
-        `${label}: a drop without a file shows only the localized message and keeps the text`,
-        shown.length === 1 && notificationTexts('noFileDropped').includes(shown[0]) && (await raw(0)) === PREV,
-        json(shown)
+        `${label}: a text drag onto the Remove textarea inserts the text (no file import, no message)`,
+        textInserted && shown.length === 0 && (await started()) === readsBefore,
+        json({ textInserted, shown, text: await raw(0) })
       );
 
       // A valid drop while error messages of refused drops are visible over a part of the textarea: refused drops until
@@ -1943,6 +1944,108 @@ export async function checkFileIo(page, r, label, errorsSince) {
         covered && visible > 0 && underMessage.text === 'DROPPED_UNDER_MESSAGE' && underMessage.messages.length === 0,
         json({ refusals, covered, visible, ...underMessage })
       );
+    }
+
+    // --- C5: every text input is a file drop zone of its own import target (CDP drags; Explorer drops: manual test) ---
+    if (dropAvailable) {
+      const zones = [
+        { page: 'split', index: 0 },
+        { page: 'filter', index: 0 },
+        { page: 'remove', index: 0 },
+        { page: 'sort', index: 0 },
+        { page: 'diff', index: 0, other: 1 },
+        { page: 'diff', index: 1, other: 0 },
+      ];
+      const invalid = Buffer.from([0x61, 0xff, 0x62]);
+      for (const zone of zones) {
+        const name = `${zone.page}[${zone.index}]`;
+        await nav(zone.page);
+        if (zone.other !== undefined) await setText(zone.other, 'OTHER_FIELD');
+        await setText(zone.index, PREV);
+        await snacks();
+        const state = {};
+        await dropFile(writeFile(`zones-${zone.page}-${zone.index}`, 'valid.txt', `DROP_${zone.page}_${zone.index}\r\n`), zone.index);
+        await settle();
+        state.valid = await raw(zone.index);
+        state.validMessages = (await snacks()).length;
+        await dropFile(writeFile(`zones-${zone.page}-${zone.index}`, 'data.csv', 'x'), zone.index);
+        await settle();
+        state.csvKeepsText = (await raw(zone.index)) === state.valid;
+        state.csvMessage = onlyMessage(await snacks(), 'unsupportedExtension');
+        await dropFile(writeFile(`zones-${zone.page}-${zone.index}`, 'invalid.txt', invalid), zone.index);
+        await settle();
+        state.invalidKeepsText = (await raw(zone.index)) === state.valid;
+        state.invalidMessage = onlyMessage(await snacks(), 'invalidEncoding');
+        await dropFile(writeFile(`zones-${zone.page}-${zone.index}`, 'empty.txt', ''), zone.index);
+        await settle();
+        state.empty = await raw(zone.index);
+        if (zone.other !== undefined) state.otherField = await raw(zone.other);
+        const expected = {
+          valid: `DROP_${zone.page}_${zone.index}\r\n`, validMessages: 0, csvKeepsText: true, csvMessage: true,
+          invalidKeepsText: true, invalidMessage: true, empty: '',
+          ...(zone.other !== undefined ? { otherField: 'OTHER_FIELD' } : {}),
+        };
+        r.check(`${label}: file drop zone ${name}: valid, .csv, invalid bytes and empty file only change its own text`, json(state) === json(expected), json(state));
+      }
+
+      // Lock while a dropped file is read, drop after drop and button after drop on the shared text (Split)
+      await nav('split');
+      await setText(0, PREV);
+      await hold(true);
+      await dropFile(writeFile('zones-race', 'a.txt', 'DROP_A'));
+      const dropLock = {
+        readOnly: await textarea(0, 'ta.readOnly'),
+        busy: await textarea(0, `ta.getAttribute('aria-busy') === 'true'`),
+        hint: await page.eval(`!!__t.page().querySelector('.file-loading')`),
+      };
+      await dropFile(writeFile('zones-race', 'b.txt', 'DROP_B'));
+      await choose(0, writeFile('zones-race', 'c.txt', 'BUTTON_C'));
+      await hold(false);
+      await release(2);
+      dropLock.afterC = await raw(0);
+      await release(1);
+      await release(0);
+      dropLock.afterAll = await raw(0);
+      dropLock.readOnlyAfter = await textarea(0, 'ta.readOnly');
+      r.check(`${label}: a dropped file locks the text while read; drop A, drop B, button C: only C is set`,
+        json(dropLock) === json({ readOnly: true, busy: true, hint: true, afterC: 'BUTTON_C', afterAll: 'BUTTON_C', readOnlyAfter: false }), json(dropLock));
+
+      // Diff: the two drop zones have independent import states; button A then drop B on the new text
+      await nav('diff');
+      await setText(0, 'OLD_PREV');
+      await setText(1, 'NEW_PREV');
+      await hold(true);
+      await dropFile(writeFile('zones-diff', 'old.txt', 'OLD_DROP'), 0);
+      const diffDrop = { oldLocked: await textarea(0, 'ta.readOnly'), newFreeWhileOldLoads: !(await textarea(1, 'ta.readOnly')) };
+      await choose(1, writeFile('zones-diff', 'new-a.txt', 'NEW_BUTTON_A'));
+      await dropFile(writeFile('zones-diff', 'new-b.txt', 'NEW_DROP_B'), 1);
+      diffDrop.newLocked = await textarea(1, 'ta.readOnly');
+      await hold(false);
+      await release(2);
+      await release(1);
+      diffDrop.newText = await raw(1);
+      diffDrop.oldStillLocked = await textarea(0, 'ta.readOnly');
+      await release(0);
+      diffDrop.oldText = await raw(0);
+      diffDrop.readOnlyAfter = (await textarea(0, 'ta.readOnly')) || (await textarea(1, 'ta.readOnly'));
+      r.check(`${label}: Diff drop zones are independent; button A then drop B on the new text: only B is set`,
+        json(diffDrop) === json({ oldLocked: true, newFreeWhileOldLoads: true, newLocked: true, newText: 'NEW_DROP_B', oldStillLocked: true, oldText: 'OLD_DROP', readOnlyAfter: false }),
+        json(diffDrop));
+
+      // A late error of a replaced drop shows no message (Remove: drop A deleted before its read, drop B)
+      await nav('remove');
+      await setText(0, PREV);
+      await snacks();
+      const lateDrop = writeFile('zones-late', 'a.txt', 'DROP_A');
+      await hold(true);
+      await dropFile(lateDrop);
+      await dropFile(writeFile('zones-late', 'b.txt', 'DROP_B'));
+      await hold(false);
+      await release(1);
+      unlinkSync(lateDrop);
+      await release(0);
+      const late = { text: await raw(0), messages: (await snacks()).length };
+      r.check(`${label}: drop A replaced by drop B: the late error of A shows no message`, json(late) === json({ text: 'DROP_B', messages: 0 }), json(late));
     }
 
     // --- C4B: the file drop guard (CDP drags in the renderer; the native Windows Explorer drop is a manual test) ---
@@ -1986,9 +2089,12 @@ export async function checkFileIo(page, r, label, errorsSince) {
         json(headerState) === json({ ...ignored, text: PREV, messages: 0 }), json(headerState));
       await nav('split');
       await setText(0, PREV);
-      const other = await dragFileTo(await pointOf('.app-container-column:not(.hide-page) textarea'), 'other-page');
+      const other = await dragFileTo(await pointOf('.app-container-column:not(.hide-page) .input-options-container'), 'other-page');
       const otherState = { ...other, text: await raw(0), messages: (await snacks()).length };
-      r.check(`${label}: a file dropped on another page is ignored`, json(otherState) === json({ ...ignored, text: PREV, messages: 0 }), json(otherState));
+      r.check(`${label}: a file dropped on another page outside its text field is ignored`, json(otherState) === json({ ...ignored, text: PREV, messages: 0 }), json(otherState));
+      const onButton = await dragFileTo(await pointOf('.app-container-column:not(.hide-page) .file-label'), 'open-button');
+      const onButtonState = { ...onButton, text: await raw(0), messages: (await snacks()).length };
+      r.check(`${label}: a file dropped on the Open File button is ignored`, json(onButtonState) === json({ ...ignored, text: PREV, messages: 0 }), json(onButtonState));
 
       // On a split result column (its own drop handler would move the first column, finding B16)
       const columns = [['a'], ['b'], ['c']];
