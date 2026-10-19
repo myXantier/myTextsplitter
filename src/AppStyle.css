@@ -82,6 +82,8 @@
   --app-color-pink: #ff008c;
   --app-color-pink-1: #c678dd;
   --app-border-color: #d6d6d6;
+  /* Outdated result (notice text and outline): --app-color-yellow is not readable on the light backgrounds */
+  --app-color-outdated: #713f12;
 
   /* Icon Color */
   --app-icon-color: #333;
@@ -141,6 +143,7 @@
   --app-color-green: #98c379;
   --app-color-red: #f87171;
   --app-color-yellow: #fde047;
+  --app-color-outdated: #fde047;
   --app-color-orange: #d48100;
   --app-color-pink: #ff008c;
   --app-color-pink-1: #c678dd;

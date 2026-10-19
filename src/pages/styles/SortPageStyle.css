@@ -124,17 +124,6 @@
   margin-bottom: 8px;
 }
 
-/* The shown result belongs to an earlier text or other options (it stays visible and can still be copied) */
-.sort-text .sort-result-outdated {
-  flex: 1;
-  font-size: 0.85em;
-  color: var(--app-color-yellow);
-}
-
-.sort-text textarea.result.outdated {
-  opacity: 0.6;
-}
-
 /* Responsive Breakpoints */
 @media (max-width: 640px) {
   .sort-text {

@@ -100,6 +100,11 @@ export default {
       column: 'Part {{number}}',
       result: 'Combined Result:',
     },
+    // Shown result whose text or options have changed since it was computed (Paket 12)
+    results: {
+      outdated: 'Result outdated',
+      outdatedHint: 'The text or the options have changed. Run again to update the result.',
+    },
     notifications: {
       copied: 'Copied to clipboard!',
       saved: 'File saved successfully!',
@@ -230,7 +235,8 @@ export default {
       resultForCase: '{{method}}, {{case}}, {{lines}} lines',
       caseSensitive: 'case-sensitive',
       caseInsensitive: 'case-insensitive',
-      outdated: 'Outdated: the text or the options have changed since this result. Sort again to update it.',
+      // Explanation after the common short text results.outdated
+      outdated: 'The text or the options have changed since this result. Sort again to update it.',
       processed: 'Sorted {{lines}} lines',
     },
     textFilter: {

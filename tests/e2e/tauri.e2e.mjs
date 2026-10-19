@@ -26,9 +26,11 @@ import {
 } from './lib/harness.mjs';
 
 const r = createReporter();
-// Targeted run: E2E_ONLY=file-io starts the app once and runs only the start checks and checkFileIo (Paket 11)
+// Targeted runs: E2E_ONLY=file-io starts the app once and runs only the start checks and checkFileIo (Paket 11),
+// E2E_ONLY=stale only the start checks and the outdated-result checks in Rust and JS mode (Paket 12; so far Sort)
 const ONLY = process.env.E2E_ONLY;
-if (ONLY && ONLY !== 'file-io') throw new Error(`Unknown E2E_ONLY=${ONLY} (supported: file-io)`);
+const ONLY_VALUES = ['file-io', 'stale'];
+if (ONLY && !ONLY_VALUES.includes(ONLY)) throw new Error(`Unknown E2E_ONLY=${ONLY} (supported: ${ONLY_VALUES.join(', ')})`);
 
 if (process.platform !== 'win32') {
   console.log('SKIPPED: the Tauri smoke test needs WebView2 remote debugging (Windows only).');
@@ -283,6 +285,28 @@ async function fileIoOnly() {
   r.check('WebView2 debug port closed', await waitForCdpClosed(port));
 }
 
+async function staleOnly() {
+  r.section('Tauri - outdated results only (E2E_ONLY=stale)');
+  const { app, port } = await launchApp();
+  const main = await checkStartup(port);
+  const toggleMode = async () => {
+    await main.eval(`__t.nav('split'); true`);
+    await sleep(200);
+    await main.eval(`__t.page().querySelector('.mode-toggle').click(); true`);
+    await sleep(300);
+  };
+  await checkSort(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
+  await toggleMode();
+  r.check('Toggle to JS mode', await main.eval(`!!__t.page().querySelector('.mode-toggle .fallback-icon')`));
+  await checkSort(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
+  await toggleMode();
+  r.check('Toggle back to backend mode', await main.eval(`!!__t.page().querySelector('.mode-toggle .backend-icon')`));
+  r.check('No errors in main window', errorsIn(main.logs).length === 0, formatLogs(errorsIn(main.logs)));
+  main.close();
+  await stopProcess(app);
+  r.check('WebView2 debug port closed', await waitForCdpClosed(port));
+}
+
 runTest(async () => {
   if (!existsSync(APP)) throw new Error(`App not found: ${APP} - run \`npx tauri build --no-bundle\` first.`);
   if (isAppRunning()) throw new Error(`${binName}.exe is already running - close it first (WebView2 would reuse its process).`);
@@ -294,6 +318,10 @@ runTest(async () => {
   protectUserSettings();
   if (ONLY === 'file-io') {
     await fileIoOnly();
+    return r.summary();
+  }
+  if (ONLY === 'stale') {
+    await staleOnly();
     return r.summary();
   }
   const expectedLineNumbers = await firstRun();

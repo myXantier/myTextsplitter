@@ -100,6 +100,11 @@ export default {
       column: 'Spalte {{number}}',
       result: 'Kombiniertes Ergebnis:'
     },
+    // Shown result whose text or options have changed since it was computed (Paket 12)
+    results: {
+      outdated: 'Ergebnis veraltet',
+      outdatedHint: 'Text oder Optionen wurden geändert. Erneut ausführen, um das Ergebnis zu aktualisieren.',
+    },
     notifications: {
       copied: 'In die Zwischenablage kopiert!',
       saved: 'Datei erfolgreich gespeichert!',
@@ -230,7 +235,8 @@ export default {
       resultForCase: '{{method}}, {{case}}, {{lines}} Zeilen',
       caseSensitive: 'mit Groß-/Kleinschreibung',
       caseInsensitive: 'ohne Groß-/Kleinschreibung',
-      outdated: 'Veraltet: Text oder Optionen wurden seit diesem Ergebnis geändert. Erneut sortieren, um es zu aktualisieren.',
+      // Explanation after the common short text results.outdated
+      outdated: 'Text oder Optionen wurden seit diesem Ergebnis geändert. Erneut sortieren, um es zu aktualisieren.',
       processed: '{{lines}} Zeilen sortiert',
     },
     textFilter: {

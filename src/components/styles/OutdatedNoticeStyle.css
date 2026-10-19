@@ -1,0 +1,19 @@
+/* Live region of a result's status in the result header: always mounted while a result is shown, empty while it is current */
+.result-status {
+  flex: 1;
+  min-width: 0;
+}
+
+.result-outdated-notice {
+  font-size: 0.85em;
+  color: var(--app-color-outdated);
+}
+
+/*
+ * Container of an outdated result (Paket 12 C2): a dashed outline instead of a lowered opacity, so the result text keeps
+ * its full contrast. The notice text says that the result is outdated; the outline is only an additional cue.
+ */
+.result-outdated {
+  outline: 2px dashed var(--app-color-outdated);
+  outline-offset: -2px;
+}

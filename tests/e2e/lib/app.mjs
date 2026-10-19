@@ -2,6 +2,8 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import de from '../../../src/i18n/locales/de.ts';
+import en from '../../../src/i18n/locales/en.ts';
 
 export const APP_HELPERS = `window.__t = {
   /** Currently visible page container */
@@ -1388,14 +1390,14 @@ export async function checkLineEndings(page, r, label, errorsSince) {
 }
 
 /**
- * Holds worker answers while `__t.sortGate.on` (installed on `Worker.prototype.onmessage`, so also pooled workers of
+ * Holds worker answers while `__t.workerGate.on` (installed on `Worker.prototype.onmessage`, so also pooled workers of
  * BaseService are covered): a test starts a sort, changes the input while the answer is held and then delivers it late,
  * unchanged or replaced by other data. Deterministic: the answer arrives exactly when the test releases it.
  */
-const SORT_GATE_INSTALL = `(() => {
-  if (__t.sortGate) return true;
+const WORKER_GATE_INSTALL = `(() => {
+  if (__t.workerGate) return true;
   const desc = Object.getOwnPropertyDescriptor(Worker.prototype, 'onmessage');
-  __t.sortGate = { on: false, held: [], desc };
+  __t.workerGate = { on: false, held: [], desc };
   Object.defineProperty(Worker.prototype, 'onmessage', {
     configurable: true,
     enumerable: desc.enumerable,
@@ -1403,17 +1405,17 @@ const SORT_GATE_INSTALL = `(() => {
     set(fn) {
       const worker = this;
       desc.set.call(this, typeof fn === 'function'
-        ? (event) => (__t.sortGate?.on ? __t.sortGate.held.push({ fn, worker, event }) : fn.call(worker, event))
+        ? (event) => (__t.workerGate?.on ? __t.workerGate.held.push({ fn, worker, event }) : fn.call(worker, event))
         : fn);
     },
   });
   return true;
 })()`;
-const SORT_GATE_UNINSTALL = `(() => { Object.defineProperty(Worker.prototype, 'onmessage', __t.sortGate.desc); __t.sortGate = null; return true; })()`;
+const WORKER_GATE_UNINSTALL = `(() => { Object.defineProperty(Worker.prototype, 'onmessage', __t.workerGate.desc); __t.workerGate = null; return true; })()`;
 /** Delivers the held answers (or `data` instead of them), then lets promises, React and one frame run. */
-const SORT_GATE_RELEASE = `async (data) => {
-  const held = __t.sortGate.held.splice(0);
-  __t.sortGate.on = false;
+const WORKER_GATE_RELEASE = `async (data) => {
+  const held = __t.workerGate.held.splice(0);
+  __t.workerGate.on = false;
   held.forEach((h) => h.fn.call(h.worker, data === undefined ? h.event : { data }));
   for (let i = 0; i < 3; i++) await new Promise((r) => setTimeout(r, 0));
   await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
@@ -1433,17 +1435,17 @@ async function checkSortInputChangedWhileRunning(page, r, label, ui) {
   /** Starts a sort whose worker answer is held; true once it is held. */
   const startHeld = async () => {
     await snacks();
-    await page.eval(`__t.sortGate.on = true; __t.page().querySelector('.sort-button').click(); true`);
-    return page.waitFor(`__t.sortGate.held.length === 1`, 8000);
+    await page.eval(`__t.workerGate.on = true; __t.page().querySelector('.sort-button').click(); true`);
+    return page.waitFor(`__t.workerGate.held.length === 1`, 8000);
   };
-  const release = (data) => page.eval(`(${SORT_GATE_RELEASE})(${data === undefined ? 'undefined' : json(data)})`);
+  const release = (data) => page.eval(`(${WORKER_GATE_RELEASE})(${data === undefined ? 'undefined' : json(data)})`);
   /** The page state after a late answer of an outdated job: nothing changed, nothing reported, not loading. */
   const unchanged = async (shownBefore) => {
     const state = { result: await result(), outdated: await outdated(), busy: await busy(), snacks: await snacks() };
     return { ok: state.result === shownBefore && state.outdated && state.busy === 'false' && state.snacks.length === 0, state };
   };
 
-  await page.eval(SORT_GATE_INSTALL);
+  await page.eval(WORKER_GATE_INSTALL);
   await selectMethod('alphabetical');
   await setCase(true);
   await loadFile('b\na');
@@ -1497,11 +1499,11 @@ async function checkSortInputChangedWhileRunning(page, r, label, ui) {
   await loadFile('s\nr');
   await snacks();
   await sort(); // gate is still on: this answer is held too
-  await page.waitFor(`__t.sortGate.held.length === 2`, 8000);
+  await page.waitFor(`__t.workerGate.held.length === 2`, 8000);
   // Deliver the newer answer first, then the outdated one
-  await page.eval(`(() => { const [older, newer] = __t.sortGate.held.splice(0); __t.sortGate.on = false; newer.fn.call(newer.worker, newer.event); older.fn.call(older.worker, older.event); return true; })()`);
+  await page.eval(`(() => { const [older, newer] = __t.workerGate.held.splice(0); __t.workerGate.on = false; newer.fn.call(newer.worker, newer.event); older.fn.call(older.worker, older.event); return true; })()`);
   const newerDone = await waitForResult('r\ns');
-  await page.eval(`(${SORT_GATE_RELEASE})()`);
+  await page.eval(`(${WORKER_GATE_RELEASE})()`);
   const newerSnacks = await snacks();
   r.check(
     `${label}: Sort outdated answer after a newer valid sort changes nothing`,
@@ -1525,7 +1527,165 @@ async function checkSortInputChangedWhileRunning(page, r, label, ui) {
     json(applied)
   );
 
-  await page.eval(SORT_GATE_UNINSTALL);
+  await page.eval(WORKER_GATE_UNINSTALL);
+}
+
+const LOCALES = { de: de.translation, en: en.translation };
+
+/**
+ * WCAG contrast of `el`'s text against everything behind it: the backgrounds of all ancestors are composited (alpha), the
+ * opacity of the element and its ancestors is reported separately (an outdated result must not be dimmed by it).
+ * `color` selects the foreground: 'color' (text) or 'outline' (outline color against the element's own background).
+ */
+const CONTRAST = `(el, color = 'color') => {
+  const parse = (c) => { const p = c.match(/[\\d.]+/g).map(Number); return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1]; };
+  const over = (top, bottom) => [0, 1, 2].map((i) => top[i] * top[3] + bottom[i] * (1 - top[3])).concat(1);
+  const chain = [];
+  for (let e = el; e; e = e.parentElement) chain.unshift(e);
+  let bg = [255, 255, 255, 1];
+  let opacity = 1;
+  for (const e of chain) {
+    const s = getComputedStyle(e);
+    bg = over(parse(s.backgroundColor), bg);
+    opacity *= Number(s.opacity);
+  }
+  const fg = over(parse(color === 'outline' ? getComputedStyle(el).outlineColor : getComputedStyle(el).color), bg);
+  const lum = (c) => {
+    const [r, g, b] = c.slice(0, 3).map((v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; });
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  };
+  const [hi, lo] = [lum(fg), lum(bg)].sort((x, y) => y - x);
+  return { ratio: Math.round(((hi + 0.05) / (lo + 0.05)) * 100) / 100, opacity, fg: fg.slice(0, 3).map(Math.round), bg: bg.slice(0, 3).map(Math.round) };
+}`;
+
+/**
+ * Paket 12 C2: the common outdated notice on the Sort page. Never computed: no result, no notice. A current result has
+ * an empty, permanently mounted live region (same DOM node through every status change); an outdated one has the
+ * translated text in it, the result refers to it with `aria-describedby` and its container is marked. Only relevant
+ * changes mark the result (not the case option of line length), returning to the request clears the mark, the outdated
+ * result stays copyable, and notice, result text and outline are readable in the light and the dark theme.
+ */
+async function checkSortOutdatedNotice(page, r, label, ui) {
+  const { loadFile, selectMethod, sort, result, waitForResult } = ui;
+  const json = (value) => JSON.stringify(value);
+
+  // A fresh Sort page (the page is unmounted on navigation): nothing was computed on it yet
+  await page.eval(`__t.nav('about'); true`);
+  await sleepMs(200);
+  await page.eval(`__t.nav('sort'); true`);
+  await sleepMs(250);
+  const lang = (await page.eval(`__t.page().querySelector('.sort-button span').textContent`)) === LOCALES.de.sortText.process ? 'de' : 'en';
+  const texts = LOCALES[lang];
+  const outdatedText = `${texts.results.outdated} – ${texts.sortText.outdated}`;
+
+  const state = () =>
+    page.eval(`(() => {
+      const area = __t.page().querySelector('textarea.result');
+      const status = __t.page().querySelector('.result-status');
+      const notice = __t.page().querySelector('.sort-result-outdated');
+      const describedBy = area?.getAttribute('aria-describedby') ?? null;
+      return {
+        result: !!area,
+        status: status ? { role: status.getAttribute('role'), live: status.getAttribute('aria-live'), text: status.textContent } : null,
+        sameStatusNode: !!status && status === __t.sortStatusNode,
+        notice: notice ? { text: notice.textContent, inStatus: status?.contains(notice) ?? false } : null,
+        describedBy: describedBy ? describedBy.split(' ').map((id) => document.getElementById(id)?.textContent ?? '#missing').join(' ') : null,
+        marked: !!__t.page().querySelector('.scroll-box.result-outdated'),
+        pageText: __t.page().innerText.includes(${json(texts.results.outdated)}),
+      };
+    })()`);
+  /** Current result: empty live region, no notice, no description, no mark. */
+  const isCurrent = (s) =>
+    s.result && s.status?.role === 'status' && s.status.live === 'polite' && s.status.text === '' && s.sameStatusNode && !s.notice && s.describedBy === null && !s.marked;
+  /** Outdated result: the translated text in the (same) live region, described by it, marked. */
+  const isOutdated = (s) =>
+    s.result && s.sameStatusNode && s.status?.text === outdatedText && s.notice?.text === outdatedText && s.notice.inStatus && s.describedBy === outdatedText && s.marked;
+  const toggleIgnoredCase = () =>
+    page.eval(`(() => { const i = __t.page().querySelector('.input-box input[type=checkbox]'); i.disabled = false; i.click(); i.disabled = true; return i.disabled; })()`);
+
+  // 1. Never computed
+  let s = await state();
+  r.check(`${label}: Sort never computed: no result, no status, no outdated notice`, !s.result && s.status === null && !s.notice && !s.pageText, json(s));
+
+  // 2. Sorted: result, empty live region
+  await selectMethod('alphabetical');
+  await loadFile('b\na');
+  await sort();
+  const sorted = await waitForResult('a\nb');
+  await page.eval(`__t.sortStatusNode = __t.page().querySelector('.result-status'); true`);
+  s = await state();
+  r.check(`${label}: Sort result shown: empty live region (role=status, aria-live=polite), no notice`, sorted && isCurrent(s), json(s));
+
+  // 3. Text changed: notice with the translated text, assigned with aria-describedby, same live region
+  await loadFile('b\na\nc');
+  s = await state();
+  r.check(`${label}: Sort text changed: "${texts.results.outdated}" shown, described by, same live region, result kept`, isOutdated(s) && (await result()) === 'a\nb', json(s));
+
+  // 6. Back to the request of the result: current again, result unchanged
+  await loadFile('b\na');
+  s = await state();
+  r.check(`${label}: Sort back to the original text: notice removed, result kept`, isCurrent(s) && (await result()) === 'a\nb', json(s));
+
+  // 4. Method changed: outdated; back: current
+  await selectMethod('alphabeticalReverse');
+  const methodOutdated = isOutdated(await state());
+  await selectMethod('alphabetical');
+  s = await state();
+  r.check(`${label}: Sort method changed: outdated; method back: current`, methodOutdated && isCurrent(s), json(s));
+
+  // 5. The case option of line length is ignored: no notice; a relevant change afterwards still marks it
+  await selectMethod('lengthAsc');
+  await sort();
+  const lengthDone = await waitForResult('b\na');
+  const disabled = await toggleIgnoredCase();
+  const afterIgnored = await state();
+  await toggleIgnoredCase();
+  await selectMethod('random');
+  const afterMethod = await state();
+  r.check(
+    `${label}: Sort ignored case option (line length): no notice; another method: notice`,
+    lengthDone && disabled && isCurrent(afterIgnored) && isOutdated(afterMethod),
+    json({ afterIgnored, afterMethod })
+  );
+
+  // 8. The outdated result stays copyable (exactly the shown result)
+  await page.eval(`__t.captureCopy(); __t.page().querySelector('.result-header .copy-button').click(); true`);
+  await page.waitFor(`__t.copied !== null`, 3000);
+  const copied = await page.eval('__t.copied');
+  await page.eval(`__t.releaseCopy(); true`);
+  r.check(`${label}: Sort outdated result is copyable`, copied === 'b\na' && isOutdated(await state()), json(copied));
+
+  // 11. Contrast of the outdated notice, the result text and the outline in both themes (opacity must not dim the result)
+  const theme = await page.eval(`document.documentElement.getAttribute('data-theme')`);
+  for (const name of ['light', 'dark']) {
+    await page.eval(`document.documentElement.setAttribute('data-theme', '${name}'); document.activeElement?.blur(); true`);
+    await sleepMs(500); // the textareas fade their colors (transition 0.3s)
+    const measured = await page.eval(`(() => {
+      const contrast = ${CONTRAST};
+      return {
+        notice: contrast(__t.page().querySelector('.sort-result-outdated')),
+        result: contrast(__t.page().querySelector('textarea.result')),
+        outline: contrast(__t.page().querySelector('.scroll-box.result-outdated'), 'outline'),
+      };
+    })()`);
+    r.check(
+      `${label}: Sort outdated result in the ${name} theme: notice and result text >= 4.5:1, outline >= 3:1, not dimmed`,
+      measured.notice.ratio >= 4.5 && measured.result.ratio >= 4.5 && measured.outline.ratio >= 3 && measured.result.opacity === 1 && measured.notice.opacity === 1,
+      `notice ${measured.notice.ratio}:1, result ${measured.result.ratio}:1, outline ${measured.outline.ratio}:1, opacity ${measured.result.opacity} ${json(measured)}`
+    );
+  }
+  await page.eval(`document.documentElement.setAttribute('data-theme', ${json(theme)}); true`);
+  await sleepMs(400);
+
+  // 7. Sorted again (alphabetical, still outdated before the click): current, empty live region (still the same node)
+  await selectMethod('alphabetical');
+  const beforeResort = isOutdated(await state());
+  await sort();
+  const resorted = await waitForResult('a\nb');
+  s = await state();
+  r.check(`${label}: Sort sorted again: notice removed, same live region`, beforeResort && resorted && isCurrent(s), json(s));
+
+  await page.eval(`delete __t.sortStatusNode; true`);
 }
 
 // Golden sort results of Paket 9 C1, checked in the real UI (Paket 9 C2). `methods` is the order of the dropdown.
@@ -1683,6 +1843,7 @@ export async function checkSort(page, r, label, errorsSince) {
   r.check(`${label}: Sort 100 000 lines (natural) in the worker`, bigDone && bigLines === 100000, `lines=${bigLines}`);
 
   await checkSortInputChangedWhileRunning(page, r, label, { loadFile, selectMethod, setCase, sort, result, waitForResult, outdated, snacks });
+  await checkSortOutdatedNotice(page, r, label, { loadFile, selectMethod, sort, result, waitForResult });
 
   r.check(`${label}: Sort checks without errors`, errorsSince(n).length === 0, json(errorsSince(n)));
 

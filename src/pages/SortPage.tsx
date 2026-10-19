@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef, useMemo, useEffect } from 'react';
+import { useState, useCallback, useRef, useMemo, useEffect, useId } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowDownUp } from 'lucide-react';
 import IconRoundedButton from '../components/IconRoundedButton';
@@ -6,6 +6,7 @@ import { SvgIconReload } from '../components/SvgIcons';
 import Checkbox from '../components/Checkbox';
 import CustomSelect from '../components/CustomSelect';
 import CopyButton from '../components/CopyButton';
+import { OutdatedNotice, outdatedDescribedBy } from '../components/OutdatedNotice';
 import ScrollableContainer from '../components/ScrollableContainer';
 import OpenFileButton from '../components/OpenFileButton';
 import { FileImport, importingTextareaProps } from '../hooks/useFileImport';
@@ -52,6 +53,7 @@ export default function SortPage({ sourceText, setSourceText, sourceImport, visi
   const current: SortRequest = { sourceText, sortMethod, caseSensitive };
   // The shown result stays visible (it is the last valid one and can still be copied), but marked as outdated
   const outdated = shown !== null && !sameSortRequest(shown.request, current);
+  const outdatedId = useId();
 
   /**
    * Text and options as currently entered, updated on every render. A job compares its request with it when its answer
@@ -198,18 +200,15 @@ export default function SortPage({ sourceText, setSourceText, sourceImport, visi
             </div>
             <div className="content flex-column">
               <div className="result-header">
-                {outdated && (
-                  <span className="sort-result-outdated" role="status">
-                    {t('sortText.outdated')}
-                  </span>
-                )}
+                <OutdatedNotice outdated={outdated} id={outdatedId} hint={t('sortText.outdated')} className="sort-result-outdated" />
                 <CopyButton toCopy={shown.text} />
               </div>
-              <div className="scroll-box">
+              <div className={`scroll-box ${outdated ? 'result-outdated' : ''}`}>
                 <textarea
                   value={shown.text}
                   readOnly
-                  className={`result ${outdated ? 'outdated' : ''}`}
+                  aria-describedby={outdatedDescribedBy(outdated, outdatedId)}
+                  className="result"
                   placeholder={t('sortText.resultPlaceholder')}
                 />
               </div>

@@ -25,9 +25,11 @@ import {
   waitForHttp,
 } from './lib/harness.mjs';
 
-// Targeted run: E2E_ONLY=file-io runs only the start checks and checkFileIo (Paket 11)
+// Targeted runs: E2E_ONLY=file-io runs only the start checks and checkFileIo (Paket 11), E2E_ONLY=stale only the start
+// checks and the outdated-result checks (Paket 12; so far the Sort checks)
 const ONLY = process.env.E2E_ONLY;
-if (ONLY && ONLY !== 'file-io') throw new Error(`Unknown E2E_ONLY=${ONLY} (supported: file-io)`);
+const ONLY_VALUES = ['file-io', 'stale'];
+if (ONLY && !ONLY_VALUES.includes(ONLY)) throw new Error(`Unknown E2E_ONLY=${ONLY} (supported: ${ONLY_VALUES.join(', ')})`);
 const modeArg = process.argv.find((a) => a.startsWith('--mode='))?.split('=')[1] ?? 'dev,preview';
 const modes = modeArg.split(',');
 const r = createReporter();
@@ -95,6 +97,10 @@ async function testApp(page, url) {
 
   if (ONLY === 'file-io') {
     await checkFileIo(page, r, 'Browser', errorsSince);
+    return;
+  }
+  if (ONLY === 'stale') {
+    await checkSort(page, r, 'JS', errorsSince);
     return;
   }
 
