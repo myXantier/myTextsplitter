@@ -11,6 +11,7 @@ import OpenFileButton from '../components/OpenFileButton';
 import { FileImport, importingTextareaProps } from '../hooks/useFileImport';
 import { fileDragClassName, useDragAndDrop } from '../hooks/useDragAndDrop';
 import { SORT_METHODS, type SortMethod } from '../utils/sortLines';
+import { sameSortRequest, sortUsesCase, type SortRequest } from '../utils/resultRequests';
 import { useBackendProcessor } from '../hooks/useBackendProcessor';
 import { BaseService } from '../services/BaseService';
 import { countLines } from '../services/SortService';
@@ -24,20 +25,6 @@ interface SortPageProps {
   sourceImport: FileImport;
   visible?: boolean;
 }
-
-/** Text and options a sort result belongs to. */
-interface SortRequest {
-  sourceText: string;
-  sortMethod: SortMethod;
-  caseSensitive: boolean;
-}
-
-/** Only alphabetical and natural sorting compare letters; line length and random ignore the case option. */
-const usesCase = (method: SortMethod) => method.startsWith('alphabetical') || method.startsWith('natural');
-
-/** Same text and the options that matter for the method (the case option only where it is used). */
-const sameRequest = (a: SortRequest, b: SortRequest) =>
-  a.sourceText === b.sourceText && a.sortMethod === b.sortMethod && (!usesCase(a.sortMethod) || a.caseSensitive === b.caseSensitive);
 
 export default function SortPage({ sourceText, setSourceText, sourceImport, visible }: SortPageProps) {
   const { t } = useTranslation();
@@ -64,7 +51,7 @@ export default function SortPage({ sourceText, setSourceText, sourceImport, visi
 
   const current: SortRequest = { sourceText, sortMethod, caseSensitive };
   // The shown result stays visible (it is the last valid one and can still be copied), but marked as outdated
-  const outdated = shown !== null && !sameRequest(shown.request, current);
+  const outdated = shown !== null && !sameSortRequest(shown.request, current);
 
   /**
    * Text and options as currently entered, updated on every render. A job compares its request with it when its answer
@@ -80,7 +67,7 @@ export default function SortPage({ sourceText, setSourceText, sourceImport, visi
   // the shown result stays (marked outdated). A case change that the running method ignores changes nothing.
   useEffect(() => {
     const running = runningRequest.current;
-    if (running && !sameRequest(running, { sourceText, sortMethod, caseSensitive })) {
+    if (running && !sameSortRequest(running, { sourceText, sortMethod, caseSensitive })) {
       jobCounter.current++;
       runningRequest.current = null;
       setIsSorting(false);
@@ -107,7 +94,7 @@ export default function SortPage({ sourceText, setSourceText, sourceImport, visi
     const job = ++jobCounter.current;
     const request: SortRequest = { sourceText, sortMethod, caseSensitive };
     /** Still the latest page job and its input is still the entered one (also before the effect above has run). */
-    const isCurrent = () => job === jobCounter.current && sameRequest(request, latestRequest.current);
+    const isCurrent = () => job === jobCounter.current && sameSortRequest(request, latestRequest.current);
     runningRequest.current = request;
     setIsSorting(true);
     try {
@@ -131,7 +118,7 @@ export default function SortPage({ sourceText, setSourceText, sourceImport, visi
 
   const resultSummary = (request: SortRequest, lines: number) => {
     const values = { method: t(`sortText.methods.${request.sortMethod}`), lines };
-    return usesCase(request.sortMethod)
+    return sortUsesCase(request.sortMethod)
       ? t('sortText.resultForCase', { ...values, case: t(request.caseSensitive ? 'sortText.caseSensitive' : 'sortText.caseInsensitive') })
       : t('sortText.resultFor', values);
   };
@@ -186,9 +173,9 @@ export default function SortPage({ sourceText, setSourceText, sourceImport, visi
               <div className="input-box">
                 <Checkbox
                   label={t('sortText.options.caseSensitive')}
-                  title={usesCase(sortMethod) ? undefined : t('sortText.options.caseSensitiveHint')}
+                  title={sortUsesCase(sortMethod) ? undefined : t('sortText.options.caseSensitiveHint')}
                   checked={caseSensitive}
-                  disabled={!usesCase(sortMethod)}
+                  disabled={!sortUsesCase(sortMethod)}
                   onChange={setCaseSensitive}
                 />
               </div>
