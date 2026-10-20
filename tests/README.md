@@ -392,7 +392,8 @@ They drive the **real application** and are not part of `npm test`.
   `E2E_ONLY=file-io node tests/e2e/browser.e2e.mjs --mode=dev` (PowerShell: `$env:E2E_ONLY='file-io'`).
   `E2E_ONLY=stale` (Paket 12) runs only the start checks and the outdated-result checks: `checkSort` (worker-gated race
   checks and the outdated notice: live region, `aria-describedby`, contrast in both themes) and `checkFilterRemoveStale`
-  (request per action, relevant and ignored options, jobs invalidated by input changes, refused starts and page changes).
+  (request per action, relevant and ignored options, jobs invalidated by input changes, refused starts and page changes)
+  and `checkDiffStale` (the comparison request, display options, the word diff addition for the shown result).
 - Runs without Tauri runtime and without mocks. It checks startup, navigation, Split/Sort/Filter/Remove/Diff,
   the JS mode with its metrics, persistence of the settings across a reload, and damaged `localStorage` data.
 - Browser: found automatically (Chrome, Edge, Chromium); otherwise set `CHROME_PATH`.

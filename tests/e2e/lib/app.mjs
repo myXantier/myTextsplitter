@@ -2215,6 +2215,342 @@ export async function checkFilterRemoveStale(page, r, label, errorsSince, engine
   r.check(`${label}: Filter/Remove outdated checks without errors`, errorsSince(n).length === 0, json(errorsSince(n)));
 }
 
+/**
+ * State of the Diff result (Paket 12 C4): rendered rows and word diff segments, statistics, paging, the live region (and
+ * whether it is still the node recorded in `__t.staleStatusNode`), the description of the result, the outline, idle.
+ */
+const DIFF_STALE_STATE = `(() => {
+  const container = __t.page().querySelector('.diff-result-container');
+  const section = container?.closest('section');
+  const status = section?.querySelector('.result-status');
+  const describedBy = container?.getAttribute('aria-describedby');
+  return {
+    rows: container ? [...container.querySelectorAll('.diff-line .diff-line-content')].map((e) => e.textContent) : null,
+    words: [...__t.page().querySelectorAll('.word-diff')].map((w) => (w.classList.contains('diff-removed') ? '-' : '+') + w.textContent),
+    stats: section?.querySelector('.diff-stats')?.textContent ?? null,
+    paging: section?.querySelector('.diff-more-rows span')?.textContent ?? null,
+    split: !!section?.querySelector('.split-diff-view'),
+    status: status ? { role: status.getAttribute('role'), live: status.getAttribute('aria-live'), text: status.textContent } : null,
+    sameStatusNode: !!status && status === __t.staleStatusNode,
+    describedBy: describedBy ? describedBy.split(' ').map((id) => document.getElementById(id)?.textContent ?? '#missing').join(' ') : null,
+    marked: !!section?.classList.contains('result-outdated'),
+    opacity: section ? Number(getComputedStyle(section).opacity) * Number(getComputedStyle(container).opacity) : null,
+    idle: !!__t.page().querySelector('.mode-toggle'),
+  };
+})()`;
+
+/**
+ * Paket 12 C4: outdated results and job validity on the Diff page in the current processing mode (`engine` 'js': worker
+ * gate, 'rust': fetch gate on `get_text_diff`). A comparison belongs to its request (old text, new text, ignore
+ * whitespace); display options and the word diff are no part of it. The word diff addition is computed for the shown
+ * result (its request, not the textareas), is not invalidated by input changes, but by a new comparison.
+ */
+export async function checkDiffStale(page, r, label, errorsSince, engine) {
+  const n = page.logs.length;
+  const json = (value) => JSON.stringify(value);
+  await page.eval(`__t.nav('about'); true`);
+  await sleepMs(150);
+  await page.eval(`__t.nav('diff'); __t.watchSnacks(); true`);
+  await sleepMs(250);
+  const lang = (await page.eval(`__t.page().querySelector('.diff-button span').textContent`)) === LOCALES.de.textDiff.process ? 'de' : 'en';
+  const texts = LOCALES[lang];
+  const outdatedText = `${texts.results.outdated} – ${texts.results.outdatedHint}`;
+  const gate = processingGate(page, engine, 'get_text_diff');
+
+  const state = () => page.eval(DIFF_STALE_STATE);
+  const snacks = () => page.eval('__t.takeSnacks()');
+  const setOld = async (text) => {
+    await page.eval(`__t.set(__t.textareas()[0], ${json(text)}); true`);
+    await sleepMs(120);
+  };
+  const setNew = async (text) => {
+    await page.eval(`__t.set(__t.textareas()[1], ${json(text)}); true`);
+    await sleepMs(120);
+  };
+  const box = (labelText) => `[...__t.page().querySelectorAll('label.checkbox-wrapper')].find((l) => l.querySelector('.checkbox-label')?.textContent === ${json(labelText)}).querySelector('input')`;
+  const toggle = async (labelText) => {
+    await page.eval(`${box(labelText)}.click(); true`);
+    await sleepMs(150);
+  };
+  const wordBox = `__t.page().querySelector('.word-diff-option input')`;
+  const setWordDiff = async (value) => {
+    await page.eval(`(() => { const i = ${wordBox}; if (i.checked !== ${value}) i.click(); })(); true`);
+    await sleepMs(150);
+  };
+  const view = async (index) => {
+    await page.eval(`__t.page().querySelectorAll('.view-type-options .view-option')[${index}].click(); true`);
+    await sleepMs(150);
+  };
+  const compareClick = `__t.page().querySelector('.diff-button').click()`;
+  /** Clicks "compare", waits for the first message and the end of the processing; returns the messages */
+  const compare = async () => {
+    await snacks();
+    await page.eval(`${compareClick}; true`);
+    await page.waitFor(`__t.snackLog.length > 0 && !!__t.page().querySelector('.mode-toggle')`, 15000);
+    await sleepMs(150);
+    return snacks();
+  };
+  const copy = async () => {
+    await page.eval(`__t.captureCopy(); __t.page().querySelector('.title-actions .copy-button').click(); true`);
+    await page.waitFor(`__t.copied !== null`, 3000);
+    const copied = await page.eval('__t.copied');
+    await page.eval(`__t.releaseCopy(); true`);
+    await sleepMs(100);
+    await snacks(); // the copy confirmation is no processing message
+    return copied;
+  };
+  const isCurrent = (s, rows) =>
+    json(s.rows) === json(rows) && s.status?.role === 'status' && s.status.live === 'polite' && s.status.text === '' && s.sameStatusNode && s.describedBy === null && !s.marked;
+  const isOutdated = (s, rows) =>
+    json(s.rows) === json(rows) && s.sameStatusNode && s.status?.text === outdatedText && s.describedBy === outdatedText && s.marked && s.opacity === 1;
+  const success = (m) => m.length === 1 && m[0].startsWith('success');
+
+  const OLD_A = 'Die Katze schläft';
+  const NEW_A = 'Die Katze träumt';
+  const WORDS_A = ['-schläft', '+träumt'];
+
+  // 1. Never computed
+  let s = await state();
+  r.check(`${label}: Diff never computed: no result, no status`, s.rows === null && s.status === null, json(s));
+
+  // 2. Compared: current, empty live region
+  await view(0);
+  await setWordDiff(false);
+  await setOld(OLD_A);
+  await setNew(NEW_A);
+  let messages = await compare();
+  await page.eval(`__t.staleStatusNode = __t.page().querySelector('.diff-result-container').closest('section').querySelector('.result-status'); true`);
+  s = await state();
+  const rowsA = s.rows;
+  r.check(`${label}: Diff compared: current result, empty live region (role=status, aria-live=polite)`, success(messages) && rowsA.length === 2 && isCurrent(s, rowsA), json({ s, messages }));
+  const copiedCurrent = await copy();
+
+  // 3.-6. Old text, new text, ignore whitespace: outdated each; back: current
+  await setOld(OLD_A + ' ');
+  const oldOutdated = isOutdated(await state(), rowsA);
+  await setOld(OLD_A);
+  await setNew('Die Katze isst');
+  const newOutdated = isOutdated(await state(), rowsA);
+  await setNew(NEW_A);
+  await toggle(texts.textDiff.options.trimWhitespace);
+  const whitespaceOutdated = isOutdated(await state(), rowsA);
+  await toggle(texts.textDiff.options.trimWhitespace);
+  s = await state();
+  r.check(
+    `${label}: Diff old text, new text, ignore whitespace changed: outdated each (text "${texts.results.outdated}", described by, outline); back: current`,
+    oldOutdated && newOutdated && whitespaceOutdated && isCurrent(s, rowsA),
+    json({ oldOutdated, newOutdated, whitespaceOutdated, s })
+  );
+
+  // 7. Display options: line numbers, split view, word diff off: no outdated mark, no new comparison
+  await toggle(texts.textDiff.options.lineNumbers);
+  await view(1);
+  const splitView = await state();
+  await view(0);
+  await toggle(texts.textDiff.options.lineNumbers);
+  messages = await snacks();
+  s = await state();
+  r.check(
+    `${label}: Diff display options (line numbers, split view) leave the result current and start no comparison`,
+    splitView.split && splitView.status?.text === '' && !splitView.marked && isCurrent(s, rowsA) && messages.length === 0,
+    json({ splitView, s, messages })
+  );
+
+  // 20./21. Outdated result: copy is the shown comparison, the split view and the statistics stay usable
+  await setNew('Die Katze isst');
+  const copiedOutdated = await copy();
+  const statsBefore = (await state()).stats;
+  await view(1);
+  const outdatedSplit = await state();
+  await view(0);
+  r.check(
+    `${label}: Diff outdated result: copy is the shown comparison, split view and statistics unchanged`,
+    copiedOutdated === copiedCurrent && outdatedSplit.split && outdatedSplit.marked && outdatedSplit.stats === statsBefore && isOutdated(await state(), rowsA),
+    json({ copiedOutdated, copiedCurrent, outdatedSplit })
+  );
+
+  // 16. Word diff switched on for the outdated result: computed for its texts (not the textareas), stays outdated
+  await setWordDiff(true);
+  await page.waitFor(`(() => { const s = ${DIFF_STALE_STATE}; return s.words.length > 0 && s.idle; })()`, 8000);
+  messages = await snacks();
+  s = await state();
+  r.check(
+    `${label}: Diff word diff for an outdated result: words of the shown texts, still outdated, no message`,
+    json(s.words) === json(WORDS_A) && isOutdated(s, rowsA) && messages.length === 0,
+    json({ s, messages })
+  );
+  await setWordDiff(false);
+
+  // 8. Compared again: new result and request together
+  await setOld('x\ny');
+  await setNew('x\nz');
+  messages = await compare();
+  s = await state();
+  const rowsB = s.rows;
+  r.check(`${label}: Diff compared again: new current result`, success(messages) && json(rowsB) !== json(rowsA) && isCurrent(s, rowsB), json({ s, messages }));
+
+  // 9. Error of a current comparison (too complex): result and request stay (outdated by the new texts)
+  const lines = Array.from({ length: 12_000 }, (_, i) => `line ${i}`);
+  const BIG_OLD = lines.join('\n');
+  const BIG_NEW = [...lines].reverse().join('\n');
+  await setOld(BIG_OLD);
+  await setNew(BIG_NEW);
+  messages = await compare();
+  s = await state();
+  r.check(`${label}: Diff failed comparison (too complex): one error, shown result kept and outdated`, messages.length === 1 && messages[0].startsWith('error') && isOutdated(s, rowsB), json({ messages, s }));
+  await setOld('x\ny');
+  await setNew('x\nz');
+  r.check(`${label}: Diff back to the shown texts after the failure: current`, isCurrent(await state(), rowsB));
+
+  await gate.install();
+  // 10. Input changed while a comparison runs: late result not applied, no message
+  await setNew('x\nw');
+  let held = await gate.hold(compareClick);
+  await setNew('x\nv');
+  let released = await gate.release();
+  messages = await snacks();
+  s = await state();
+  r.check(`${label}: Diff text changed while running: late result not applied, no message, not loading`, held && released === 1 && messages.length === 0 && s.idle && isOutdated(s, rowsB), json({ s, messages }));
+
+  // 11. Late error of an invalidated comparison: no message
+  await setOld(BIG_OLD);
+  await setNew(BIG_NEW);
+  held = await gate.hold(compareClick);
+  await setOld('x\ny');
+  released = await gate.release();
+  messages = await snacks();
+  r.check(`${label}: Diff late error of an invalidated comparison: no message`, held && released === 1 && messages.length === 0, json(messages));
+  await setNew('x\nz');
+
+  // 12. A -> B -> A while running: the comparison stays invalidated
+  await setNew('x\nq');
+  held = await gate.hold(compareClick);
+  await toggle(texts.textDiff.options.trimWhitespace);
+  await toggle(texts.textDiff.options.trimWhitespace);
+  released = await gate.release();
+  messages = await snacks();
+  s = await state();
+  r.check(`${label}: Diff A -> B -> A while running: the late answer is not applied`, held && released === 1 && messages.length === 0 && isOutdated(s, rowsB), json({ s, messages }));
+
+  // 13. A newer comparison supersedes the running one (answers in reverse order)
+  held = await gate.hold(compareClick);
+  const heldBoth = await gate.hold(compareClick, 2);
+  released = await gate.release(true);
+  await page.waitFor(`!!__t.page().querySelector('.mode-toggle')`, 8000);
+  messages = await snacks();
+  s = await state();
+  const rowsQ = s.rows;
+  r.check(`${label}: Diff newer comparison wins: one result, one success`, held && heldBoth && released === 2 && json(rowsQ) !== json(rowsB) && isCurrent(s, rowsQ) && success(messages), json({ s, messages }));
+
+  // 14. R1: two empty texts refused while a comparison runs
+  await setNew('x\nr');
+  held = await gate.hold(compareClick);
+  await setOld('');
+  await setNew('');
+  await page.eval(`${compareClick}; true`);
+  await sleepMs(150);
+  released = await gate.release();
+  messages = await snacks();
+  s = await state();
+  r.check(
+    `${label}: Diff refused start (two empty texts) while running: only the refusal is reported, no late result`,
+    held && released === 1 && messages.length === 1 && messages[0].startsWith('error') && isOutdated(s, rowsQ),
+    json({ s, messages })
+  );
+
+  // 17. Word diff addition for the outdated result: further typing does not invalidate it
+  await setOld(OLD_A);
+  await setNew(NEW_A);
+  messages = await compare();
+  const rowsA2 = (await state()).rows;
+  await setNew('Die Katze isst');
+  held = await gate.hold(`${wordBox}.click()`);
+  await setOld('Der Hund');
+  await setNew('Der Hund bellt');
+  released = await gate.release();
+  await page.waitFor(`(() => { const s = ${DIFF_STALE_STATE}; return s.words.length > 0 && s.idle; })()`, 8000);
+  messages = await snacks();
+  s = await state();
+  r.check(
+    `${label}: Diff typing during the word diff addition does not invalidate it: words of the shown texts, still outdated`,
+    held && released === 1 && json(rowsA2) === json(rowsA) && json(s.words) === json(WORDS_A) && isOutdated(s, rowsA) && messages.length === 0,
+    json({ s, messages })
+  );
+  await setWordDiff(false);
+
+  // 18. A new comparison invalidates a running word diff addition
+  await setOld(OLD_A);
+  await setNew(NEW_A);
+  messages = await compare();
+  await setOld('Der Hund bellt');
+  await setNew('Der Hund schläft');
+  held = await gate.hold(`${wordBox}.click()`);
+  // The word diff switch is on now: the comparison computes it as well
+  const heldTwo = await gate.hold(compareClick, 2);
+  released = await gate.release();
+  await page.waitFor(`!!__t.page().querySelector('.mode-toggle')`, 8000);
+  messages = await snacks();
+  s = await state();
+  r.check(
+    `${label}: Diff new comparison invalidates the word diff addition: only the new comparison is shown`,
+    held && heldTwo && released === 2 && json(s.words) === json(['-bellt', '+schläft']) && s.status?.text === '' && !s.marked && success(messages),
+    json({ s, messages })
+  );
+  await setWordDiff(false);
+
+  // 19. Word diff switched on while a comparison runs: the comparison is replaced by one with word diff (same request)
+  await setOld(OLD_A);
+  await setNew(NEW_A);
+  held = await gate.hold(compareClick);
+  const heldReplacement = await gate.hold(`${wordBox}.click()`, 2);
+  released = await gate.release();
+  await page.waitFor(`(() => { const s = ${DIFF_STALE_STATE}; return s.words.length > 0 && s.idle; })()`, 8000);
+  messages = await snacks();
+  s = await state();
+  r.check(
+    `${label}: Diff word diff switched on while comparing: the replacing comparison shows the word diff, current`,
+    held && heldReplacement && released === 2 && json(s.words) === json(WORDS_A) && isCurrent(s, rowsA) && messages.every((m) => !m.startsWith('error')),
+    json({ s, messages })
+  );
+  await setWordDiff(false);
+
+  // 15. Leaving the page while a comparison runs: no late message, no result after returning
+  await setNew('Die Katze wacht');
+  held = await gate.hold(compareClick);
+  await page.eval(`__t.nav('sort'); true`);
+  await sleepMs(200);
+  released = await gate.release();
+  await sleepMs(200);
+  messages = await snacks();
+  await page.eval(`__t.nav('diff'); true`);
+  await sleepMs(250);
+  s = await state();
+  r.check(`${label}: Diff left while running: no late message, no result after returning`, held && released === 1 && messages.length === 0 && s.rows === null && s.status === null, json({ s, messages }));
+  await gate.uninstall();
+
+  // 21. Paging of an outdated result: more rows can be shown, the mark stays
+  const many = Array.from({ length: 2_500 }, (_, i) => `row ${i}`);
+  await setOld(many.join('\n'));
+  await setNew(['changed', ...many.slice(1)].join('\n'));
+  messages = await compare();
+  await page.eval(`__t.staleStatusNode = __t.page().querySelector('.diff-result-container').closest('section').querySelector('.result-status'); true`);
+  await setNew('other');
+  const pagedBefore = await state();
+  await page.eval(`__t.page().querySelector('.diff-more-rows button').click(); true`);
+  await sleepMs(300);
+  const pagedAfter = await state();
+  r.check(
+    `${label}: Diff paging of an outdated result: more rows shown, still outdated`,
+    success(messages) && pagedBefore.paging !== null && pagedAfter.rows.length > pagedBefore.rows.length && pagedAfter.marked && pagedAfter.status?.text === outdatedText,
+    json({ before: pagedBefore.paging, after: pagedAfter.paging, rows: [pagedBefore.rows.length, pagedAfter.rows.length] })
+  );
+
+  await page.eval(`delete __t.staleStatusNode; true`);
+  await setOld('a_b');
+  await setNew('');
+  r.check(`${label}: Diff outdated checks without errors`, errorsSince(n).length === 0, json(errorsSince(n)));
+}
+
 // Golden sort results of Paket 9 C1, checked in the real UI (Paket 9 C2). `methods` is the order of the dropdown.
 const SORT_FIXTURES = JSON.parse(readFileSync(new URL('../../fixtures/sort-cases.json', import.meta.url), 'utf8'));
 const SORT_UI_CASES = [

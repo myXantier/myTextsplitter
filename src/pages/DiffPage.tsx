@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect, useId } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ArrowRight } from 'lucide-react';
 import IconRoundedButton from '../components/IconRoundedButton';
@@ -11,6 +11,7 @@ import OpenFileButton from '../components/OpenFileButton';
 import { FileImport, importingTextareaProps, useFileImport } from '../hooks/useFileImport';
 import { fileDragClassName, useDragAndDrop } from '../hooks/useDragAndDrop';
 import CopyButton from '../components/CopyButton';
+import { OutdatedNotice, outdatedDescribedBy } from '../components/OutdatedNotice';
 import { fontSizeToIconSize } from '../utils/helper';
 import useSnackbar from '../hooks/useSnackbar';
 import { isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
@@ -19,6 +20,7 @@ import { BaseService } from '../services/BaseService';
 import { buildDiffView, formatDiffText, type DiffViewCell } from '../utils/diff/viewModel';
 import type { DiffData } from '../utils/diff/result';
 import type { IntralineSkipReason } from '../utils/diff/types';
+import { sameDiffRequest, type DiffRequest } from '../utils/resultRequests';
 import './styles/DiffPageStyle.css';
 
 interface DiffPageProps {
@@ -30,11 +32,15 @@ interface DiffPageProps {
 
 type DiffViewType = 'unified' | 'split';
 
-/** The compared texts of a request (kept to recompute the same comparison with word diff). */
-interface DiffRequest {
-  sourceText: string;
-  newText: string;
-  ignoreWhitespace: boolean;
+/**
+ * Running page job: a comparison of `request` (the entered texts when it started), or the word diff addition of the
+ * shown result (`request` is the request of that result, fixed: the edited textareas do not matter for it).
+ */
+interface DiffJob {
+  job: number;
+  kind: 'comparison' | 'wordDiffAddition';
+  request: DiffRequest;
+  wordDiff: boolean;
 }
 
 /** Rows rendered at once; more on request (large diffs would otherwise create tens of thousands of DOM rows). */
@@ -57,98 +63,126 @@ export default function DiffPage({
   const oldDrop = useDragAndDrop(sourceImport);
   const newDrop = useDragAndDrop(newTextImport);
   const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
-  const [diffData, setDiffData] = useState<DiffData | null>(null);
+  /** Shown result with the comparison it belongs to; a failed, superseded or outdated job never replaces it. */
+  const [shown, setShown] = useState<{ data: DiffData; request: DiffRequest } | null>(null);
   const [diffViewType, setDiffViewType] = useState<DiffViewType>('unified');
   const [showLineNumbers, setShowLineNumbers] = useState(true);
   // Optional word diff, off by default (page state only, it was never persisted)
   const [wordDiff, setWordDiff] = useState(false);
   const [rowLimit, setRowLimit] = useState(ROW_PAGE);
 
-  /** Latest requested comparison, and whether its running job computes the word diff (`null`: no job running). */
-  const lastRequest = useRef<DiffRequest | null>(null);
-  const runningWordDiff = useRef<boolean | null>(null);
-  /** Comparison of the shown result (`lastRequest` falls back to it when a running comparison is cancelled). */
-  const shownRequest = useRef<DiffRequest | null>(null);
-  /** Page job number: only the latest job may change the result or show a message. */
+  /** Page job number: only the latest job may change the result or show a message (Paket 12, same as Sort). */
   const jobCounter = useRef(0);
+  /** The running page job (null when none runs). */
+  const running = useRef<DiffJob | null>(null);
+  /** Shown result as of the last render: a word diff addition is only applied to the result it was started for. */
+  const shownRef = useRef(shown);
+  shownRef.current = shown;
+  /**
+   * Texts and option as currently entered, updated on every render; a comparison compares its request with it when its
+   * answer arrives (also before the effect below has run). The word diff and the display options are no inputs.
+   */
+  const inputs: DiffRequest = { sourceText, newText, ignoreWhitespace };
+  const latestInputs = useRef(inputs);
+  latestInputs.current = inputs;
+
+  // The shown result stays visible (and copyable), but marked as outdated when its texts are no longer the entered ones
+  const outdated = shown !== null && !sameDiffRequest(shown.request, inputs);
+  const outdatedId = useId();
 
   const { diffText } = useBackendProcessor();
   const fontSize = usePermanentSetting('fontSize');
 
   /**
-   * Runs a comparison. Only the latest job is delivered (BaseService: an older one ends as `superseded`), so a late
-   * result never replaces a newer one; in addition an outdated page job changes no state and shows no message. The word
-   * diff is shown only while the switch is on (`view` below), so a result with word diff that arrives after the switch
-   * was turned off is displayed without it.
+   * Makes the running page job outdated (a comparison or a word diff addition): it changes no state and shows no message,
+   * and it is stopped (worker terminated; a Rust job cannot be stopped, its late result is discarded:
+   * `BaseService.cancelPending`, its promise ends as `superseded`). The shown result stays. A job, once outdated, stays
+   * outdated; switching the word diff on afterwards uses the shown comparison.
    */
-  const runDiff = useCallback(
-    async (request: DiffRequest, withWordDiff: boolean, announce: boolean) => {
+  const invalidate = useCallback(() => {
+    jobCounter.current++;
+    if (running.current) {
+      running.current = null;
+      BaseService.cancelPending('diff');
+    }
+  }, []);
+
+  /**
+   * Runs a job of the diff worker or the Rust command. Only the latest job is delivered (BaseService: an older one ends as
+   * `superseded`); in addition only the latest page job that is still valid changes the result or shows a message:
+   * a comparison while its request is the entered one, a word diff addition while the result it was started for is
+   * still shown. The word diff is shown only while the switch is on (`view` below), so a result with word diff that
+   * arrives after the switch was turned off is displayed without it.
+   */
+  const runJob = useCallback(
+    async (kind: DiffJob['kind'], request: DiffRequest, withWordDiff: boolean, announce: boolean) => {
       const job = ++jobCounter.current;
-      lastRequest.current = request;
-      runningWordDiff.current = withWordDiff;
+      const forResult = shownRef.current;
+      const isCurrent = () =>
+        job === jobCounter.current &&
+        (kind === 'comparison' ? sameDiffRequest(request, latestInputs.current) : shownRef.current?.request === forResult?.request);
+      running.current = { job, kind, request, wordDiff: withWordDiff };
       try {
         const result = await diffText({
           sourceText: request.sourceText,
           mainParam: request.newText,
           configParams: { caseSensitive: true, ignoreWhitespace: request.ignoreWhitespace, wordDiff: withWordDiff },
         });
-        if (job !== jobCounter.current) return;
+        if (!isCurrent()) return;
         // Validated in DiffService (line diff, word diff of it, present exactly when requested); on failure the previous diff stays
-        setDiffData(unwrapResult(window.myResultConverter(result, 'Diff')));
-        shownRequest.current = request;
+        setShown({ data: unwrapResult(window.myResultConverter(result, 'Diff')), request });
         if (announce) snackbar.success(t('textDiff.processed'));
       } catch (error) {
-        // A superseded or cancelled job was replaced by a newer action: nothing to report
-        if (job === jobCounter.current && !isSuperseded(error)) snackbar.error(processingErrorMessage(error, t));
+        // A superseded or outdated job was replaced by a newer action or an input change: nothing to report
+        if (isCurrent() && !isSuperseded(error)) snackbar.error(processingErrorMessage(error, t));
       } finally {
-        if (job === jobCounter.current) runningWordDiff.current = null;
+        if (job === jobCounter.current) running.current = null;
       }
     },
     [diffText, snackbar, t],
   );
 
-  /**
-   * Makes a running comparison outdated (a newer action replaced it): the worker job is terminated, a Rust job (cannot
-   * be stopped) has its late result discarded (`BaseService.cancelPending`, its promise ends as `superseded`), and the
-   * page ignores it. The shown result stays; switching the word diff on afterwards uses the shown comparison.
-   */
-  const cancelRunningDiff = useCallback(() => {
-    jobCounter.current++;
-    runningWordDiff.current = null;
-    lastRequest.current = shownRequest.current;
-    BaseService.cancelPending('diff');
-  }, []);
+  // A text or the whitespace option changed while a comparison runs: it compares texts that are no longer entered. A word
+  // diff addition belongs to the shown result, not to the textareas: input changes leave it running.
+  useEffect(() => {
+    const job = running.current;
+    if (job?.kind === 'comparison' && !sameDiffRequest(job.request, { sourceText, newText, ignoreWhitespace })) invalidate();
+  }, [sourceText, newText, ignoreWhitespace, invalidate]);
+
+  // Leaving the page: a running comparison or word diff addition neither changes state nor shows a message elsewhere
+  useEffect(() => invalidate, [invalidate]);
 
   const handleDiffText = useCallback(() => {
     // One side may be empty (everything added or removed); comparing two empty texts shows nothing
     if (!sourceText && !newText) {
-      // The result of a still running older comparison would no longer match the input
-      cancelRunningDiff();
+      // The result of a still running older job would no longer match the input (R1); the shown result stays
+      invalidate();
       snackbar.error(t('errors.textRequired'));
       return;
     }
-    void runDiff({ sourceText, newText, ignoreWhitespace }, wordDiff, true);
-  }, [sourceText, newText, ignoreWhitespace, wordDiff, runDiff, cancelRunningDiff, snackbar, t]);
+    void runJob('comparison', { sourceText, newText, ignoreWhitespace }, wordDiff, true);
+  }, [sourceText, newText, ignoreWhitespace, wordDiff, runJob, invalidate, snackbar, t]);
 
   /**
    * Switching the word diff on computes it if it is missing (same texts as the comparison, not the edited textareas):
-   * while a comparison without word diff runs, for that running comparison (it is replaced); otherwise for the shown
-   * result, never for a comparison that failed. Switching it off only hides it.
+   * while a comparison without word diff runs, for that running comparison (it is replaced, same request); otherwise for
+   * the shown result (an addition, the result keeps its request and its status), never for a comparison that failed.
+   * Switching it off only hides it.
    */
   const handleWordDiffChange = (checked: boolean) => {
     setWordDiff(checked);
     if (!checked) return;
-    const running = runningWordDiff.current;
-    if (running === true) return;
-    if (running === false) {
-      if (lastRequest.current) void runDiff(lastRequest.current, true, false);
+    const job = running.current;
+    if (job?.wordDiff) return;
+    if (job) {
+      void runJob('comparison', job.request, true, false);
       return;
     }
-    if (!diffData?.intraline && shownRequest.current) void runDiff(shownRequest.current, true, false);
+    if (shown && !shown.data.intraline) void runJob('wordDiffAddition', shown.request, true, false);
   };
 
   // Only rebuilt when the result or the word diff switch changes (not on every keystroke in the textareas)
-  const view = useMemo(() => (diffData ? buildDiffView(diffData.document, wordDiff ? diffData.intraline : null) : null), [diffData, wordDiff]);
+  const view = useMemo(() => (shown ? buildDiffView(shown.data.document, wordDiff ? shown.data.intraline : null) : null), [shown, wordDiff]);
   const copyText = useMemo(() => (view ? formatDiffText(view) : ''), [view]);
   useEffect(() => setRowLimit(ROW_PAGE), [view]);
 
@@ -373,10 +407,11 @@ export default function DiffPage({
         </section>
 
         {view && stats && view.unified.length > 0 && (
-          <section className="app-section flex-1">
+          <section className={`app-section flex-1 ${outdated ? 'result-outdated' : ''}`}>
             <div className="title diff-result-title">
               <span className="left">{t('textDiff.result')}</span>
               <div className="title-actions">
+                <OutdatedNotice outdated={outdated} id={outdatedId} />
                 <CopyButton toCopy={copyText} />
                 <span
                   className="diff-stats"
@@ -410,7 +445,7 @@ export default function DiffPage({
                 </div>
               )}
 
-              <div className="diff-result-container">
+              <div className="diff-result-container" aria-describedby={outdatedDescribedBy(outdated, outdatedId)}>
                 {diffViewType === 'unified' ? renderUnifiedDiffView() : renderSplitDiffView()}
               </div>
 

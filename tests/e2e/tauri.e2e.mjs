@@ -11,7 +11,7 @@ import { copyFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, listTargets, sleep } from './lib/cdp.mjs';
-import { SPLIT_CASES, checkCombineState, checkFileIo, checkFilterRemoveStale, checkSplitIntegrity, checkMatchPreview, checkPatternRule, checkSplitFlags, checkLineEndings, checkSort, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
+import { SPLIT_CASES, checkCombineState, checkFileIo, checkFilterRemoveStale, checkDiffStale, checkSplitIntegrity, checkMatchPreview, checkPatternRule, checkSplitFlags, checkLineEndings, checkSort, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
@@ -27,7 +27,7 @@ import {
 
 const r = createReporter();
 // Targeted runs: E2E_ONLY=file-io starts the app once and runs only the start checks and checkFileIo (Paket 11),
-// E2E_ONLY=stale only the start checks and the outdated-result checks in Rust and JS mode (Paket 12: Sort, Filter, Remove)
+// E2E_ONLY=stale only the start checks and the outdated-result checks in Rust and JS mode (Paket 12: Sort, Filter, Remove, Diff)
 const ONLY = process.env.E2E_ONLY;
 const ONLY_VALUES = ['file-io', 'stale'];
 if (ONLY && !ONLY_VALUES.includes(ONLY)) throw new Error(`Unknown E2E_ONLY=${ONLY} (supported: ${ONLY_VALUES.join(', ')})`);
@@ -185,6 +185,7 @@ async function firstRun() {
   // Paket 9 C2: Sort has no Rust command, it runs the TypeScript sort in the sort worker also in Rust mode
   await checkSort(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
   await checkFilterRemoveStale(main, r, 'Rust backend', (from) => errorsIn(main.logs, from), 'rust');
+  await checkDiffStale(main, r, 'Rust backend', (from) => errorsIn(main.logs, from), 'rust');
   // Paket 11 Phase B: file import in the WebView2 (independent of the processing mode, so once); the drop is the CDP drag
   // into the renderer, not the native OS drop (see tests/README.md)
   await checkFileIo(main, r, 'Tauri', (from) => errorsIn(main.logs, from));
@@ -214,6 +215,7 @@ async function firstRun() {
   await checkCombineState(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
   await checkSort(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
   await checkFilterRemoveStale(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from), 'js');
+  await checkDiffStale(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from), 'js');
   await main.eval(`__t.nav('split'); true`);
   await sleep(200);
   await main.eval(`__t.page().querySelector('.mode-toggle').click(); true`);
@@ -299,10 +301,12 @@ async function staleOnly() {
   };
   await checkSort(main, r, 'Rust backend', (from) => errorsIn(main.logs, from));
   await checkFilterRemoveStale(main, r, 'Rust backend', (from) => errorsIn(main.logs, from), 'rust');
+  await checkDiffStale(main, r, 'Rust backend', (from) => errorsIn(main.logs, from), 'rust');
   await toggleMode();
   r.check('Toggle to JS mode', await main.eval(`!!__t.page().querySelector('.mode-toggle .fallback-icon')`));
   await checkSort(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from));
   await checkFilterRemoveStale(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from), 'js');
+  await checkDiffStale(main, r, 'JS mode on desktop', (from) => errorsIn(main.logs, from), 'js');
   await toggleMode();
   r.check('Toggle back to backend mode', await main.eval(`!!__t.page().querySelector('.mode-toggle .backend-icon')`));
   r.check('No errors in main window', errorsIn(main.logs).length === 0, formatLogs(errorsIn(main.logs)));
