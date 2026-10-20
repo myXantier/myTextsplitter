@@ -8,6 +8,7 @@ import { useSettings, useRuntimeSetting } from '../hooks/useSettings';
 import { useCombineHistoryStore } from '../hooks/useCombineHistoryStore';
 import { appendCombineColumn } from '../utils/combineColumns';
 import PageList from './PageList';
+import type { SplitRequest } from '../utils/resultRequests';
 import './styles/LeftMenuBarStyle.css';
 
 interface LeftMenuBarProps {
@@ -36,6 +37,9 @@ export default function LeftMenuBar({ setPageName }: LeftMenuBarProps) {
   const [currentPage, setCurrentPage] = useState<PageKey>(ui.appDefaultPage);
   
   const [splitResults, setSplitResults] = useState<string[][]>([]);
+  // Request the split result was computed for (Paket 12): kept with the columns across page changes; editing,
+  // deleting or moving columns does not change it
+  const [splitRequest, setSplitRequest] = useState<SplitRequest | null>(null);
 
   const usedColumns = useCombineHistoryStore(state => state.getColumns());
   const setCombineState = useCombineHistoryStore(state => state.setCombineState);
@@ -250,6 +254,8 @@ export default function LeftMenuBar({ setPageName }: LeftMenuBarProps) {
           setPage={currentPage} 
           splitResults={splitResults} 
           setSplitResults={setSplitResults}
+          splitRequest={splitRequest}
+          setSplitRequest={setSplitRequest}
         />
       </div>
     </div>

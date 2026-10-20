@@ -1,10 +1,11 @@
-import { Dispatch, SetStateAction, useCallback, useEffect, useState } from 'react';
+import { Dispatch, SetStateAction, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { SplitSquareHorizontal, TextIcon } from 'lucide-react';
 import InputText from '../components/InputText';
 import IconRoundedButton from '../components/IconRoundedButton';
 import { SvgIconReload } from '../components/SvgIcons';
 import Checkbox from '../components/Checkbox';
+import { OutdatedNotice, outdatedDescribedBy } from '../components/OutdatedNotice';
 import { ResultColumns } from './pageComponents/ResultColumns';
 import { CombineColumns } from './pageComponents/CombineColumns';
 import { ProcessingStatus } from './pageComponents/ProcessingStatus';
@@ -14,6 +15,7 @@ import { useCombineHistoryStore } from '../hooks/useCombineHistoryStore';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import { patternProblem } from '../utils/regexPattern';
 import { lineFormatOf } from '../utils/lines';
+import { sameSplitRequest, type SplitRequest } from '../utils/resultRequests';
 import { BaseService } from '../services/BaseService';
 import { ERROR_KEYS, isSuperseded, processingErrorMessage, unwrapResult } from '../services/ProcessingError';
 import ScrollableContainer from '../components/ScrollableContainer';
@@ -29,6 +31,9 @@ interface SplitPageProps {
   sourceImport: FileImport;
   splitResults: string[][];
   setSplitResults: Dispatch<SetStateAction<string[][]>>;
+  /** Request of the shown columns (kept with them in LeftMenuBar across page changes) */
+  splitRequest: SplitRequest | null;
+  setSplitRequest: Dispatch<SetStateAction<SplitRequest | null>>;
   visible?: boolean;
 }
 
@@ -40,6 +45,8 @@ export default function SplitPage({
   sourceImport,
   splitResults,
   setSplitResults,
+  splitRequest,
+  setSplitRequest,
   visible,
 }: SplitPageProps) {
   const { t } = useTranslation();
@@ -62,6 +69,8 @@ export default function SplitPage({
 
   const separator = useRuntimeSetting('separator');
   const useRegex = useRuntimeSetting('useRegex');
+  // Same rule as useBackendProcessor: 'backend' runs the split in Rust
+  const processingMode = useRuntimeSetting('processingMode');
 
   // const { undoCombine, redoCombine, canUndo, canRedo } = useCombineHistoryStore();
   const canUndo = useCombineHistoryStore((state) => state.canUndo());
@@ -69,6 +78,48 @@ export default function SplitPage({
   const canRedo = useCombineHistoryStore((state) => state.canRedo());
   const redoCombine = useCombineHistoryStore((state) => state.redoCombine);
   const setLineFormat = useCombineHistoryStore((state) => state.setLineFormat);
+
+  /** Page job number: only the latest job may change the result or show a message (Paket 12, same as Sort). */
+  const jobCounter = useRef(0);
+  /** Request of the running page job (null when none runs). */
+  const runningRequest = useRef<SplitRequest | null>(null);
+  /**
+   * Text and split options as currently entered (page and settings modal), updated on every render; a job compares its
+   * request with it when its answer arrives (also before the effect below has run). `trimLine` has no effect on the
+   * split and is no input; neither are the display options and the combine separator.
+   */
+  const inputs: SplitRequest = { sourceText, delimiter: separator, useRegex, trimParts, keepEmptyLines, processingMode };
+  const latestInputs = useRef(inputs);
+  latestInputs.current = inputs;
+
+  // The shown columns stay visible and usable (also after a page change), but marked as outdated when their request is
+  // no longer the entered one
+  const outdated = splitResults.length > 0 && splitRequest !== null && !sameSplitRequest(splitRequest, inputs);
+  const outdatedId = useId();
+
+  /**
+   * Makes the running page job outdated: it changes neither the columns nor their request or line format and shows no
+   * message, and it is stopped (worker terminated, BaseService ends it as `superseded`; a Rust job has its late answer
+   * discarded). A job, once outdated, stays outdated.
+   */
+  const invalidate = useCallback(() => {
+    jobCounter.current++;
+    if (runningRequest.current) {
+      runningRequest.current = null;
+      setIsLoading(false);
+      BaseService.cancelPending('split');
+    }
+  }, []);
+
+  // A text or split option the running job uses changed (also in the settings modal): it splits an input that is no
+  // longer entered
+  useEffect(() => {
+    const running = runningRequest.current;
+    if (running && !sameSplitRequest(running, { sourceText, delimiter: separator, useRegex, trimParts, keepEmptyLines, processingMode })) invalidate();
+  }, [sourceText, separator, useRegex, trimParts, keepEmptyLines, processingMode, invalidate]);
+
+  // Leaving the page: a running split neither changes the kept columns nor shows a message on another page
+  useEffect(() => invalidate, [invalidate]);
 
   const copyToClipboard = useCallback(
     async (text: string) => {
@@ -110,59 +161,71 @@ export default function SplitPage({
       return;
     }
 
-    if (!sourceText) return;
+    // An empty text is still refused silently; a still running older split would no longer match the input (R1)
+    if (!sourceText) {
+      invalidate();
+      return;
+    }
 
     if (currentWorkerAbort) {
       window.logger.warn('⏳ Abbruch des vorherigen Splitting-Prozesses...');
       currentWorkerAbort();
     }
 
+    const delimiter = separator;
+
+    // Only the engine-neutral pattern rule here (Paket 10 E3, the engines check it too): the syntax is checked by the
+    // engine that runs the split (Rust: fancy-regex, JS: RegExp in the worker), so Rust-only patterns like `(?i)` are
+    // not rejected
+    const problem = useRegex ? patternProblem(delimiter) : null;
+    if (problem) {
+      // The result of a still running older split would no longer match the input; the shown columns stay
+      invalidate();
+      snackbar.error(t(ERROR_KEYS[problem]));
+      return;
+    }
+    // Paket 10 E4: an empty plain delimiter is invalid input (the engines refuse it too); spaces are allowed
+    if (!useRegex && delimiter === '') {
+      invalidate();
+      snackbar.error(t(ERROR_KEYS.emptyDelimiter));
+      return;
+    }
+
+    const job = ++jobCounter.current;
+    const request: SplitRequest = { sourceText, delimiter, useRegex, trimParts, keepEmptyLines, processingMode };
+    /** Still the latest page job and its request is still the entered one (also before the invalidating effect ran). */
+    const isCurrent = () => job === jobCounter.current && sameSplitRequest(request, latestInputs.current);
+    runningRequest.current = request;
     setIsLoading(true);
-    // A superseded job leaves the loading state to the newer job (which may still be running)
-    let superseded = false;
 
     try {
-      const delimiter = separator;
-
-      // Only the engine-neutral pattern rule here (Paket 10 E3, the engines check it too): the syntax is checked by the
-      // engine that runs the split (Rust: fancy-regex, JS: RegExp in the worker), so Rust-only patterns like `(?i)` are
-      // not rejected
-      const problem = useRegex ? patternProblem(delimiter) : null;
-      if (problem) {
-        // The result of a still running older split would no longer match the input
-        BaseService.cancelPending('split');
-        snackbar.error(t(ERROR_KEYS[problem]));
-        return;
-      }
-      // Paket 10 E4: an empty plain delimiter is invalid input (the engines refuse it too); spaces are allowed
-      if (!useRegex && delimiter === '') {
-        BaseService.cancelPending('split');
-        snackbar.error(t(ERROR_KEYS.emptyDelimiter));
-        return;
-      }
-
       const result = await splitText({
-        sourceText,
-        mainParam: delimiter,
+        sourceText: request.sourceText,
+        mainParam: request.delimiter,
         configParams: {
-          trimParts: trimParts,
-          useRegex: useRegex,
-          keepEmptyLines: keepEmptyLines,
+          trimParts: request.trimParts,
+          useRegex: request.useRegex,
+          keepEmptyLines: request.keepEmptyLines,
         },
       });
+      if (!isCurrent()) return;
 
-      // Previous results stay visible if the processing or the result check fails
+      // Previous results (and their request) stay if the processing or the result check fails
       setSplitResults(unwrapResult(window.myResultConverter(result, 'ColumnList')));
+      setSplitRequest(request);
       // Combine and the column copy use the line ending and trailing newline of the text that was split
-      setLineFormat(lineFormatOf(sourceText));
+      setLineFormat(lineFormatOf(request.sourceText));
     } catch (error) {
-      // A superseded job was replaced by a newer click: nothing to report
-      superseded = isSuperseded(error);
-      if (!superseded) snackbar.error(processingErrorMessage(error, t));
+      // A superseded or outdated job was replaced by a newer click or an input change: nothing to report
+      if (isCurrent() && !isSuperseded(error)) snackbar.error(processingErrorMessage(error, t));
     } finally {
-      if (!superseded) setIsLoading(false);
+      // A superseded job leaves the loading state to the newer job (which may still be running)
+      if (job === jobCounter.current) {
+        runningRequest.current = null;
+        setIsLoading(false);
+      }
     }
-  }, [sourceText, useRegex, trimParts, keepEmptyLines, separator, splitText, setSplitResults, setLineFormat, currentWorkerAbort, t]);
+  }, [sourceText, useRegex, trimParts, keepEmptyLines, separator, processingMode, splitText, setSplitResults, setSplitRequest, setLineFormat, currentWorkerAbort, invalidate, snackbar, t]);
 
   useEffect(() => {
     const cleanupInterval = setInterval(() => {
@@ -261,18 +324,23 @@ export default function SplitPage({
           </div>
         </section>
         {splitResults.length > 0 && (
-          <section className="app-section flex-1">
+          // The outdated mark covers the columns and the combine area
+          <section className={`app-section flex-1 ${outdated ? 'result-outdated' : ''}`}>
             <div className="title">
               <span className="left">SPLIT RESULT</span>
               <span className="right">Split text result</span>
             </div>
             <div className="content flex-column">
+              <div className="split-result-status">
+                <OutdatedNotice outdated={outdated} id={outdatedId} />
+              </div>
               <ResultColumns
                 splitResults={splitResults}
                 setSplitResults={setSplitResults}
                 showLineNumbers={showLineNumbers}
                 fontSize={fontSize}
                 isDarkMode={isDarkMode}
+                describedBy={outdatedDescribedBy(outdated, outdatedId)}
               />
               <CombineColumns />
             </div>

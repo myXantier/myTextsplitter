@@ -13,6 +13,8 @@ interface ResultColumnsProps {
   showLineNumbers: boolean;
   fontSize: fontSize;
   isDarkMode: boolean;
+  /** `aria-describedby` of the columns (the outdated notice while the result is outdated) */
+  describedBy?: string;
 }
 
 export function ResultColumns({
@@ -21,6 +23,7 @@ export function ResultColumns({
   showLineNumbers,
   fontSize,
   isDarkMode,
+  describedBy,
 }: ResultColumnsProps) {
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [modalText, setModalText] = useState<string>('');
@@ -91,7 +94,7 @@ export function ResultColumns({
   };
 
   return (<>
-    <div className="result-columns">
+    <div className="result-columns" aria-describedby={describedBy}>
       {splitResults.map((column, index) => (
         <div key={index}>
           {dropIndex === index && <div className="drop-indicator" />}

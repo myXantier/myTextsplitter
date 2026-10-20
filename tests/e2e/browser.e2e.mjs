@@ -10,7 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, sleep } from './lib/cdp.mjs';
-import { SPLIT_CASES, checkCombineState, checkFileIo, checkFilterRemoveStale, checkDiffStale, checkSplitIntegrity, checkMatchPreview, checkPatternRule, checkSplitFlags, checkLineEndings, checkSort, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
+import { SPLIT_CASES, checkCombineState, checkFileIo, checkFilterRemoveStale, checkDiffStale, checkSplitStale, checkSplitIntegrity, checkMatchPreview, checkPatternRule, checkSplitFlags, checkLineEndings, checkSort, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
@@ -26,7 +26,7 @@ import {
 } from './lib/harness.mjs';
 
 // Targeted runs: E2E_ONLY=file-io runs only the start checks and checkFileIo (Paket 11), E2E_ONLY=stale only the start
-// checks and the outdated-result checks (Paket 12: Sort, Filter, Remove, Diff)
+// checks and the outdated-result checks (Paket 12: Sort, Filter, Remove, Diff, Split)
 const ONLY = process.env.E2E_ONLY;
 const ONLY_VALUES = ['file-io', 'stale'];
 if (ONLY && !ONLY_VALUES.includes(ONLY)) throw new Error(`Unknown E2E_ONLY=${ONLY} (supported: ${ONLY_VALUES.join(', ')})`);
@@ -103,6 +103,7 @@ async function testApp(page, url) {
     await checkSort(page, r, 'JS', errorsSince);
     await checkFilterRemoveStale(page, r, 'JS', errorsSince, 'js');
     await checkDiffStale(page, r, 'JS', errorsSince, 'js');
+    await checkSplitStale(page, r, 'JS', errorsSince, 'js');
     return;
   }
 
@@ -239,6 +240,8 @@ async function testApp(page, url) {
   await checkFilterRemoveStale(page, r, 'JS', errorsSince, 'js');
   // Paket 12 C4: outdated results and job validity on the Diff page (worker gate)
   await checkDiffStale(page, r, 'JS', errorsSince, 'js');
+  // Paket 12 C5: outdated split results kept across page changes, job validity (worker gate)
+  await checkSplitStale(page, r, 'JS', errorsSince, 'js');
   // Paket 11 Phase B: file import (byte fixtures through the button and the drop, reselection, read errors, races)
   await checkFileIo(page, r, 'Browser', errorsSince);
 

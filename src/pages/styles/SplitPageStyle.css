@@ -142,3 +142,8 @@
     transition: none;
   }
 }
+
+/* Holds the result status (empty while the split result is current) */
+.split-text .split-result-status {
+  display: flex;
+}

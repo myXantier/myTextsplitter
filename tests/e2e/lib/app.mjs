@@ -2551,6 +2551,362 @@ export async function checkDiffStale(page, r, label, errorsSince, engine) {
   r.check(`${label}: Diff outdated checks without errors`, errorsSince(n).length === 0, json(errorsSince(n)));
 }
 
+/**
+ * State of the Split result (Paket 12 C5): the shown columns, the live region (and whether it is still the node recorded
+ * in `__t.staleStatusNode`), the description of the columns, the outline of the result section (columns and combine).
+ */
+const SPLIT_STALE_STATE = `(() => {
+  const columns = __t.page().querySelector('.result-columns');
+  const section = columns?.closest('section');
+  const status = section?.querySelector('.result-status');
+  const describedBy = columns?.getAttribute('aria-describedby');
+  return {
+    columns: columns ? __t.columns() : null,
+    status: status ? { role: status.getAttribute('role'), live: status.getAttribute('aria-live'), text: status.textContent } : null,
+    sameStatusNode: !!status && status === __t.staleStatusNode,
+    describedBy: describedBy ? describedBy.split(' ').map((id) => document.getElementById(id)?.textContent ?? '#missing').join(' ') : null,
+    marked: !!section?.classList.contains('result-outdated'),
+    combineInside: !!section?.querySelector('.combine-container'),
+    opacity: section ? Number(getComputedStyle(section).opacity) * Number(getComputedStyle(columns).opacity) : null,
+    idle: !!__t.page().querySelector('.mode-toggle'),
+  };
+})()`;
+
+/**
+ * Paket 12 C5: outdated split results and job validity in the current processing mode (`engine` 'js': worker gate,
+ * 'rust': fetch gate on `process_text_block`). The columns and their request are kept in LeftMenuBar across page
+ * changes; text, delimiter, regex, trim parts and keep empty lines (also from the settings modal) count, the engine only
+ * for a regex split; display options, trim lines, the combine separator and column edits do not.
+ */
+export async function checkSplitStale(page, r, label, errorsSince, engine) {
+  const n = page.logs.length;
+  const json = (value) => JSON.stringify(value);
+  await page.eval(`__t.nav('split'); __t.watchSnacks(); true`);
+  await sleepMs(250);
+  const lang = (await page.eval(`__t.page().querySelector('.title .left').textContent`)) === LOCALES.de.removeLines.sourceText ? 'de' : 'en';
+  const texts = LOCALES[lang];
+  const outdatedText = `${texts.results.outdated} – ${texts.results.outdatedHint}`;
+  const gate = processingGate(page, engine, 'process_text_block');
+
+  const state = () => page.eval(SPLIT_STALE_STATE);
+  const snacks = () => page.eval('__t.takeSnacks()');
+  const setSource = async (text) => {
+    await page.eval(`__t.set(__t.textareas()[0], ${json(text)}); true`);
+    await sleepMs(120);
+  };
+  const setSeparator = async (value) => {
+    await page.eval(`__t.set(__t.page().querySelector('.form-add-render input'), ${json(value)}); true`);
+    await sleepMs(120);
+  };
+  const box = (labelText) => `[...__t.page().querySelectorAll('label.checkbox-wrapper')].find((l) => l.querySelector('.checkbox-label')?.textContent === ${json(labelText)}).querySelector('input')`;
+  const toggle = async (labelText) => {
+    await page.eval(`${box(labelText)}.click(); true`);
+    await sleepMs(150);
+  };
+  const setBox = async (labelText, value) => {
+    await page.eval(`(() => { const i = ${box(labelText)}; if (i.checked !== ${value}) i.click(); })(); true`);
+    await sleepMs(150);
+  };
+  /** Sets the "Default Separator" of the settings modal (the same runtime setting as the page input) */
+  const setModalSeparator = async (value) => {
+    await page.eval(`document.querySelector('button[title="Settings"]').click(); true`);
+    await sleepMs(300);
+    await page.eval(`__t.set([...document.querySelectorAll('.settings-modal label.settings-label')].find((l) => l.innerText.includes('Default Separator')).querySelector('input'), ${json(value)}); true`);
+    await sleepMs(150);
+    await page.eval(`document.querySelector('.settings-modal .close-button').click(); true`);
+    await sleepMs(200);
+  };
+  const toggleModalLineNumbers = async () => {
+    await page.eval(`document.querySelector('button[title="Settings"]').click(); true`);
+    await sleepMs(300);
+    await page.eval(`__t.settingsCheckbox('Show Line Numbers').click(); true`);
+    await sleepMs(150);
+    await page.eval(`document.querySelector('.settings-modal .close-button').click(); true`);
+    await sleepMs(200);
+  };
+  /** Switches the processing mode (only possible with a Rust backend); returns whether it changed */
+  const toggleEngine = async () => {
+    const before = await page.eval(`!!__t.page().querySelector('.mode-toggle .backend-icon')`);
+    await page.eval(`__t.page().querySelector('.mode-toggle').click(); true`);
+    await sleepMs(300);
+    return (await page.eval(`!!__t.page().querySelector('.mode-toggle .backend-icon')`)) !== before;
+  };
+  const splitClick = `__t.page().querySelector('button[title="Split text"]').click()`;
+  /** Splits and waits for the expected columns and the end of the processing; returns the messages */
+  const split = async (expected) => {
+    await snacks();
+    await page.eval(`${splitClick}; true`);
+    const done = await page.waitFor(`(() => { const s = ${SPLIT_STALE_STATE}; return JSON.stringify(s.columns) === ${json(json(expected))} && s.idle; })()`, 8000);
+    await sleepMs(150);
+    return { done, messages: await snacks() };
+  };
+  const isCurrent = (s, columns) =>
+    json(s.columns) === json(columns) && s.status?.role === 'status' && s.status.live === 'polite' && s.status.text === '' && s.sameStatusNode && s.describedBy === null && !s.marked;
+  const isOutdated = (s, columns) =>
+    json(s.columns) === json(columns) && s.sameStatusNode && s.status?.text === outdatedText && s.describedBy === outdatedText && s.marked && s.combineInside && s.opacity === 1;
+  const recordStatusNode = () => page.eval(`__t.staleStatusNode = __t.page().querySelector('.result-columns').closest('section').querySelector('.result-status'); true`);
+
+  // Defined start: plain split options, keep empty lines (the modal setting), no kept columns of earlier checks
+  await setBox(texts.regex.useRegex, false);
+  await setBox(texts.options.trimparts, false);
+  await setSettingsCheckbox(page, 'Keep Empty Lines', true);
+  for (let i = 0; i < 20 && (await page.eval(`__t.page().querySelectorAll('.result-column').length`)) > 0; i++) {
+    await page.eval(`__t.page().querySelector('.result-column .result-header .right button:last-child').click(); true`);
+    await sleepMs(100);
+  }
+
+  // 1. No columns: no result, no status
+  let s = await state();
+  r.check(`${label}: Split without columns: no result, no status`, s.columns === null && s.status === null, json(s));
+
+  // 2. Split: current, empty live region
+  const T = 'a_b\nc_d';
+  const C = [['a', 'c'], ['b', 'd']];
+  await setSource(T);
+  await setSeparator('_');
+  let run = await split(C);
+  await recordStatusNode();
+  s = await state();
+  r.check(`${label}: Split: current result, empty live region (role=status, aria-live=polite)`, run.done && run.messages.length === 0 && isCurrent(s, C), json({ s, run }));
+
+  // 3.-8. Text, delimiter, regex, trim parts, keep empty lines (settings modal): outdated each; back: current
+  const marks = {};
+  await setSource('a_b');
+  marks.text = isOutdated(await state(), C);
+  await setSource(T);
+  await setSeparator('-');
+  marks.delimiter = isOutdated(await state(), C);
+  await setSeparator('_');
+  await toggle(texts.regex.useRegex);
+  marks.regex = isOutdated(await state(), C);
+  await toggle(texts.regex.useRegex);
+  await toggle(texts.options.trimparts);
+  marks.trimParts = isOutdated(await state(), C);
+  await toggle(texts.options.trimparts);
+  await setSettingsCheckbox(page, 'Keep Empty Lines', false);
+  marks.keepEmptyLines = isOutdated(await state(), C);
+  await setSettingsCheckbox(page, 'Keep Empty Lines', true);
+  await setModalSeparator(';');
+  marks.modalSeparator = isOutdated(await state(), C);
+  await setModalSeparator('_');
+  s = await state();
+  r.check(
+    `${label}: Split text, delimiter (page and settings modal), regex, trim parts, keep empty lines: outdated each; back: current`,
+    Object.values(marks).every(Boolean) && Object.keys(marks).length === 6 && isCurrent(s, C),
+    json({ marks, s })
+  );
+
+  // 20. Display options, trim lines (no effect on the split) and the combine separator: no outdated mark
+  await toggle(texts.options.trimLines);
+  await toggleModalLineNumbers();
+  const combineSeparator = await page.eval(`__t.page().querySelector('.combine-input').value`);
+  await page.eval(`__t.set(__t.page().querySelector('.combine-input'), '|'); true`);
+  await sleepMs(150);
+  const displayCurrent = isCurrent(await state(), C);
+  await page.eval(`__t.set(__t.page().querySelector('.combine-input'), ${json(combineSeparator)}); true`);
+  await toggleModalLineNumbers();
+  await toggle(texts.options.trimLines);
+  r.check(`${label}: Split trim lines, line numbers, combine separator: still current`, displayCurrent && isCurrent(await state(), C), json(await state()));
+
+  // 19. Processing mode: ignored for a plain split, counts for a regex split (only switchable with a Rust backend)
+  if (await toggleEngine()) {
+    const plainCurrent = isCurrent(await state(), C);
+    await toggleEngine();
+    await toggle(texts.regex.useRegex);
+    run = await split(C);
+    const regexCurrent = isCurrent(await state(), C);
+    await toggleEngine();
+    const regexOutdated = isOutdated(await state(), C);
+    await toggleEngine();
+    const regexBack = isCurrent(await state(), C);
+    await toggle(texts.regex.useRegex);
+    run = { regex: run, plain: await split(C) };
+    r.check(
+      `${label}: Split processing mode: ignored for a plain split, outdated for a regex split, back: current`,
+      plainCurrent && regexCurrent && regexOutdated && regexBack && isCurrent(await state(), C),
+      json({ plainCurrent, regexCurrent, regexOutdated, regexBack, run })
+    );
+  }
+
+  // 21. Editing and moving columns change the columns, not the request status
+  await page.eval(`__t.page().querySelector('.result-column .result-header .left button').click(); true`);
+  await sleepMs(200);
+  await page.eval(`__t.set(__t.page().querySelector('.modal-textarea'), 'A\\nC'); __t.page().querySelector('.modal-save-btn').click(); true`);
+  await sleepMs(200);
+  const edited = await state();
+  await page.eval(`(() => {
+    const columns = [...__t.page().querySelectorAll('.result-column')];
+    const data = new DataTransfer();
+    columns[1].dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: data }));
+    columns[0].dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: data }));
+    columns[0].dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: data }));
+    columns[1].dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: data }));
+    return true;
+  })()`);
+  await sleepMs(200);
+  const EDITED = [['b', 'd'], ['A', 'C']];
+  s = await state();
+  r.check(
+    `${label}: Split column edited and moved: columns changed, result still current`,
+    isCurrent(edited, [['A', 'C'], ['b', 'd']]) && isCurrent(s, EDITED),
+    json({ edited, s })
+  );
+
+  // 22./23. Outdated result: combine and the column copy still work on the shown columns
+  await setSource('a_b\nc_d\ne_f');
+  const combined = await combineColumns(page, [1, 0]);
+  await page.eval(`__t.captureCopy(); __t.page().querySelector('.result-column .copy-button').click(); true`);
+  await page.waitFor(`__t.copied !== null`, 3000);
+  const copied = await page.eval('__t.copied');
+  await page.eval(`__t.releaseCopy(); __t.page().querySelector('.combine-clear')?.click(); true`);
+  await sleepMs(200);
+  await snacks();
+  s = await state();
+  r.check(
+    `${label}: Split outdated result: combine and column copy use the shown columns`,
+    combined.used === 2 && combined.text === `A${combineSeparator}b\nC${combineSeparator}d` && copied === 'b\nd' && isOutdated(s, EDITED),
+    json({ combined, copied, s })
+  );
+
+  // 17. Navigation: the shared text changed on another page; back on Split the kept columns are outdated, then current
+  await setSource(T);
+  await page.eval(`__t.nav('sort'); true`);
+  await sleepMs(200);
+  await page.eval(`__t.set(__t.textareas()[0], 'x_y'); true`);
+  await sleepMs(150);
+  await page.eval(`__t.nav('split'); true`);
+  await sleepMs(250);
+  await recordStatusNode();
+  const afterNav = await state();
+  await setSource(T);
+  s = await state();
+  r.check(`${label}: Split text changed on another page: kept columns outdated after returning; text back: current`, isOutdated(afterNav, EDITED) && isCurrent(s, EDITED), json({ afterNav, s }));
+
+  // 9. Split again: new columns and request together
+  run = await split(C);
+  s = await state();
+  r.check(`${label}: Split again: new columns, current`, run.done && run.messages.length === 0 && isCurrent(s, C), json({ s, run }));
+
+  // 10. Failed split (invalid regex in the engine): columns and request stay
+  await toggle(texts.regex.useRegex);
+  await setSeparator('([a-');
+  await snacks();
+  await page.eval(`${splitClick}; true`);
+  await page.waitFor(`__t.snackLog.length > 0 && !!__t.page().querySelector('.mode-toggle')`, 8000);
+  await sleepMs(150);
+  let messages = await snacks();
+  s = await state();
+  const failedOutdated = isOutdated(s, C);
+  await setSeparator('_');
+  await toggle(texts.regex.useRegex);
+  r.check(
+    `${label}: Split failed (invalid regex): one error, columns kept and outdated; back: current`,
+    messages.length === 1 && messages[0].startsWith('error') && failedOutdated && isCurrent(await state(), C),
+    json({ messages, s })
+  );
+
+  await gate.install();
+  // 11. Text changed while a split runs: the late answer (other columns than the shown ones) is not applied
+  await setSource('a_b\nc_d\ne_f');
+  let held = await gate.hold(splitClick);
+  await setSource('a_b');
+  let released = await gate.release();
+  messages = await snacks();
+  s = await state();
+  r.check(`${label}: Split text changed while running: late result not applied, no message, not loading`, held && released === 1 && messages.length === 0 && s.idle && isOutdated(s, C), json({ s, messages }));
+  await setSource(T);
+
+  // 12. Late error of an invalidated split: no message
+  await toggle(texts.regex.useRegex);
+  await setSeparator('([a-');
+  held = await gate.hold(splitClick);
+  await setSeparator('_');
+  released = await gate.release();
+  messages = await snacks();
+  await toggle(texts.regex.useRegex);
+  r.check(`${label}: Split late error of an invalidated split: no message`, held && released === 1 && messages.length === 0 && isCurrent(await state(), C), json(messages));
+
+  // 13. A -> B -> A while running: the split stays invalidated
+  await setSource('a_b\nc_d\n');
+  held = await gate.hold(splitClick);
+  await toggle(texts.options.trimparts);
+  await toggle(texts.options.trimparts);
+  released = await gate.release();
+  messages = await snacks();
+  s = await state();
+  r.check(`${label}: Split A -> B -> A while running: the late answer is not applied`, held && released === 1 && messages.length === 0 && isOutdated(s, C), json({ s, messages }));
+
+  // 14. A newer split B supersedes the running split A: both answers are held, B's is delivered first, then A's; only
+  // B's columns are shown (A's would differ), current for the entered B input, no message of A
+  const A_TEXT = 'x_y\nz_w';
+  const B_TEXT = 'a_b\nc_d\n\n';
+  const C2 = [['a', 'c', ''], ['b', 'd', '']];
+  await setSource(A_TEXT);
+  held = await gate.hold(splitClick);
+  await setSource(B_TEXT);
+  const heldBoth = await gate.hold(splitClick, 2);
+  // `release(true)` delivers the held answers newest first: B, then A (both are delivered, none stays in the gate)
+  released = await gate.release(true);
+  await page.waitFor(`!!__t.page().querySelector('.mode-toggle')`, 8000);
+  messages = await snacks();
+  s = await state();
+  r.check(
+    `${label}: Split newer split B wins over A (answers B then A): only B's columns, current, no message`,
+    held && heldBoth && released === 2 && messages.length === 0 && isCurrent(s, C2) && json(s.columns) !== json([['x', 'z'], ['y', 'w']]),
+    json({ s, messages })
+  );
+
+  // 15. R1: empty text (still silent) and empty delimiter refused while a split runs: no late result
+  await setSource(T);
+  held = await gate.hold(splitClick);
+  await setSource('');
+  await page.eval(`${splitClick}; true`);
+  await sleepMs(150);
+  released = await gate.release();
+  const r1Text = { messages: await snacks(), s: await state() };
+  await setSource(T);
+  held = held && (await gate.hold(splitClick));
+  await setSeparator('');
+  await page.eval(`${splitClick}; true`);
+  await sleepMs(150);
+  released += await gate.release();
+  const r1Delimiter = { messages: await snacks(), s: await state() };
+  await setSeparator('_');
+  r.check(
+    `${label}: Split refused start (empty text: silent, empty delimiter: one error) while running: no late result`,
+    held && released === 2 && r1Text.messages.length === 0 && r1Delimiter.messages.length === 1 && r1Delimiter.messages[0].startsWith('error') &&
+      json(r1Text.s.columns) === json(C2) && json(r1Delimiter.s.columns) === json(C2),
+    json({ r1Text, r1Delimiter })
+  );
+
+  // 16. Leaving the page while a split runs: the kept columns and their request are not overwritten, no message
+  held = await gate.hold(splitClick);
+  await page.eval(`__t.nav('sort'); true`);
+  await sleepMs(200);
+  released = await gate.release();
+  await sleepMs(200);
+  messages = await snacks();
+  await page.eval(`__t.nav('split'); true`);
+  await sleepMs(250);
+  await recordStatusNode();
+  s = await state();
+  r.check(
+    `${label}: Split left while running: kept columns not overwritten (outdated against the entered text), no message`,
+    held && released === 1 && messages.length === 0 && isOutdated(s, C2),
+    json({ s, messages })
+  );
+  const seen = await gate.seen();
+  await gate.uninstall();
+  if (engine === 'rust') r.check(`${label}: Split Rust answers go through the IPC custom protocol (fetch gate)`, seen.includes('process_text_block'), json(seen));
+
+  // A last split: current again; leave the usual text for the following checks
+  run = await split(C);
+  r.check(`${label}: Split after the gated cases: current`, run.done && run.messages.length === 0 && isCurrent(await state(), C), json(run));
+  await page.eval(`delete __t.staleStatusNode; true`);
+  await setSource('a_b');
+  r.check(`${label}: Split outdated checks without errors`, errorsSince(n).length === 0, json(errorsSince(n)));
+}
+
 // Golden sort results of Paket 9 C1, checked in the real UI (Paket 9 C2). `methods` is the order of the dropdown.
 const SORT_FIXTURES = JSON.parse(readFileSync(new URL('../../fixtures/sort-cases.json', import.meta.url), 'utf8'));
 const SORT_UI_CASES = [
