@@ -1966,6 +1966,9 @@ export async function checkFilterRemoveStale(page, r, label, errorsSince, engine
   await gate.install();
   // Text changed while running: late result not applied, no message, processing ended
   let held = await gate.hold(keep);
+  // While a job runs the global status shows "processing" instead of the mode toggle (the toggle cannot be used)
+  const statusRunning = await page.eval(`({ toggle: !!__t.page().querySelector('.mode-toggle'), status: !!__t.page().querySelector('.processing-status .status-message') })`);
+  r.check(`${label}: Filter running: processing status shown, mode toggle hidden`, held && !statusRunning.toggle && statusRunning.status, json(statusRunning));
   await setSource('apple\napricot');
   let released = await gate.release();
   s = await state();

@@ -59,16 +59,13 @@ export function useProcessingState() {
     [setGlobalMetrics]
   );
 
+  /** An error ends the processing; `null` only clears an old error (a job that is starting keeps running). */
   const setError = useCallback(
     (error: Error | null) => {
-      setState((prev) => ({
-        ...prev,
-        error,
-        isProcessing: false,
-        startTime: null,
-        abortController: null,
-      }));
-      setGlobalIsProcessing(false);
+      setState((prev) =>
+        error ? { ...prev, error, isProcessing: false, startTime: null, abortController: null } : { ...prev, error }
+      );
+      if (error) setGlobalIsProcessing(false);
       setGlobalError(error);
     },
     [setGlobalIsProcessing, setGlobalError]
