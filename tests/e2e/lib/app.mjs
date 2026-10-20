@@ -1530,6 +1530,45 @@ async function checkSortInputChangedWhileRunning(page, r, label, ui) {
     json(applied)
   );
 
+  // 7. Leaving the page while a sort runs (Paket 12 E6): the page job is invalidated and its worker job cancelled on
+  // unmount (BaseService terminates the worker of the held answer), and neither the held success answer nor a held
+  // error answer delivered afterwards shows a message on the other page; a new sort on the Sort page works afterwards
+  const heldGone = `__t.workerGate.held.length === 0`;
+  /** Starts a held sort, leaves for the Filter page and waits until the worker of the held answer is terminated */
+  const leaveWhileRunning = async (text) => {
+    await loadFile(text);
+    const wasHeld = await startHeld();
+    await page.eval(`__t.nav('filter'); true`);
+    // Set by BaseService.terminateWorker: the job was cancelled (`superseded`), its timeout timer cleared
+    const cancelled = await page.waitFor(`!!__t.page().querySelector('.filter-actions') && __t.workerGate.held[0]?.worker.isTerminated === true`, 8000);
+    return { wasHeld, cancelled, stillHeld: await page.eval(`__t.workerGate.held.length`) };
+  };
+  const leftSuccess = await leaveWhileRunning('k\nj');
+  const successReleased = await release();
+  const afterSuccess = { snacks: await snacks(), gateEmpty: await page.eval(heldGone) };
+  await page.eval(`__t.nav('sort'); true`);
+  await sleepMs(250);
+  const leftError = await leaveWhileRunning('h\ng');
+  const errorReleased = await release({ success: false, type: 'error', errorKind: 'worker', error: 'errors.processingError', result: null });
+  const afterError = { snacks: await snacks(), gateEmpty: await page.eval(heldGone) };
+  r.check(
+    `${label}: Sort left while running is cancelled without late notification (late success and late error)`,
+    [leftSuccess, leftError].every((x) => x.wasHeld && x.cancelled && x.stillHeld === 1) && successReleased === 1 && errorReleased === 1 &&
+      afterSuccess.snacks.length === 0 && afterSuccess.gateEmpty && afterError.snacks.length === 0 && afterError.gateEmpty,
+    json({ leftSuccess, afterSuccess, leftError, afterError })
+  );
+  await page.eval(`__t.nav('sort'); true`);
+  await sleepMs(250);
+  await loadFile('f\ne');
+  await sort();
+  const sortedAgain = await waitForResult('e\nf');
+  const againSnacks = await snacks();
+  r.check(
+    `${label}: Sort after leaving a running sort: a new sort works (one success)`,
+    sortedAgain && againSnacks.length === 1 && againSnacks[0].startsWith('success'),
+    json(againSnacks)
+  );
+
   await page.eval(WORKER_GATE_UNINSTALL);
 }
 

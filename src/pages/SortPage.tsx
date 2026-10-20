@@ -77,6 +77,19 @@ export default function SortPage({ sourceText, setSourceText, sourceImport, visi
     }
   }, [sourceText, sortMethod, caseSensitive]);
 
+  // Leaving the page (Paket 12 E6): a running job neither changes state nor shows a message on another page. Only this
+  // page's own running job is stopped; without one nothing is cancelled (also the StrictMode remount in development).
+  useEffect(
+    () => () => {
+      jobCounter.current++;
+      if (runningRequest.current) {
+        runningRequest.current = null;
+        BaseService.cancelPending('sort');
+      }
+    },
+    []
+  );
+
   /**
    * Runs a sort (SortService: sort worker, latest job wins). A running older job is terminated (`superseded`). Only
    * the latest page job whose request is still the entered one may change the result or show a message; on failure
