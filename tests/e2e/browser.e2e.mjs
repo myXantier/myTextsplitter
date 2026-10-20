@@ -10,7 +10,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { attach, sleep } from './lib/cdp.mjs';
-import { SPLIT_CASES, checkCombineState, checkFileIo, checkSplitIntegrity, checkMatchPreview, checkPatternRule, checkSplitFlags, checkLineEndings, checkSort, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
+import { SPLIT_CASES, checkCombineState, checkFileIo, checkFilterRemoveStale, checkSplitIntegrity, checkMatchPreview, checkPatternRule, checkSplitFlags, checkLineEndings, checkSort, checkWordDiff, checkDiffCancelAndPaging, checkDiffDetails, checkProcessingErrors, checkRegexRobustness, combineColumns, installHelpers, setSettingsCheckbox, splitAndRead } from './lib/app.mjs';
 import {
   ROOT,
   createReporter,
@@ -26,7 +26,7 @@ import {
 } from './lib/harness.mjs';
 
 // Targeted runs: E2E_ONLY=file-io runs only the start checks and checkFileIo (Paket 11), E2E_ONLY=stale only the start
-// checks and the outdated-result checks (Paket 12; so far the Sort checks)
+// checks and the outdated-result checks (Paket 12: Sort, Filter, Remove)
 const ONLY = process.env.E2E_ONLY;
 const ONLY_VALUES = ['file-io', 'stale'];
 if (ONLY && !ONLY_VALUES.includes(ONLY)) throw new Error(`Unknown E2E_ONLY=${ONLY} (supported: ${ONLY_VALUES.join(', ')})`);
@@ -101,6 +101,7 @@ async function testApp(page, url) {
   }
   if (ONLY === 'stale') {
     await checkSort(page, r, 'JS', errorsSince);
+    await checkFilterRemoveStale(page, r, 'JS', errorsSince, 'js');
     return;
   }
 
@@ -233,6 +234,8 @@ async function testApp(page, url) {
   await checkCombineState(page, r, 'JS', errorsSince);
   // Paket 9 C2: Sort in the sort worker (golden cases, outdated result, case option, latest job wins, large text)
   await checkSort(page, r, 'JS', errorsSince);
+  // Paket 12 C3: outdated results and job invalidation on the Filter and Remove pages (worker gate)
+  await checkFilterRemoveStale(page, r, 'JS', errorsSince, 'js');
   // Paket 11 Phase B: file import (byte fixtures through the button and the drop, reselection, read errors, races)
   await checkFileIo(page, r, 'Browser', errorsSince);
 

@@ -335,7 +335,10 @@ export async function checkRegexRobustness(page, r, label, errorsSince, engine) 
       `${JSON.stringify(await result())} ${JSON.stringify(snacks)}`
     );
 
-    // --- A Split that finishes does not end the processing state of a Filter that is still running ---
+    // --- Leaving the Filter page while a (catastrophic) Filter runs (Paket 12 E6): the page stops its job on unmount, so
+    // the Split runs alone and ends the processing state, and the stopped Filter never reports its timeout. (Formerly the
+    // Filter kept running across the page change; the processing state of two running operation types is covered by
+    // tests/unit/running-operations.test.ts.) ---
     const splitCheckbox = `[...__t.page().querySelectorAll('.input-box')].find(e => /regex/i.test(e.innerText)).querySelector('input')`;
     n = page.logs.length;
     await setText(CATASTROPHIC.text);
@@ -349,14 +352,14 @@ export async function checkRegexRobustness(page, r, label, errorsSince, engine) 
     await page.eval(`__t.page().querySelector('button[title="Split text"]').click(); true`);
     const splitDone = await page.waitFor(`JSON.stringify(__t.columns()) === ${JSON.stringify(JSON.stringify([['a'], ['b']]))}`, 5000);
     await sleepMs(300);
-    const stillProcessing = !(await finished());
-    r.check(`${label}: finished Split keeps the processing state of the running Filter`, splitDone && stillProcessing, `split=${splitDone} processing=${stillProcessing}`);
-    await page.waitFor(`__t.snackLog.some((s) => s.startsWith('error'))`, 20000);
-    const ended = await page.waitFor(`!!__t.page().querySelector('.mode-toggle')`, 5000);
+    const idle = await finished();
+    r.check(`${label}: Filter left while running is stopped: the Split runs and ends the processing state`, splitDone && idle, `split=${splitDone} idle=${idle}`);
+    // The Filter worker timeout (10 s) would have reported an error by now if the job had not been stopped
+    const lateError = await page.waitFor(`__t.snackLog.some((s) => s.startsWith('error'))`, 12000);
     snacks = await page.eval('__t.takeSnacks()');
     r.check(
-      `${label}: the Filter timeout ends the processing state afterwards`,
-      ended && snacks.filter((s) => s.startsWith('error')).length === 1 && expectedError.test(snacks.find((s) => s.startsWith('error'))) && exceptionsSince(n).length === 0,
+      `${label}: the stopped Filter reports no late timeout on the other page`,
+      !lateError && snacks.length === 0 && (await finished()) && exceptionsSince(n).length === 0,
       JSON.stringify(snacks)
     );
     await page.eval(`__t.nav('filter'); true`);
@@ -1674,7 +1677,12 @@ async function checkSortOutdatedNotice(page, r, label, ui) {
       `notice ${measured.notice.ratio}:1, result ${measured.result.ratio}:1, outline ${measured.outline.ratio}:1, opacity ${measured.result.opacity} ${json(measured)}`
     );
   }
-  await page.eval(`document.documentElement.setAttribute('data-theme', ${json(theme)}); true`);
+  // Exactly the former state: the former value, or no attribute at all (never the string "null")
+  await page.eval(
+    theme === null
+      ? `document.documentElement.removeAttribute('data-theme'); true`
+      : `document.documentElement.setAttribute('data-theme', ${json(theme)}); true`
+  );
   await sleepMs(400);
 
   // 7. Sorted again (alphabetical, still outdated before the click): current, empty live region (still the same node)
@@ -1686,6 +1694,525 @@ async function checkSortOutdatedNotice(page, r, label, ui) {
   r.check(`${label}: Sort sorted again: notice removed, same live region`, beforeResort && resorted && isCurrent(s), json(s));
 
   await page.eval(`delete __t.sortStatusNode; true`);
+}
+
+/**
+ * Paket 12 C3: holds the IPC answers of one Rust command (`__t.fetchGate.on = 'filter_text'`). Tauri 2.3.1 sends every
+ * command with the global `fetch` to its IPC custom protocol (`http://ipc.localhost/<command>` on Windows,
+ * `ipc://localhost/<command>` elsewhere); `window.__TAURI_INTERNALS__.invoke` itself cannot be replaced (not writable).
+ * The Rust command runs normally, only the delivery of its answer waits until the test releases it. `seen` lists every
+ * IPC command sent while the gate is installed (proof that the custom protocol, not the postMessage fallback, is used).
+ */
+const FETCH_GATE_INSTALL = `(() => {
+  if (__t.fetchGate) return true;
+  const original = window.fetch;
+  __t.fetchGate = { on: null, held: [], seen: [], original };
+  window.fetch = function (input, init) {
+    const response = original.call(this, input, init);
+    const gate = __t.fetchGate;
+    const url = String(typeof input === 'string' ? input : input?.url);
+    const match = /^(?:ipc:\\/\\/localhost|https?:\\/\\/ipc\\.localhost)\\/([^?#]+)/.exec(url);
+    if (!gate || !match) return response;
+    const command = decodeURIComponent(match[1]);
+    gate.seen.push(command);
+    if (gate.on !== command) return response;
+    return new Promise((resolve, reject) => gate.held.push({ command, deliver: () => response.then(resolve, reject) }));
+  };
+  return true;
+})()`;
+const FETCH_GATE_UNINSTALL = `(() => { window.fetch = __t.fetchGate.original; __t.fetchGate = null; return true; })()`;
+/** Lets the delivered answers reach the page: promises, the IPC callback, React and one frame. */
+const GATE_SETTLE = `for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+  await new Promise((r) => requestAnimationFrame(() => setTimeout(r, 0)));
+  for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));`;
+
+/**
+ * Deterministic answers of the processing path of the current mode: the worker gate (JS: the worker's message is held)
+ * or the fetch gate (Rust: the IPC answer of `command` is held). `release(newestFirst)` delivers every held answer.
+ */
+function processingGate(page, engine, command) {
+  const js = engine === 'js';
+  const held = js ? `__t.workerGate.held.length` : `__t.fetchGate.held.length`;
+  return {
+    install: () => page.eval(js ? WORKER_GATE_INSTALL : FETCH_GATE_INSTALL),
+    uninstall: () => page.eval(js ? WORKER_GATE_UNINSTALL : FETCH_GATE_UNINSTALL),
+    seen: () => (js ? [] : page.eval(`__t.fetchGate.seen.slice()`)),
+    /** Holds the next answers, runs `clickExpr` and waits until `count` answers are held */
+    async hold(clickExpr, count = 1) {
+      await page.eval(`${js ? '__t.workerGate.on = true' : `__t.fetchGate.on = ${JSON.stringify(command)}`}; ${clickExpr}; true`);
+      return page.waitFor(`${held} === ${count}`, 8000);
+    },
+    release: (newestFirst = false) =>
+      page.eval(`(async () => {
+        const gate = ${js ? '__t.workerGate' : '__t.fetchGate'};
+        const items = gate.held.splice(0);
+        gate.on = ${js ? 'false' : 'null'};
+        for (const item of ${newestFirst ? 'items.reverse()' : 'items'}) ${js ? 'item.fn.call(item.worker, item.event)' : 'item.deliver()'};
+        ${GATE_SETTLE}
+        return items.length;
+      })()`),
+  };
+}
+
+/**
+ * State of a Filter or Remove result (Paket 12 C3): result text, the action summary, the live region (and whether it is
+ * still the DOM node recorded in `__t.staleStatusNode`), the text the result is described by, the outline, idle state.
+ */
+const STALE_RESULT_STATE = `(() => {
+  const area = __t.page().querySelector('textarea.result');
+  const status = __t.page().querySelector('.result-status');
+  const describedBy = area?.getAttribute('aria-describedby');
+  return {
+    result: area ? __t.raw(area) : null,
+    summary: __t.page().querySelector('.filter-result-for, .remove-result-for')?.textContent ?? null,
+    status: status ? { role: status.getAttribute('role'), live: status.getAttribute('aria-live'), text: status.textContent } : null,
+    sameStatusNode: !!status && status === __t.staleStatusNode,
+    describedBy: describedBy ? describedBy.split(' ').map((id) => document.getElementById(id)?.textContent ?? '#missing').join(' ') : null,
+    marked: !!__t.page().querySelector('.scroll-box.result-outdated'),
+    idle: !!__t.page().querySelector('.mode-toggle'),
+  };
+})()`;
+
+/**
+ * Paket 12 C3: outdated results and job invalidation on the Filter and Remove pages in the current processing mode
+ * (`engine` 'js': worker gate, 'rust': fetch gate on the IPC answer). Checks the request of the shown result (with its
+ * action), relevant and ignored options per action, returning to the request, recomputation, errors, inputs changed
+ * while a job runs (also A -> B -> A), newer actions, refused starts (R1), leaving the page and the action summary.
+ */
+export async function checkFilterRemoveStale(page, r, label, errorsSince, engine) {
+  const n = page.logs.length;
+  const json = (value) => JSON.stringify(value);
+  await page.eval(`__t.nav('remove'); true`);
+  await sleepMs(200);
+  const lang = (await page.eval(`__t.page().querySelector('.remove-action-button.duplicates').textContent`)) === LOCALES.de.removeLines.modes.duplicates ? 'de' : 'en';
+  const texts = LOCALES[lang];
+  const outdatedText = `${texts.results.outdated} – ${texts.results.outdatedHint}`;
+
+  const state = () => page.eval(STALE_RESULT_STATE);
+  const snacks = () => page.eval('__t.takeSnacks()');
+  const setSource = async (text) => {
+    await page.eval(`__t.set(__t.textareas()[0], ${json(text)}); true`);
+    await sleepMs(120);
+  };
+  const setPattern = async (value) => {
+    await page.eval(`__t.set(__t.page().querySelector('.form-add-render input'), ${json(value)}); true`);
+    await sleepMs(120);
+  };
+  const box = (labelText) => `[...__t.page().querySelectorAll('label.checkbox-wrapper')].find((l) => l.querySelector('.checkbox-label')?.textContent === ${json(labelText)}).querySelector('input')`;
+  const toggle = async (labelText) => {
+    await page.eval(`${box(labelText)}.click(); true`);
+    await sleepMs(120);
+  };
+  const setBox = async (labelText, value) => {
+    await page.eval(`(() => { const i = ${box(labelText)}; if (i.checked !== ${value}) i.click(); })(); true`);
+    await sleepMs(120);
+  };
+  /** Switches the processing mode (only possible with a Rust backend); returns whether it changed */
+  const toggleEngine = async () => {
+    const before = await page.eval(`!!__t.page().querySelector('.mode-toggle .backend-icon')`);
+    await page.eval(`__t.page().querySelector('.mode-toggle').click(); true`);
+    await sleepMs(300);
+    return (await page.eval(`!!__t.page().querySelector('.mode-toggle .backend-icon')`)) !== before;
+  };
+  /** Clicks, waits for the result and the end of the processing; returns the messages shown meanwhile */
+  const runFor = async (clickExpr, expected) => {
+    await snacks();
+    await page.eval(`${clickExpr}; true`);
+    const done = await page.waitFor(`(() => { const s = ${STALE_RESULT_STATE}; return s.result === ${json(expected)} && s.idle; })()`, 8000);
+    await sleepMs(150);
+    return { done, snacks: await snacks() };
+  };
+  /** Clicks and waits for the first message (an error is expected) and the end of the processing */
+  const runForMessage = async (clickExpr) => {
+    await snacks();
+    await page.eval(`${clickExpr}; true`);
+    await page.waitFor(`__t.snackLog.length > 0 && !!__t.page().querySelector('.mode-toggle')`, 8000);
+    await sleepMs(150);
+    return snacks();
+  };
+  const isCurrent = (s, result, summary) =>
+    s.result === result && s.summary === summary && s.status?.role === 'status' && s.status.live === 'polite' && s.status.text === '' && s.sameStatusNode && s.describedBy === null && !s.marked;
+  const isOutdated = (s, result, summary) =>
+    s.result === result && s.summary === summary && s.sameStatusNode && s.status?.text === outdatedText && s.describedBy === outdatedText && s.marked;
+  const fresh = async (name) => {
+    await page.eval(`__t.nav('about'); true`);
+    await sleepMs(150);
+    await page.eval(`__t.nav('${name}'); __t.watchSnacks(); true`);
+    await sleepMs(250);
+  };
+  const recordStatusNode = () => page.eval(`__t.staleStatusNode = __t.page().querySelector('.result-status'); true`);
+
+  // ---------------- Filter ----------------
+  const gate = processingGate(page, engine, 'filter_text');
+  const F = texts.textFilter;
+  const keep = `__t.page().querySelectorAll('.filter-actions button')[1].click()`;
+  const remove = `__t.page().querySelectorAll('.filter-actions button')[0].click()`;
+  const T1 = 'apple\nbanana\napricot';
+  const KEEP_AP = 'ap\nap';
+  const REMOVE_AP = 'ple\nbanana\nricot';
+  const KEEP_AN = 'anan';
+  const keepLabel = F.modes.keep;
+  const removeLabel = F.modes.remove;
+
+  await fresh('filter');
+  let s = await state();
+  r.check(`${label}: Filter never computed: no result, no status`, s.result === null && s.status === null && s.summary === null, json(s));
+
+  await setSource(T1);
+  await setPattern('ap');
+  await setBox(F.options.caseSensitive, true);
+  await setBox(F.options.splitMatches, false);
+  let run = await runFor(keep, KEEP_AP);
+  await recordStatusNode();
+  s = await state();
+  r.check(`${label}: Filter keep: current result, empty live region, summary "${keepLabel}"`, run.done && isCurrent(s, KEEP_AP, keepLabel) && run.snacks.length === 1 && run.snacks[0].startsWith('success'), json({ s, run }));
+
+  await setSource('apple\nbanana');
+  const textOutdated = isOutdated(await state(), KEEP_AP, keepLabel);
+  await setSource(T1);
+  s = await state();
+  r.check(`${label}: Filter text changed: outdated; text back: current`, textOutdated && isCurrent(s, KEEP_AP, keepLabel), json(s));
+
+  await setPattern('an');
+  const patternOutdated = isOutdated(await state(), KEEP_AP, keepLabel);
+  await setPattern('ap');
+  await toggle(F.options.caseSensitive);
+  const caseOutdated = isOutdated(await state(), KEEP_AP, keepLabel);
+  await toggle(F.options.caseSensitive);
+  s = await state();
+  r.check(`${label}: Filter pattern and case changed: outdated; back: current`, patternOutdated && caseOutdated && isCurrent(s, KEEP_AP, keepLabel), json(s));
+
+  // splitMatches counts for keep; showMatched only controls the preview (switched while no gate is on)
+  await toggle(F.options.splitMatches);
+  const splitOutdated = isOutdated(await state(), KEEP_AP, keepLabel);
+  await toggle(F.options.splitMatches);
+  await toggle('Show pattern matches');
+  const previewCurrent = isCurrent(await state(), KEEP_AP, keepLabel);
+  await toggle('Show pattern matches');
+  s = await state();
+  r.check(`${label}: Filter keep: splitMatches marks it outdated, "show pattern matches" does not`, splitOutdated && previewCurrent && isCurrent(s, KEEP_AP, keepLabel), json(s));
+
+  // Recomputation with the other action: new result and request together; splitMatches is ignored for remove
+  run = await runFor(remove, REMOVE_AP);
+  s = await state();
+  await toggle(F.options.splitMatches);
+  const splitIgnored = isCurrent(await state(), REMOVE_AP, removeLabel);
+  await toggle(F.options.splitMatches);
+  r.check(
+    `${label}: Filter remove: replaces result and summary ("${removeLabel}"), splitMatches is ignored`,
+    run.done && isCurrent(s, REMOVE_AP, removeLabel) && splitIgnored && run.snacks.length === 1,
+    json({ s, run, splitIgnored })
+  );
+
+  // Processing mode: relevant for every filter (only switchable with a Rust backend)
+  if (await toggleEngine()) {
+    const engineOutdated = isOutdated(await state(), REMOVE_AP, removeLabel);
+    await toggleEngine();
+    s = await state();
+    r.check(`${label}: Filter processing mode switched: outdated; switched back: current`, engineOutdated && isCurrent(s, REMOVE_AP, removeLabel), json(s));
+  }
+
+  // Error of a current job (other action): result, request and summary of the shown result stay
+  await setPattern('([a-');
+  let messages = await runForMessage(keep);
+  s = await state();
+  const afterError = isOutdated(s, REMOVE_AP, removeLabel);
+  await setPattern('ap');
+  r.check(
+    `${label}: Filter failed keep: one error, shown remove result and summary stay (outdated by the pattern), pattern back: current`,
+    messages.length === 1 && messages[0].startsWith('error') && afterError && isCurrent(await state(), REMOVE_AP, removeLabel),
+    json({ messages, s })
+  );
+
+  await gate.install();
+  // Text changed while running: late result not applied, no message, processing ended
+  let held = await gate.hold(keep);
+  await setSource('apple\napricot');
+  let released = await gate.release();
+  s = await state();
+  messages = await snacks();
+  r.check(`${label}: Filter text changed while running: late result not applied, no message, not loading`, held && released === 1 && isOutdated(s, REMOVE_AP, removeLabel) && s.idle && messages.length === 0, json({ s, messages }));
+  await setSource(T1);
+
+  // Late error of an invalidated job: no message
+  await setPattern('([a-');
+  held = await gate.hold(keep);
+  await setPattern('ap');
+  await setSource('apple');
+  released = await gate.release();
+  messages = await snacks();
+  s = await state();
+  r.check(`${label}: Filter late error of an invalidated job: no message`, held && released === 1 && messages.length === 0 && s.idle && isOutdated(s, REMOVE_AP, removeLabel), json({ s, messages }));
+  await setSource(T1);
+
+  // A -> B -> A while running: the job stays invalidated
+  await setPattern('an');
+  held = await gate.hold(keep);
+  await setPattern('a');
+  await setPattern('an');
+  released = await gate.release();
+  messages = await snacks();
+  s = await state();
+  r.check(`${label}: Filter A -> B -> A while running: the late answer is not applied`, held && released === 1 && messages.length === 0 && isOutdated(s, REMOVE_AP, removeLabel), json({ s, messages }));
+
+  // A newer action supersedes the running one; meanwhile (and with both held) the summary describes the shown result
+  held = await gate.hold(remove);
+  const heldBoth = await gate.hold(keep, 2);
+  const whileRunning = await state();
+  released = await gate.release(true);
+  await page.waitFor(`(() => { const s = ${STALE_RESULT_STATE}; return s.idle; })()`, 8000);
+  s = await state();
+  messages = await snacks();
+  r.check(
+    `${label}: Filter newer action wins (answers in reverse order): keep result, one success; summary showed the shown result while running`,
+    held && heldBoth && released === 2 && whileRunning.summary === removeLabel && isCurrent(s, KEEP_AN, keepLabel) && messages.length === 1 && messages[0].startsWith('success'),
+    json({ whileRunning, s, messages })
+  );
+
+  // R1: refused starts (empty pattern, empty text, invalid regex) invalidate the running job first
+  held = await gate.hold(remove);
+  await setPattern('');
+  await page.eval(`${keep}; true`);
+  await sleepMs(150);
+  released = await gate.release();
+  const r1Pattern = { messages: await snacks(), s: await state() };
+  await setPattern('an');
+  held = held && (await gate.hold(remove));
+  await setSource('');
+  await page.eval(`${keep}; true`);
+  await sleepMs(150);
+  released += await gate.release();
+  const r1Text = { messages: await snacks(), s: await state() };
+  await setSource(T1);
+  held = held && (await gate.hold(remove));
+  await setPattern('([a-');
+  // The new job with the invalid pattern is held as well: both answers are delivered, only its error is reported
+  const heldInvalid = await gate.hold(keep, 2);
+  released += await gate.release();
+  await page.waitFor(`!!__t.page().querySelector('.mode-toggle')`, 8000);
+  const r1Regex = { messages: await snacks(), s: await state() };
+  await setPattern('an');
+  const errorOnly = (m) => m.length === 1 && m[0].startsWith('error');
+  r.check(
+    `${label}: Filter refused start (empty pattern, empty text, invalid regex) while running: only the refusal is reported, no late result`,
+    held && heldInvalid && released === 4 && errorOnly(r1Pattern.messages) && errorOnly(r1Text.messages) && errorOnly(r1Regex.messages) &&
+      [r1Pattern, r1Text, r1Regex].every((x) => x.s.result === KEEP_AN && x.s.summary === keepLabel),
+    json({ r1Pattern, r1Text, r1Regex })
+  );
+
+  // A following valid run reports exactly its own message (no late message of the jobs above)
+  run = await runFor(remove, 'apple\nba\napricot');
+  s = await state();
+  r.check(
+    `${label}: Filter valid run after the gated cases: one success, current`,
+    run.done && isCurrent(s, 'apple\nba\napricot', removeLabel) && run.snacks.length === 1 && run.snacks[0].startsWith('success'),
+    json({ s, run })
+  );
+
+  // Leaving the page while a job runs: no late message on the other page, the result is gone with the page
+  held = await gate.hold(keep);
+  await page.eval(`__t.nav('sort'); true`);
+  await sleepMs(200);
+  released = await gate.release();
+  await sleepMs(200);
+  messages = await snacks();
+  await page.eval(`__t.nav('filter'); true`);
+  await sleepMs(250);
+  s = await state();
+  r.check(`${label}: Filter left while running: no late message, no result after returning`, held && released === 1 && messages.length === 0 && s.result === null && s.status === null, json({ s, messages }));
+  const filterSeen = await gate.seen();
+  await gate.uninstall();
+  if (engine === 'rust') r.check(`${label}: Filter Rust answers go through the IPC custom protocol (fetch gate)`, filterSeen.includes('filter_text'), json(filterSeen));
+
+  // ---------------- Remove ----------------
+  const rgate = processingGate(page, engine, 'remove_lines');
+  const R = texts.removeLines;
+  const duplicates = `__t.page().querySelector('.remove-action-button.duplicates').click()`;
+  const containing = `__t.page().querySelector('.remove-action-button.containing').click()`;
+  const notContaining = `__t.page().querySelector('.remove-action-button.not-containing').click()`;
+  const RT = 'x\ny\nX\nz\n x';
+  const summary = (mode, removed) => `${R.modes[mode]} · ${R.processed.replace('{{removed}}', removed)}`;
+
+  await fresh('remove');
+  s = await state();
+  r.check(`${label}: Remove never computed: no result, no status`, s.result === null && s.status === null && s.summary === null, json(s));
+
+  await setSource(RT);
+  await setPattern('x');
+  await setBox(R.options.trim, true);
+  await setBox(R.options.caseSensitive, true);
+  await setBox(R.options.useRegex, false);
+  run = await runFor(duplicates, 'x\ny\nX\nz');
+  await recordStatusNode();
+  const dup = summary('duplicates', 1);
+  s = await state();
+  r.check(`${label}: Remove duplicates: current result, summary "${dup}"`, run.done && isCurrent(s, 'x\ny\nX\nz', dup) && run.snacks.length === 1, json({ s, run }));
+
+  // Duplicates: text, case and trim count; pattern, regex and engine do not
+  await setSource('x\ny');
+  const dupText = isOutdated(await state(), 'x\ny\nX\nz', dup);
+  await setSource(RT);
+  await toggle(R.options.caseSensitive);
+  const dupCase = isOutdated(await state(), 'x\ny\nX\nz', dup);
+  await toggle(R.options.caseSensitive);
+  await toggle(R.options.trim);
+  const dupTrim = isOutdated(await state(), 'x\ny\nX\nz', dup);
+  await toggle(R.options.trim);
+  await setPattern('other');
+  await toggle(R.options.useRegex);
+  const dupIgnored = isCurrent(await state(), 'x\ny\nX\nz', dup);
+  const dupEngine = (await toggleEngine()) ? isCurrent(await state(), 'x\ny\nX\nz', dup) && (await toggleEngine()) : true;
+  await toggle(R.options.useRegex);
+  await setPattern('x');
+  s = await state();
+  r.check(
+    `${label}: Remove duplicates: text, case, trim mark it outdated; pattern, regex and processing mode do not; back: current`,
+    dupText && dupCase && dupTrim && dupIgnored && dupEngine && isCurrent(s, 'x\ny\nX\nz', dup),
+    json({ dupText, dupCase, dupTrim, dupIgnored, dupEngine, s })
+  );
+
+  // Containing (plain): pattern, regex and case count; trim and engine do not
+  run = await runFor(containing, 'y\nX\nz');
+  const cont = summary('containing', 2);
+  s = await state();
+  await toggle(R.options.trim);
+  const contTrim = isCurrent(await state(), 'y\nX\nz', cont);
+  await toggle(R.options.trim);
+  const contEngine = (await toggleEngine()) ? isCurrent(await state(), 'y\nX\nz', cont) && (await toggleEngine()) : true;
+  await setPattern('y');
+  const contPattern = isOutdated(await state(), 'y\nX\nz', cont);
+  await setPattern('x');
+  await toggle(R.options.useRegex);
+  const contRegex = isOutdated(await state(), 'y\nX\nz', cont);
+  await toggle(R.options.useRegex);
+  await toggle(R.options.caseSensitive);
+  const contCase = isOutdated(await state(), 'y\nX\nz', cont);
+  await toggle(R.options.caseSensitive);
+  r.check(
+    `${label}: Remove containing (plain): summary "${cont}"; pattern, regex, case mark it outdated; trim and processing mode do not`,
+    run.done && isCurrent(s, 'y\nX\nz', cont) && contTrim && contEngine && contPattern && contRegex && contCase && isCurrent(await state(), 'y\nX\nz', cont),
+    json({ s, contTrim, contEngine, contPattern, contRegex, contCase })
+  );
+
+  // Regex containing: the processing mode counts; not containing: its own summary
+  await toggle(R.options.useRegex);
+  await setPattern('^x');
+  run = await runFor(containing, 'y\nX\nz\n x');
+  const regexCont = summary('containing', 1);
+  const regexCurrent = isCurrent(await state(), 'y\nX\nz\n x', regexCont);
+  if (await toggleEngine()) {
+    const engineOutdated = isOutdated(await state(), 'y\nX\nz\n x', regexCont);
+    await toggleEngine();
+    r.check(`${label}: Remove regex containing: processing mode switched: outdated; back: current`, engineOutdated && isCurrent(await state(), 'y\nX\nz\n x', regexCont));
+  }
+  run = { first: run, second: await runFor(notContaining, 'x') };
+  const notCont = summary('notContaining', 4);
+  s = await state();
+  r.check(`${label}: Remove regex containing and not containing: results and summaries`, regexCurrent && run.second.done && isCurrent(s, 'x', notCont), json({ s, run }));
+
+  // Error of a current job: the shown result, its request and summary stay
+  await setPattern('([a-');
+  messages = await runForMessage(containing);
+  s = await state();
+  const removeErrorKept = isOutdated(s, 'x', notCont);
+  await setPattern('^x');
+  r.check(
+    `${label}: Remove failed containing: one error, shown not-containing result and summary stay, pattern back: current`,
+    messages.length === 1 && messages[0].startsWith('error') && removeErrorKept && isCurrent(await state(), 'x', notCont),
+    json({ messages, s })
+  );
+
+  await rgate.install();
+  // Relevant change while running (text): late result not applied
+  held = await rgate.hold(duplicates);
+  await setSource('x\ny');
+  released = await rgate.release();
+  messages = await snacks();
+  s = await state();
+  r.check(`${label}: Remove text changed while running: late result not applied, no message`, held && released === 1 && messages.length === 0 && s.idle && isOutdated(s, 'x', notCont), json({ s, messages }));
+  await setSource(RT);
+
+  // Change the running job ignores (pattern for duplicates): the job stays valid and is applied
+  held = await rgate.hold(duplicates);
+  await setPattern('ignored');
+  released = await rgate.release();
+  await page.waitFor(`(() => { const s = ${STALE_RESULT_STATE}; return s.idle && s.result === 'x\\ny\\nX\\nz'; })()`, 8000);
+  messages = await snacks();
+  s = await state();
+  r.check(`${label}: Remove pattern changed while duplicates run: ignored, result applied`, held && released === 1 && isCurrent(s, 'x\ny\nX\nz', dup) && messages.length === 1 && messages[0].startsWith('success'), json({ s, messages }));
+  await setPattern('^x');
+
+  // A -> B -> A while running (case): the job stays invalidated
+  held = await rgate.hold(containing);
+  await toggle(R.options.caseSensitive);
+  await toggle(R.options.caseSensitive);
+  released = await rgate.release();
+  messages = await snacks();
+  s = await state();
+  r.check(`${label}: Remove A -> B -> A while running: the late answer is not applied`, held && released === 1 && messages.length === 0 && isCurrent(s, 'x\ny\nX\nz', dup), json({ s, messages }));
+
+  // Late error of an invalidated job
+  await setPattern('([a-');
+  held = await rgate.hold(containing);
+  await setSource('x');
+  released = await rgate.release();
+  messages = await snacks();
+  r.check(`${label}: Remove late error of an invalidated job: no message`, held && released === 1 && messages.length === 0, json(messages));
+  await setSource(RT);
+  await setPattern('^x');
+
+  // A newer action supersedes the running one
+  held = await rgate.hold(duplicates);
+  const heldTwo = await rgate.hold(notContaining, 2);
+  const removeWhileRunning = await state();
+  released = await rgate.release(true);
+  await page.waitFor(`(() => { const s = ${STALE_RESULT_STATE}; return s.idle; })()`, 8000);
+  messages = await snacks();
+  s = await state();
+  r.check(
+    `${label}: Remove newer action wins: not-containing result, one success; summary showed the shown result while running`,
+    held && heldTwo && released === 2 && removeWhileRunning.summary === dup && isCurrent(s, 'x', notCont) && messages.length === 1 && messages[0].startsWith('success'),
+    json({ removeWhileRunning, s, messages })
+  );
+
+  // R1: empty text and empty pattern refused while a job runs
+  held = await rgate.hold(duplicates);
+  await setSource('');
+  await page.eval(`${duplicates}; true`);
+  await sleepMs(150);
+  released = await rgate.release();
+  const r1Empty = { messages: await snacks(), s: await state() };
+  await setSource(RT);
+  held = held && (await rgate.hold(containing));
+  await setPattern('');
+  await page.eval(`${containing}; true`);
+  await sleepMs(150);
+  released += await rgate.release();
+  const r1NoPattern = { messages: await snacks(), s: await state() };
+  await setPattern('^x');
+  r.check(
+    `${label}: Remove refused start (empty text, empty pattern) while running: only the refusal is reported, no late result`,
+    held && released === 2 && [r1Empty, r1NoPattern].every((x) => x.messages.length === 1 && x.messages[0].startsWith('error') && x.s.result === 'x' && x.s.summary === notCont),
+    json({ r1Empty, r1NoPattern })
+  );
+
+  // Leaving the page while a job runs
+  held = await rgate.hold(duplicates);
+  await page.eval(`__t.nav('sort'); true`);
+  await sleepMs(200);
+  released = await rgate.release();
+  await sleepMs(200);
+  messages = await snacks();
+  await page.eval(`__t.nav('remove'); true`);
+  await sleepMs(250);
+  s = await state();
+  r.check(`${label}: Remove left while running: no late message, no result after returning`, held && released === 1 && messages.length === 0 && s.result === null, json({ s, messages }));
+  await rgate.uninstall();
+
+  await page.eval(`delete __t.staleStatusNode; true`);
+  await setPattern('');
+  await setSource('a_b');
+  r.check(`${label}: Filter/Remove outdated checks without errors`, errorsSince(n).length === 0, json(errorsSince(n)));
 }
 
 // Golden sort results of Paket 9 C1, checked in the real UI (Paket 9 C2). `methods` is the order of the dropdown.

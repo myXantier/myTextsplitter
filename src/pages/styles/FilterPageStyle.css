@@ -110,6 +110,11 @@
   padding: 8px;
 }
 
+/* Holds the result status (empty while the result is current) */
+.filter-text .result-header {
+  display: flex;
+}
+
 .filter-text .processing-status-container {
   display: flex;
   justify-content: center;

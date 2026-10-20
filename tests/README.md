@@ -390,8 +390,9 @@ They drive the **real application** and are not part of `npm test`.
 - Single mode: `node tests/e2e/browser.e2e.mjs --mode=dev` or `--mode=preview` (needs `npm run build`).
 - Targeted run (Paket 11): `E2E_ONLY=file-io` runs only the start checks and `checkFileIo`, e.g.
   `E2E_ONLY=file-io node tests/e2e/browser.e2e.mjs --mode=dev` (PowerShell: `$env:E2E_ONLY='file-io'`).
-  `E2E_ONLY=stale` (Paket 12) runs only the start checks and the outdated-result checks (so far `checkSort`, which
-  includes the worker-gated race checks and the outdated notice: live region, `aria-describedby`, contrast in both themes).
+  `E2E_ONLY=stale` (Paket 12) runs only the start checks and the outdated-result checks: `checkSort` (worker-gated race
+  checks and the outdated notice: live region, `aria-describedby`, contrast in both themes) and `checkFilterRemoveStale`
+  (request per action, relevant and ignored options, jobs invalidated by input changes, refused starts and page changes).
 - Runs without Tauri runtime and without mocks. It checks startup, navigation, Split/Sort/Filter/Remove/Diff,
   the JS mode with its metrics, persistence of the settings across a reload, and damaged `localStorage` data.
 - Browser: found automatically (Chrome, Edge, Chromium); otherwise set `CHROME_PATH`.
@@ -405,6 +406,10 @@ They drive the **real application** and are not part of `npm test`.
 - Targeted run (Paket 11): `E2E_ONLY=file-io npm run test:e2e:tauri` starts the app once and runs only the start checks,
   `checkFileIo` and the error check of the main window (no settings round trip, no restart).
   `E2E_ONLY=stale` (Paket 12) runs the start checks and the outdated-result checks in Rust and in JS mode.
+- Late answers are held deterministically: JS paths with the worker gate (`Worker.prototype.onmessage`), Rust commands with
+  the fetch gate. Tauri 2.3.1 sends each command with the global `fetch` to the IPC custom protocol
+  (`http://ipc.localhost/<command>` in WebView2); the gate wraps `window.fetch` and holds the answer of one command, the
+  Rust command itself runs normally. `window.__TAURI_INTERNALS__.invoke` cannot be replaced (not writable).
 - Starts the real release build with the Tauri runtime and Rust backend. The WebView2 is driven through its DevTools port
   (`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=…`, only for this process).
 - Checks splash → main window, window title, backend processing and metrics, mode switch,
